@@ -19,7 +19,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (selectedId) {
     // Scoped to the authenticated shop: another shop's id returns nothing.
     const transcript = await getConversationTranscript(db, shop, selectedId);
-    if (!transcript || transcript.audience !== "shopper") {
+    if (!transcript || transcript.audience !== "shopper" || transcript.isPreview) {
       throw new Response("Conversation not found", { status: 404 });
     }
     return {

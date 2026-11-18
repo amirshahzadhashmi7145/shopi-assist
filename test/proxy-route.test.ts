@@ -16,7 +16,7 @@ vi.mock("../app/assistant/chat.server", async (importOriginal) => {
 });
 
 vi.mock("../app/assistant/settings.server", () => ({
-  getSettings: async () => ({ enabled: true }),
+  getSettings: async () => ({ enabled: true, assistantName: "Ava", greeting: "Hi there!" }),
 }));
 
 const { action, loader } = await import("../app/routes/proxy.chat");
@@ -211,6 +211,12 @@ describe("GET /proxy/chat", () => {
     } as unknown as Parameters<typeof loader>[0])) as Response;
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true, enabled: true });
+    // The widget reads its name and welcome message from here.
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      enabled: true,
+      title: "Ava",
+      greeting: "Hi there!",
+    });
   });
 });

@@ -10,6 +10,7 @@
 
   var STORAGE_KEY = "shopi-assist:v1";
   var OPEN_KEY = "shopi-assist:open";
+  var CONFIG_KEY = "shopi-assist:config";
   var MAX_STORED_MESSAGES = 40;
   var IDLE_RESET_MS = 24 * 60 * 60 * 1000;
   var REQUEST_TIMEOUT_MS = 60000;
@@ -224,6 +225,10 @@
     };
     this.pending = false;
     this.lastFailedMessage = null;
+    // False only while the stylesheet is still loading.
+    this.stylesReady = !this.config.stylesheet;
+    // True when the merchant has paused chat in the app.
+    this.pausedByShop = false;
     this.state = this.loadState();
   }
 
@@ -273,7 +278,8 @@
       link.rel = "stylesheet";
       link.href = config.stylesheet;
       var reveal = function () {
-        wrapper.hidden = false;
+        self.stylesReady = true;
+        wrapper.hidden = Boolean(self.pausedByShop);
       };
       link.addEventListener("load", reveal);
       link.addEventListener("error", reveal);
@@ -301,7 +307,8 @@
     this.panel = panel;
 
     var header = el("header", "sa-header");
-    header.appendChild(el("h2", "sa-title", config.title));
+    this.titleEl = el("h2", "sa-title", config.title);
+    header.appendChild(this.titleEl);
     var headerActions = el("div", "sa-header-actions");
 
     var reset = el("button", "sa-icon-button");
@@ -386,6 +393,7 @@
     root.appendChild(wrapper);
 
     this.renderAll();
+    this.loadRemoteConfig();
 
     // Keep the chat open across page loads on larger screens, so following a
     // product link does not close the conversation.
@@ -398,6 +406,74 @@
     if (wasOpen && window.matchMedia && window.matchMedia("(min-width: 750px)").matches) {
       this.open({ focus: false });
     }
+  };
+
+  /**
+   * Applies what the merchant set in the app: the assistant's name and
+   * welcome message (which override the theme editor's when filled in) and
+   * whether chat is paused. Values are plain text and only ever used as text.
+   */
+  Widget.prototype.applyRemoteConfig = function (remote) {
+    if (!remote || remote.ok !== true) return;
+
+    this.pausedByShop = remote.enabled === false;
+    if (this.stylesReady) this.wrapper.hidden = this.pausedByShop;
+    if (this.pausedByShop) return;
+
+    var changed = false;
+    if (typeof remote.title === "string" && remote.title.trim()) {
+      var title = remote.title.trim().slice(0, 60);
+      if (title !== this.config.title) {
+        this.config.title = title;
+        this.titleEl.textContent = title;
+        this.panel.setAttribute("aria-label", title);
+        if (!this.isOpen()) this.launcher.setAttribute("aria-label", "Open chat: " + title);
+      }
+    }
+    if (typeof remote.greeting === "string" && remote.greeting.trim()) {
+      var greeting = remote.greeting.trim().slice(0, 400);
+      if (greeting !== this.config.greeting) {
+        this.config.greeting = greeting;
+        changed = true;
+      }
+    }
+    // The greeting is the first bubble. Skip the redraw while a reply is on
+    // its way; the new greeting shows on the next page instead.
+    if (changed && !this.pending) this.renderAll();
+  };
+
+  /** Uses the cached settings at once, then refreshes them in the background. */
+  Widget.prototype.loadRemoteConfig = function () {
+    var self = this;
+    var cached = null;
+    try {
+      cached = readJson(window.sessionStorage, CONFIG_KEY);
+    } catch (error) {
+      cached = null;
+    }
+    this.applyRemoteConfig(cached);
+
+    window
+      .fetch(this.config.endpoint, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        credentials: "same-origin",
+      })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (remote) {
+        if (!remote || remote.ok !== true) return;
+        try {
+          writeJson(window.sessionStorage, CONFIG_KEY, remote);
+        } catch (error) {
+          // Ignore: only costs one extra request on the next page.
+        }
+        self.applyRemoteConfig(remote);
+      })
+      .catch(function () {
+        // Keep the theme editor's values; the chat still works.
+      });
   };
 
   Widget.prototype.isOpen = function () {

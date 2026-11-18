@@ -10,8 +10,18 @@ import {
 import { DailyBudget, RateLimiter } from "../app/assistant/rate-limit";
 import { defineTool } from "../app/assistant/tools/registry";
 import { z } from "zod";
-import { getSettings, saveSettings } from "../app/assistant/settings.server";
 import {
+  DEFAULT_SETTINGS,
+  getSettings,
+  getSetupState,
+  markSetupCompleted,
+  markSetupStarted,
+  saveSettings,
+  settingsFromForm,
+  setupProgress,
+} from "../app/assistant/settings.server";
+import {
+  countConversationsSince,
   deleteCustomerConversations,
   deleteShopData,
   getConversationTranscript,
@@ -203,6 +213,77 @@ describe("handleChatTurn", () => {
     const system = provider.requests[0].messages[0].content as string;
     expect(system).toContain("Alpine Outfitters");
     expect(system).toContain("Always mention free shipping over $50.");
+  });
+
+  it("teaches the assistant what the merchant wrote in setup", async () => {
+    await saveSettings(
+      SHOP_A,
+      {
+        businessDescription: "Small-batch snowboards for beginners.",
+        returnPolicy: "30 days, unused, free return label.",
+        shippingInfo: "Ships next business day from Calgary.",
+        faq: "Do you wax boards? Yes, free on request.",
+        assistantName: "Ava",
+        tone: "professional",
+      },
+      db,
+    );
+    const provider = scriptedProvider([text("ok")]);
+    await turn({}, { provider });
+
+    const system = provider.requests[0].messages[0].content as string;
+    expect(system).toContain("You are Ava, the shopping assistant");
+    expect(system).toContain("Polite, precise and businesslike");
+    for (const fact of [
+      "Small-batch snowboards for beginners.",
+      "30 days, unused, free return label.",
+      "Ships next business day from Calgary.",
+      "Do you wax boards? Yes, free on request.",
+    ]) {
+      expect(system).toContain(fact);
+    }
+    // Owner notes come after the fixed rules, which they cannot override.
+    expect(system.indexOf("Rules:")).toBeLessThan(system.indexOf("Notes from the store owner"));
+  });
+
+  it("runs a staff preview as a shopper but keeps it out of the conversation log", async () => {
+    await saveSettings(SHOP_A, { enabled: false }, db);
+    const provider = scriptedProvider([text("Preview answer.")]);
+
+    const preview = await turn(
+      { preview: true, visitorId: "preview-staff-1", message: "best sellers?" },
+      { provider },
+    );
+
+    // Same tools as a real shopper: nothing merchant-only.
+    const toolNames = provider.requests[0].tools.map((tool) => tool.name);
+    expect(toolNames).toContain("get_best_sellers");
+    expect(toolNames).not.toContain("get_top_selling_products");
+    // Works even while chat is paused for real shoppers.
+    expect(preview.reply).toBe("Preview answer.");
+    await expectChatError(turn({ message: "hi" }), "disabled", 403);
+
+    expect(await listConversations(db, SHOP_A, { audience: "shopper" })).toEqual([]);
+    expect(await countConversationsSince(db, SHOP_A, new Date(0))).toBe(0);
+    const row = await db.conversation.findUnique({ where: { id: preview.conversationId } });
+    expect(row!.isPreview).toBe(true);
+  });
+
+  it("does not let a shopper pose as a preview or reach a preview conversation", async () => {
+    const preview = await turn({ preview: true, visitorId: "preview-staff-1", message: "staff note" });
+    const provider = scriptedProvider([text("Hello.")]);
+
+    // A real shopper sends the same visitor id and the preview's conversation id.
+    const shopper = await turn(
+      { visitorId: "preview-staff-1", conversationId: preview.conversationId, message: "hi" },
+      { provider },
+    );
+
+    expect(shopper.conversationId).not.toBe(preview.conversationId);
+    expect(JSON.stringify(provider.requests[0].messages)).not.toContain("staff note");
+    // And their conversation is logged like any other shopper's.
+    const listed = await listConversations(db, SHOP_A, { audience: "shopper" });
+    expect(listed.map((c) => c.id)).toEqual([shopper.conversationId]);
   });
 
   it("refuses shoppers when the merchant paused chat, but not the merchant", async () => {
@@ -488,12 +569,84 @@ describe("data lifecycle", () => {
 
 describe("settings", () => {
   it("returns defaults for a shop with no saved settings", async () => {
-    expect(await getSettings("new-shop.myshopify.com", db)).toEqual({
+    expect(await getSettings("new-shop.myshopify.com", db)).toEqual(DEFAULT_SETTINGS);
+    expect(DEFAULT_SETTINGS).toMatchObject({
       enabled: true,
-      instructions: "",
       orderLookupEnabled: false,
       retentionDays: 30,
+      tone: "friendly",
+      businessDescription: "",
     });
+  });
+
+  it("saves one setup step without touching the others", async () => {
+    await saveSettings(SHOP_A, { businessDescription: "We sell snowboards." }, db);
+    await saveSettings(SHOP_A, { returnPolicy: "30 days.", shippingInfo: "" }, db);
+    await saveSettings(SHOP_A, { assistantName: "  Ava  ", tone: "playful" }, db);
+
+    expect(await getSettings(SHOP_A, db)).toMatchObject({
+      businessDescription: "We sell snowboards.",
+      returnPolicy: "30 days.",
+      assistantName: "Ava",
+      tone: "playful",
+      enabled: true,
+      retentionDays: 30,
+    });
+    // Another shop is unaffected.
+    expect((await getSettings(SHOP_B, db)).businessDescription).toBe("");
+  });
+
+  it("rejects an unknown tone and over-long answers", async () => {
+    const result = await saveSettings(
+      SHOP_A,
+      { tone: "sarcastic", assistantName: "x".repeat(41), faq: "y".repeat(3001) },
+      db,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(Object.keys(result.errors).sort()).toEqual(["assistantName", "faq", "tone"]);
+    }
+  });
+
+  it("reads only the fields a page is allowed to change", () => {
+    const form = new FormData();
+    form.set("businessDescription", "Snowboards");
+    form.set("retentionDays", "1");
+    form.set("enabled", "on");
+    form.set("shop", "victim.myshopify.com");
+
+    expect(settingsFromForm(form, ["businessDescription"])).toEqual({
+      businessDescription: "Snowboards",
+    });
+    expect(settingsFromForm(form, ["enabled", "orderLookupEnabled", "retentionDays"])).toEqual({
+      enabled: true,
+      orderLookupEnabled: false,
+      retentionDays: 1,
+    });
+  });
+
+  it("tracks the setup tour and reports progress from what is actually saved", async () => {
+    expect(await getSetupState(SHOP_A, db)).toEqual({ started: false, completed: false });
+
+    await markSetupStarted(SHOP_A, db);
+    expect(await getSetupState(SHOP_A, db)).toEqual({ started: true, completed: false });
+    // Opening the tour fills nothing in.
+    expect(setupProgress(await getSettings(SHOP_A, db))).toEqual({
+      business: false,
+      policies: false,
+      questions: false,
+      personality: false,
+    });
+
+    await saveSettings(SHOP_A, { shippingInfo: "Ships in 2 days." }, db);
+    await markSetupCompleted(SHOP_A, db);
+    expect(await getSetupState(SHOP_A, db)).toEqual({ started: true, completed: true });
+    expect(setupProgress(await getSettings(SHOP_A, db))).toMatchObject({
+      business: false,
+      policies: true,
+    });
+    // Starting the tour never wiped the saved answer.
+    expect((await getSettings(SHOP_A, db)).shippingInfo).toBe("Ships in 2 days.");
   });
 
   it("rejects out-of-range values with a message per field", async () => {

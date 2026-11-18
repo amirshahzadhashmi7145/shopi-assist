@@ -257,6 +257,34 @@ describe("system prompts", () => {
     expect(prompt.indexOf("Rules:")).toBeLessThan(prompt.indexOf("Additional guidance"));
   });
 
+  it("adds no owner section when the merchant wrote nothing", () => {
+    const prompt = buildSystemPrompt({ ...input, audience: "shopper" });
+    expect(prompt).not.toContain("Notes from the store owner");
+    expect(prompt).toContain("Warm, friendly and brief");
+    expect(prompt).toContain("You are the shopping assistant for Alpine Outfitters");
+  });
+
+  it("caps each owner note so a long answer cannot crowd out the rules", () => {
+    const prompt = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      knowledge: { faq: "q".repeat(9000), returnPolicy: "r".repeat(9000) },
+    });
+    expect(prompt.match(/q+/g)!.sort((a, b) => b.length - a.length)[0]).toHaveLength(3000);
+    expect(prompt.match(/r{100,}/g)![0]).toHaveLength(1500);
+  });
+
+  it("keeps owner notes out of the merchant assistant's prompt", () => {
+    const prompt = buildSystemPrompt({
+      ...input,
+      audience: "merchant",
+      assistantName: "Ava",
+      knowledge: { businessDescription: "Snowboards" },
+    });
+    expect(prompt).not.toContain("Snowboards");
+    expect(prompt).not.toContain("Ava");
+  });
+
   it("tells the merchant assistant it is read-only", () => {
     expect(buildSystemPrompt({ ...input, audience: "merchant" })).toMatch(/read-only/);
   });

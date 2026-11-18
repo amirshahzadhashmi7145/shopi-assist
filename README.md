@@ -16,6 +16,9 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 
 **For the merchant (inside Shopify admin)**
 
+- A step-by-step **setup tour** that opens the first time the app is opened after install: describe the business, give short answers on returns and shipping, add common questions, pick the assistant's name, welcome message and tone, then turn the widget on. Every step is optional, saves on its own, and can be edited later in Settings.
+- **Try it as a shopper** on the last step: a test chat in the admin that behaves exactly like the storefront widget, so answers can be checked before going live. Test chats stay out of the conversation log.
+
 - A store assistant that answers from private store data: top-selling products by units or revenue, sales summaries, recent and unfulfilled orders, low stock, catalog search including drafts.
 - Setup page with a one-click link to turn the widget on, settings, and a log of shopper conversations.
 
@@ -52,7 +55,9 @@ App server  /proxy/chat
 | --- | --- |
 | `extensions/chat-widget/` | The storefront widget: Liquid embed block, JS, CSS |
 | `app/routes/proxy.chat.tsx` | Storefront chat endpoint (app proxy) |
-| `app/routes/app.*.tsx` | Admin pages: home/setup, store assistant, conversations, settings |
+| `app/routes/app.*.tsx` | Admin pages: home, setup tour, store assistant, conversations, settings |
+| `app/routes/app.preview.tsx` | "Try it as a shopper" chat for staff |
+| `app/components/AssistantFields.tsx` | The setup form fields, shared by the tour and Settings |
 | `app/routes/webhooks.*.tsx` | Uninstall, scope updates, mandatory privacy webhooks |
 | `app/assistant/engine.ts` | The tool-calling loop |
 | `app/assistant/tools/shopper.ts` | Tools available to storefront visitors |
@@ -97,7 +102,7 @@ If linking to a new app blanks the `scopes` line in `shopify.app.toml`, restore 
 ### Testing without a store
 
 ```bash
-npm test                    # 115 unit and integration tests
+npm test                    # 128 unit and integration tests
 npm run widget:preview      # the real widget on a fake storefront, canned replies → http://localhost:4010
 npm run build && npm run smoke   # real HTTP requests, signed like Shopify's proxy, against the built server
 npm run graphql-codegen     # validates every GraphQL query against Shopify's Admin and Storefront schemas
@@ -119,7 +124,12 @@ npm run graphql-codegen     # validates every GraphQL query against Shopify's Ad
 | `CHAT_LIMIT_MERCHANT_PER_MINUTE` | `30` | Admin assistant limit per shop |
 | `LLM_DAILY_TOKEN_BUDGET` | `2000000` | Token ceiling per UTC day across **all** shops. Chat stops when it is reached. Size it to your budget |
 
-Widget appearance (title, welcome message, accent color, position, suggested questions) is set by the merchant in the theme editor. Behaviour (pause chat, extra guidance for the assistant, order lookup, transcript retention) is set on the app's Settings page.
+What the merchant sets, and where:
+
+- **In the app (setup tour or Settings):** what the business is about, returns and shipping answers, common questions, the assistant's name, welcome message and tone, extra guidance, pause chat, order lookup, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
+- **In the theme editor:** accent color, position and suggested questions, plus a fallback title and welcome message used until the app's are filled in.
+
+What the merchant writes is added to the assistant's instructions as "notes from the store owner", below the fixed rules, which it cannot override. It should be treated as public: a determined shopper can get the assistant to repeat it.
 
 To use a different model provider, implement the `LlmProvider` interface in `app/assistant/llm/provider.ts` and select it in `app/assistant/llm/index.server.ts`.
 
@@ -139,7 +149,7 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 
 Verified locally:
 
-- 115 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
+- 128 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
 - All 15 GraphQL queries validate against Shopify's published 2026-10 Admin and Storefront schemas.
 - The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and stale ones (`npm run smoke`). Shopify's signature covers the query string and a timestamp with a 90-second window; it does not stop the same request being re-sent inside that window, which is one reason the limits above exist.
 - An independent security review of the code; its findings are fixed or listed below.
@@ -162,7 +172,7 @@ Not yet verified:
 - Real answers from GPT-4o, including how well it picks tools. Everything so far used the mock model.
 - The other shopper tools on a real store: search, product details, collections, policies, add to cart from chat, order status.
 - The merchant assistant on a real store, including ShopifyQL responses (row format and access).
-- The admin pages inside the real Shopify admin, including the widget-status check.
+- The admin pages inside the real Shopify admin: the setup tour, the shopper preview chat, Settings and the widget-status check. They type-check against Shopify's Polaris types and build, but have not been clicked through in a browser.
 - The widget on a published theme after `npm run deploy` (so far it has only been seen in the dev preview).
 - **Which visitor address Shopify's proxy reports.** The per-address limits use the first `X-Forwarded-For` value. Shopify's docs say the proxy sets it to the client address but not whether a value sent by the visitor is replaced. On the dev store, request the proxy URL with `curl -H "X-Forwarded-For: 1.2.3.4"` and check the app log. If the visitor's value survives, the per-address limits can be dodged and the address must be read from a different position. The per-email, per-shop and token limits do not depend on it.
 

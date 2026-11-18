@@ -13,6 +13,8 @@ export interface ConversationKey {
   shop: string;
   audience: Audience;
   visitorId: string;
+  /** Merchant's "try it as a shopper" chat. Set by the server only. */
+  isPreview?: boolean;
 }
 
 /**
@@ -31,6 +33,7 @@ export async function findConversation(
       shop: key.shop,
       audience: key.audience,
       visitorId: key.visitorId,
+      isPreview: key.isPreview ?? false,
     },
     select: { id: true },
   });
@@ -47,6 +50,7 @@ export async function createConversation(
       audience: key.audience,
       visitorId: key.visitorId,
       customerId: customerId || null,
+      isPreview: key.isPreview ?? false,
     },
     select: { id: true },
   });
@@ -121,7 +125,8 @@ export async function listConversations(
   options: { audience?: Audience; take?: number } = {},
 ) {
   const rows = await db.conversation.findMany({
-    where: { shop, audience: options.audience ?? "shopper" },
+    // The merchant's own test chats are not shopper conversations.
+    where: { shop, audience: options.audience ?? "shopper", isPreview: false },
     orderBy: { updatedAt: "desc" },
     take: options.take ?? 30,
     select: {
@@ -158,6 +163,7 @@ export async function getConversationTranscript(
     select: {
       id: true,
       audience: true,
+      isPreview: true,
       createdAt: true,
       updatedAt: true,
       messages: {
@@ -174,7 +180,7 @@ export async function countConversationsSince(
   since: Date,
 ): Promise<number> {
   return db.conversation.count({
-    where: { shop, audience: "shopper", updatedAt: { gte: since } },
+    where: { shop, audience: "shopper", isPreview: false, updatedAt: { gte: since } },
   });
 }
 

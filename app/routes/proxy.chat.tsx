@@ -53,7 +53,11 @@ async function readBodyCapped(request: Request, maxBytes: number): Promise<strin
   return new TextDecoder().decode(bytes);
 }
 
-/** GET: lets the widget (and you, while testing) check that the proxy is wired up. */
+/**
+ * GET: the widget's configuration. The name and welcome message set in the
+ * app override the theme editor's defaults when they are filled in, and a
+ * paused chat tells the widget to hide itself.
+ */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.public.appProxy(request);
   if (!session) {
@@ -61,7 +65,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
   const settings = await getSettings(session.shop);
   return Response.json(
-    { ok: true, enabled: settings.enabled, ready: getLlmStatus().ready },
+    {
+      ok: true,
+      enabled: settings.enabled,
+      ready: getLlmStatus().ready,
+      title: settings.assistantName,
+      greeting: settings.greeting,
+    },
     { headers: NO_STORE },
   );
 };

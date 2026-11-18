@@ -71,6 +71,13 @@ export interface ChatTurnInput {
   language?: unknown;
   admin?: GraphqlFn;
   storefront?: GraphqlFn;
+  /**
+   * True when store staff are trying the shopper assistant from the admin.
+   * The turn runs exactly as a shopper's would (same tools, same prompt) but
+   * uses the staff rate limit and is kept out of the conversation log.
+   * Only the authenticated admin route may set this.
+   */
+  preview?: boolean;
 }
 
 export interface ChatTurnResult {
@@ -156,7 +163,8 @@ export async function handleChatTurn(
 
   // 2. Shop-level switches.
   const settings = await getSettings(input.shop, deps.db);
-  if (input.audience === "shopper" && !settings.enabled) {
+  // Staff can still try the assistant in the admin while chat is paused.
+  if (input.audience === "shopper" && !settings.enabled && !input.preview) {
     throw new ChatError("disabled", 403, "Chat is currently turned off for this store.");
   }
   if (!deps.provider) {
@@ -173,7 +181,7 @@ export async function handleChatTurn(
   //    shop-wide budget that other shoppers depend on.
   const address = clientKey(input.ip);
   const limits =
-    input.audience === "shopper"
+    input.audience === "shopper" && !input.preview
       ? [
           {
             key: `chat:ip-minute:${input.shop}:${address}`,
@@ -229,7 +237,12 @@ export async function handleChatTurn(
 
   // 4. Find the caller's conversation, or start a new one. An unknown or
   //    foreign id silently starts a fresh conversation.
-  const key = { shop: input.shop, audience: input.audience, visitorId };
+  const key = {
+    shop: input.shop,
+    audience: input.audience,
+    visitorId,
+    isPreview: Boolean(input.preview),
+  };
   const existing = conversationId
     ? await findConversation(deps.db, key, conversationId)
     : null;
@@ -267,6 +280,14 @@ export async function handleChatTurn(
       systemPrompt: buildSystemPrompt({
         audience: input.audience,
         shopName,
+        assistantName: settings.assistantName,
+        tone: settings.tone,
+        knowledge: {
+          businessDescription: settings.businessDescription,
+          returnPolicy: settings.returnPolicy,
+          shippingInfo: settings.shippingInfo,
+          faq: settings.faq,
+        },
         merchantInstructions: settings.instructions,
         orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
         today: now,

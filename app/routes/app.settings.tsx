@@ -12,8 +12,29 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   getSettings,
   saveSettings,
-  type AssistantSettings,
+  settingsFromForm,
+  type SettingsErrors,
+  type SettingsField,
 } from "../assistant/settings.server";
+import {
+  BusinessFields,
+  FIELD_GROUPS,
+  PersonalityFields,
+  PolicyFields,
+  QuestionFields,
+} from "../components/AssistantFields";
+
+/** Every setting this page shows, and so every setting its form may change. */
+const SETTINGS_PAGE_FIELDS: readonly SettingsField[] = [
+  ...FIELD_GROUPS.business,
+  ...FIELD_GROUPS.policies,
+  ...FIELD_GROUPS.questions,
+  ...FIELD_GROUPS.personality,
+  "enabled",
+  "instructions",
+  "orderLookupEnabled",
+  "retentionDays",
+];
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -26,19 +47,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
 
-  const result = await saveSettings(session.shop, {
-    // Checkboxes are only present in the form data when ticked.
-    enabled: form.has("enabled"),
-    orderLookupEnabled: form.has("orderLookupEnabled"),
-    instructions: String(form.get("instructions") ?? ""),
-    retentionDays: Number(form.get("retentionDays")),
-  });
+  const result = await saveSettings(
+    session.shop,
+    settingsFromForm(form, SETTINGS_PAGE_FIELDS),
+  );
 
   const errors: SettingsErrors = result.ok ? {} : result.errors;
   return { ok: result.ok, errors };
 };
 
-type SettingsErrors = Partial<Record<keyof AssistantSettings, string>>;
 
 type FormSubmitEvent =
   | FormEvent<HTMLFormElement>
@@ -79,6 +96,22 @@ export default function Settings() {
             </s-banner>
           )}
 
+          <s-section heading="About your business">
+            <BusinessFields settings={settings} errors={errors} />
+          </s-section>
+
+          <s-section heading="Returns and shipping">
+            <PolicyFields settings={settings} errors={errors} />
+          </s-section>
+
+          <s-section heading="Common questions">
+            <QuestionFields settings={settings} errors={errors} />
+          </s-section>
+
+          <s-section heading="Name and tone">
+            <PersonalityFields settings={settings} errors={errors} />
+          </s-section>
+
           <s-section heading="Storefront chat">
             <s-stack direction="block" gap="base">
               <s-checkbox
@@ -89,7 +122,7 @@ export default function Settings() {
               />
               <s-text-area
                 name="instructions"
-                label="Guidance for the assistant"
+                label="Anything else the assistant should know or do"
                 details="Optional. Tone of voice and store-specific facts, for example: 'Friendly and brief. Orders placed before 2pm ship the same day.' Treat this as public: a determined shopper can get the assistant to repeat it, so don't include anything confidential."
                 rows={5}
                 maxLength={2000}

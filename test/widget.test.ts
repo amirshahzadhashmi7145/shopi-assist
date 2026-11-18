@@ -14,7 +14,8 @@ const WIDGET_SOURCE = readFileSync(
   "utf8",
 );
 
-type FetchMock = ReturnType<typeof vi.fn>;
+type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
+type FetchMock = ReturnType<typeof vi.fn<FetchHandler>>;
 
 const jsonResponse = (body: unknown, status = 200) =>
   Promise.resolve(
@@ -94,13 +95,23 @@ const lastBody = (fetchMock: FetchMock, index = -1) => {
   return JSON.parse((call[1] as RequestInit).body as string);
 };
 
+/** POST requests: chat messages and cart adds. */
 let fetchMock: FetchMock;
+/** GET requests: the widget asking the app for its settings. */
+let configMock: FetchMock;
+
+const appConfig = (overrides: Record<string, unknown> = {}) =>
+  jsonResponse({ ok: true, enabled: true, ready: true, title: "", greeting: "", ...overrides });
 
 beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
-  fetchMock = vi.fn(() => reply("Hello!"));
-  window.fetch = fetchMock as unknown as typeof window.fetch;
+  fetchMock = vi.fn<FetchHandler>(() => reply("Hello!"));
+  configMock = vi.fn<FetchHandler>(() => appConfig());
+  window.fetch = ((url: string, init?: RequestInit) =>
+    (init?.method ?? "GET") === "GET"
+      ? configMock(url, init)
+      : fetchMock(url, init)) as unknown as typeof window.fetch;
 });
 
 describe("chat widget", () => {
@@ -413,6 +424,50 @@ describe("chat widget", () => {
     expect(widget.panel.hidden).toBe(true);
     expect(widget.launcher.getAttribute("aria-expanded")).toBe("false");
     expect(widget.root.activeElement).toBe(widget.launcher);
+  });
+
+  it("uses the name and welcome message set in the app", async () => {
+    configMock.mockImplementation(() =>
+      appConfig({ title: "Ava", greeting: "Hi, I'm Ava! <b>Ask</b> me anything." }),
+    );
+    const widget = mountWidget();
+
+    // Theme editor values show first, so nothing waits on the network.
+    expect(widget.$(".sa-title").textContent).toBe("Shop helper");
+    await flush();
+
+    expect(configMock.mock.calls[0][0]).toBe("/apps/shopi-assist/chat");
+    expect(widget.$(".sa-title").textContent).toBe("Ava");
+    expect(widget.panel.getAttribute("aria-label")).toBe("Ava");
+    expect(widget.launcher.getAttribute("aria-label")).toBe("Open chat: Ava");
+    // Rendered as text, never as markup.
+    expect(widget.bubbles()).toEqual(["Hi, I'm Ava! <b>Ask</b> me anything."]);
+    expect(widget.root.querySelector(".sa-bubble b")).toBeNull();
+
+    // The next page applies the cached values immediately.
+    configMock.mockImplementation(() => new Promise(() => {}));
+    const nextPage = mountWidget();
+    expect(nextPage.$(".sa-title").textContent).toBe("Ava");
+  });
+
+  it("keeps the theme editor's values when the app has none or cannot be reached", async () => {
+    configMock.mockImplementation(() => Promise.reject(new TypeError("offline")));
+    const widget = mountWidget();
+    await flush();
+
+    expect(widget.$(".sa-title").textContent).toBe("Shop helper");
+    expect(widget.bubbles()).toEqual(["Welcome! Ask me anything."]);
+    expect(widget.$(".sa").hidden).toBe(false);
+  });
+
+  it("hides itself when the merchant has paused chat", async () => {
+    configMock.mockImplementation(() => appConfig({ enabled: false }));
+    const widget = mountWidget({ stylesheet: "https://cdn.example/shopi-assist.css" });
+    await flush();
+
+    // Still hidden once the stylesheet arrives.
+    widget.root.querySelector("link")!.dispatchEvent(new Event("load"));
+    expect(widget.$(".sa").hidden).toBe(true);
   });
 
   it("stays visible in themes that hide empty divs (Dawn's div:empty rule)", () => {

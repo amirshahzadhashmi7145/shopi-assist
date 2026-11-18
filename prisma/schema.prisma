@@ -44,6 +44,24 @@ model ShopSettings {
   orderLookupEnabled Boolean  @default(false)
   // Conversations older than this are deleted.
   retentionDays      Int      @default(30)
+
+  // What the merchant tells the assistant during setup. All optional: the
+  // assistant already reads the catalog and published policies on its own.
+  businessDescription String  @default("")
+  returnPolicy        String  @default("")
+  shippingInfo        String  @default("")
+  faq                 String  @default("")
+  // Shown in the widget header and used by the assistant to refer to itself.
+  // Empty means "use the title set in the theme editor".
+  assistantName       String  @default("")
+  // First message in the widget. Empty means "use the theme editor's".
+  greeting            String  @default("")
+  // "friendly" | "professional" | "playful"
+  tone                String  @default("friendly")
+
+  // Setup tour: opened automatically until it has been seen once.
+  setupStartedAt      DateTime?
+  setupCompletedAt    DateTime?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 }
@@ -58,6 +76,9 @@ model Conversation {
   visitorId  String
   // Shopify customer id when the shopper was logged in. Used for privacy redaction.
   customerId String?
+  // True for the merchant's "try it as a shopper" chats in the admin. Set by
+  // the server only; these are kept out of the shopper conversation log.
+  isPreview  Boolean   @default(false)
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   messages   Message[]

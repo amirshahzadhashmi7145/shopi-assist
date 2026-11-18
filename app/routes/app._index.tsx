@@ -1,21 +1,21 @@
-import { useEffect, useState } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
-import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { getLlmStatus } from "../assistant/llm/index.server";
-import { getSettings } from "../assistant/settings.server";
+import { getSettings, getSetupState, setupProgress } from "../assistant/settings.server";
 import { countConversationsSince } from "../assistant/store.server";
+import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
 
-/** Must match the Liquid file name in extensions/chat-widget/blocks. */
-const EMBED_HANDLE = "shopi-assist-chat";
-
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const shop = session.shop;
+
+  // First open after install: start with the setup tour.
+  const setup = await getSetupState(shop);
+  if (!setup.started) throw redirect("/app/setup");
 
   const [settings, conversationsThisWeek] = await Promise.all([
     getSettings(shop),
@@ -29,74 +29,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // eslint-disable-next-line no-undef
     apiKey: process.env.SHOPIFY_API_KEY || "",
     chatEnabled: settings.enabled,
+    setupCompleted: setup.completed,
+    progress: setupProgress(settings),
     conversationsThisWeek,
     llm: { ready: llm.ready, model: llm.model, provider: llm.provider, problem: llm.problem },
   };
 };
 
-type EmbedStatus = "checking" | "active" | "inactive" | "unknown";
-
-interface ExtensionInfo {
-  type?: string;
-  activations?: Array<{ handle?: string; status?: string }>;
-}
-
-/**
- * Asks Shopify whether the chat widget is switched on in the published theme.
- * Needs no extra access scope. Falls back to "unknown" when the check is not
- * available, in which case the page still shows how to turn the widget on.
- */
-function useEmbedStatus(): EmbedStatus {
-  const shopify = useAppBridge();
-  const [status, setStatus] = useState<EmbedStatus>("checking");
-
-  useEffect(() => {
-    let cancelled = false;
-    const appApi = (
-      shopify as unknown as {
-        app?: { extensions?: () => Promise<ExtensionInfo[]> };
-      }
-    ).app;
-
-    // Going through a promise gives "API missing" and "call failed" one path,
-    // and keeps every state update inside a callback.
-    Promise.resolve()
-      .then(() => (appApi?.extensions ? appApi.extensions() : null))
-      .then((extensions) => {
-        if (cancelled) return;
-        if (!extensions) {
-          setStatus("unknown");
-          return;
-        }
-        const active = extensions
-          .filter((extension) => extension.type === "theme_app_extension")
-          .some((extension) =>
-            (extension.activations ?? []).some(
-              (block) => block.handle === EMBED_HANDLE && block.status === "active",
-            ),
-          );
-        setStatus(active ? "active" : "inactive");
-      })
-      .catch(() => {
-        if (!cancelled) setStatus("unknown");
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [shopify]);
-
-  return status;
-}
+const SETUP_ITEMS = [
+  { key: "business", label: "Describe your business" },
+  { key: "policies", label: "Returns and shipping" },
+  { key: "questions", label: "Common questions" },
+  { key: "personality", label: "Name and tone" },
+  { key: "live", label: "Turn on the chat widget" },
+] as const;
 
 export default function Home() {
-  const { shop, apiKey, chatEnabled, conversationsThisWeek, llm } =
+  const { shop, apiKey, chatEnabled, conversationsThisWeek, llm, setupCompleted, progress } =
     useLoaderData<typeof loader>();
   const embedStatus = useEmbedStatus();
 
   // Opens the theme editor with the widget already toggled on; the merchant
   // only has to press Save. Shopify does not let apps do this step for them.
-  const activateUrl = `https://${shop}/admin/themes/current/editor?context=apps&activateAppId=${encodeURIComponent(apiKey)}/${EMBED_HANDLE}`;
+  const activateUrl = activateWidgetUrl(shop, apiKey);
   const storefrontUrl = `https://${shop}`;
 
   const widgetLive = embedStatus === "active";
@@ -108,6 +63,34 @@ export default function Home() {
         <s-button slot="primary-action" variant="primary" href={activateUrl} target="_top">
           Turn on chat widget
         </s-button>
+      )}
+
+      {!setupCompleted && (
+        <s-section heading="Finish setting up your assistant">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              A few short steps teach the assistant about your store. Skip any you like; it
+              already knows your products and published policies.
+            </s-paragraph>
+            <s-unordered-list>
+              {SETUP_ITEMS.map((item) => (
+                <s-list-item key={item.key}>
+                  {item.label}{" "}
+                  {(item.key === "live" ? widgetLive : progress[item.key]) ? (
+                    <s-badge tone="success">Done</s-badge>
+                  ) : (
+                    <s-badge tone="neutral">Not yet</s-badge>
+                  )}
+                </s-list-item>
+              ))}
+            </s-unordered-list>
+            <s-stack direction="inline" gap="small">
+              <s-button href="/app/setup" variant="primary">
+                Continue setup
+              </s-button>
+            </s-stack>
+          </s-stack>
+        </s-section>
       )}
 
       {allSet && (
@@ -189,11 +172,15 @@ export default function Home() {
               )}
             </s-stack>
             <s-paragraph>
-              Add store-specific guidance (tone, shipping cut-offs, what to recommend), choose
-              whether shoppers can check order status, and set how long transcripts are kept.
+              Tell the assistant about your business, returns and shipping, give it a name,
+              choose whether shoppers can check order status, and set how long transcripts are
+              kept.
             </s-paragraph>
             <s-stack direction="inline" gap="small">
               <s-button href="/app/settings">Open settings</s-button>
+              <s-button href="/app/setup" variant="tertiary">
+                Run the setup tour again
+              </s-button>
             </s-stack>
           </s-stack>
         </s-stack>
