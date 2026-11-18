@@ -150,7 +150,14 @@ try {
     signedQuery(proxyParams(SHOP, { timestamp: String(Math.floor(Date.now() / 1000) - 3600) })),
     message,
   );
-  check("hour-old signed request (replay) -> 400", stale.status === 400, `(got ${stale.status})`);
+  check("signed request with an hour-old timestamp -> 400", stale.status === 400, `(got ${stale.status})`);
+
+  const crossSite = await fetch(`${BASE}/proxy/chat?${signedQuery(proxyParams(SHOP))}`, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=UTF-8" },
+    body: JSON.stringify(message),
+  });
+  check("signed but sent as text/plain (cross-site form of the request) -> 415", crossSite.status === 415, `(got ${crossSite.status})`);
 
   const notInstalled = await post(signedQuery(proxyParams(OTHER_SHOP)), message);
   check(
@@ -181,6 +188,22 @@ try {
   });
   check("both exchanges were stored for the right shop", stored?.messages.length === 4, `(got ${stored?.messages.length})`);
   check("signed customer id was recorded", stored?.customerId === "4242", `(got ${stored?.customerId})`);
+
+  const withEmail = await post(signedQuery(proxyParams(SHOP)), {
+    ...message,
+    message: "my email is smoke.tester@example.com",
+    conversationId: first.json?.conversationId,
+  });
+  const masked = await db.message.findMany({
+    where: { conversationId: withEmail.json?.conversationId ?? "", role: "user" },
+    orderBy: { createdAt: "desc" },
+    take: 1,
+  });
+  check(
+    "email address is masked in the stored transcript",
+    masked[0]?.content === "my email is [email removed]",
+    `(got ${JSON.stringify(masked[0]?.content)})`,
+  );
 
   const bad = await post(signedQuery(proxyParams(SHOP)), { message: "", visitorId: "smoke-visitor-0001" });
   check("empty message -> 400 invalid_request", bad.status === 400 && bad.json?.error?.code === "invalid_request");

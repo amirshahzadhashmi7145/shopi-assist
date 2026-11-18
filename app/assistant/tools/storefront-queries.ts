@@ -145,7 +145,7 @@ export const VARIANT_FOR_CART_QUERY = `#graphql
         id
         title
         availableForSale
-        product { title }
+        product { title onlineStoreUrl }
       }
     }
   }

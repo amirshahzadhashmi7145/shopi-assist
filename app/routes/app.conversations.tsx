@@ -93,7 +93,7 @@ export default function Conversations() {
                   {message.role === "user" ? (
                     <s-paragraph>{message.content}</s-paragraph>
                   ) : (
-                    <RichText text={message.content} />
+                    <RichText text={message.content} links="plain" />
                   )}
                 </s-stack>
               </s-box>

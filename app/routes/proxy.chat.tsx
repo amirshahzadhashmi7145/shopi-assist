@@ -22,6 +22,37 @@ function errorJson(code: string, message: string, status: number): Response {
   return Response.json({ error: { code, message } }, { status, headers: NO_STORE });
 }
 
+/**
+ * Reads the request body but stops as soon as it exceeds `maxBytes`, so a
+ * request that lies about (or omits) Content-Length cannot make the server
+ * buffer an arbitrarily large body. Returns null when the limit is exceeded.
+ */
+async function readBodyCapped(request: Request, maxBytes: number): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 /** GET: lets the widget (and you, while testing) check that the proxy is wired up. */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.public.appProxy(request);
@@ -45,17 +76,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return errorJson("not_installed", "Chat is not available for this store.", 404);
   }
 
-  const declaredLength = Number(request.headers.get("content-length") ?? 0);
-  if (declaredLength > MAX_BODY_BYTES) {
+  // Only the widget should be posting here. Another website can make a
+  // visitor's browser send a "simple" cross-site POST without asking, but it
+  // cannot set a JSON content type without a CORS preflight, which this
+  // endpoint never approves. Browsers also label cross-site requests.
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().startsWith("application/json")) {
+    return errorJson("invalid_request", "Unsupported content type.", 415);
+  }
+  // The content-type rule above is the real barrier. This second check only
+  // refuses what the browser itself labels as coming from another site.
+  if (request.headers.get("sec-fetch-site") === "cross-site") {
+    return errorJson("invalid_request", "Cross-site requests are not allowed.", 403);
+  }
+
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
+    return errorJson("invalid_request", "That message is too long.", 413);
+  }
+  const text = await readBodyCapped(request, MAX_BODY_BYTES);
+  if (text === null) {
     return errorJson("invalid_request", "That message is too long.", 413);
   }
 
   let body: Record<string, unknown>;
   try {
-    const text = await request.text();
-    if (text.length > MAX_BODY_BYTES) {
-      return errorJson("invalid_request", "That message is too long.", 413);
-    }
     const parsed: unknown = JSON.parse(text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("not an object");
@@ -66,9 +110,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const url = new URL(request.url);
-  // Signed by Shopify, so it can be trusted. Empty for guests.
-  const customerId = url.searchParams.get("logged_in_customer_id") || null;
-  // Shopify's proxy puts the visitor's address first.
+  // Shopify adds exactly one logged_in_customer_id (empty for guests) and
+  // signs it. Anything else, such as a duplicate or a non-numeric value, is
+  // treated as "not logged in" rather than trusted.
+  const customerIds = url.searchParams.getAll("logged_in_customer_id");
+  const customerId =
+    customerIds.length === 1 && /^\d{1,20}$/.test(customerIds[0]) ? customerIds[0] : null;
+  // Shopify's proxy reports the visitor's address here. It is used only as
+  // one of several rate-limit keys, never for access decisions.
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || undefined;
 
   try {

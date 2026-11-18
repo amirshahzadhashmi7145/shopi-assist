@@ -62,6 +62,7 @@ export function toolContext(overrides: Partial<ToolContext> = {}): ToolContext {
     settings: { orderLookupEnabled: false },
     buyer: {},
     rateLimiter: new RateLimiter(),
+    turn: { orderLookups: 0 },
     now: () => new Date("2026-11-18T12:00:00Z"),
     ...overrides,
   };

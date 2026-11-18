@@ -2,7 +2,9 @@ import { Fragment } from "react";
 
 import { parseRichText, type Inline } from "../assistant/rich-text";
 
-function InlineParts({ parts }: { parts: Inline[] }) {
+type LinkMode = "active" | "plain";
+
+function InlineParts({ parts, links }: { parts: Inline[]; links: LinkMode }) {
   return (
     <>
       {parts.map((part, index) => {
@@ -11,6 +13,14 @@ function InlineParts({ parts }: { parts: Inline[] }) {
             <s-text key={index} type="strong">
               {part.text}
             </s-text>
+          );
+        }
+        if (part.type === "link" && links === "plain") {
+          // Show where the link points instead of making it clickable.
+          return (
+            <Fragment key={index}>
+              {part.text === part.href ? part.href : `${part.text} (${part.href})`}
+            </Fragment>
           );
         }
         if (part.type === "link") {
@@ -26,8 +36,14 @@ function InlineParts({ parts }: { parts: Inline[] }) {
   );
 }
 
-/** Renders assistant output (a small, safe Markdown subset) with Polaris elements. */
-export function RichText({ text }: { text: string }) {
+/**
+ * Renders assistant output (a small, safe Markdown subset) with Polaris elements.
+ *
+ * Use `links="plain"` for text an anonymous visitor could have steered, such
+ * as stored shopper transcripts: a link label can hide its destination, so
+ * there the destination is printed and nothing is clickable.
+ */
+export function RichText({ text, links = "active" }: { text: string; links?: LinkMode }) {
   const blocks = parseRichText(text);
 
   return (
@@ -36,7 +52,7 @@ export function RichText({ text }: { text: string }) {
         if (block.type === "list") {
           const items = block.items.map((item, itemIndex) => (
             <s-list-item key={itemIndex}>
-              <InlineParts parts={item} />
+              <InlineParts parts={item} links={links} />
             </s-list-item>
           ));
           return block.ordered ? (
@@ -50,7 +66,7 @@ export function RichText({ text }: { text: string }) {
             {block.lines.map((line, lineIndex) => (
               <Fragment key={lineIndex}>
                 {lineIndex > 0 && <br />}
-                <InlineParts parts={line} />
+                <InlineParts parts={line} links={links} />
               </Fragment>
             ))}
           </s-paragraph>

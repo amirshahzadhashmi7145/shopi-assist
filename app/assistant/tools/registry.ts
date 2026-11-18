@@ -16,7 +16,11 @@ export interface ToolContext {
   audience: Audience;
   /** Storefront API (public catalog data). Present for shoppers. */
   storefront?: GraphqlFn;
-  /** Admin API (private store data). Tools for shoppers must use it sparingly. */
+  /**
+   * Admin API (private store data). Always present for merchants. For
+   * shoppers it is only provided when a merchant setting needs it (order
+   * lookup), so a mistakenly tagged tool still has nothing to call.
+   */
   admin?: GraphqlFn;
   settings: {
     orderLookupEnabled: boolean;
@@ -30,6 +34,10 @@ export interface ToolContext {
     ip?: string;
   };
   rateLimiter: RateLimiter;
+  /** Counters that live for one chat turn, shared by every tool call in it. */
+  turn: {
+    orderLookups: number;
+  };
   /** Injected clock for tests. */
   now: () => Date;
 }

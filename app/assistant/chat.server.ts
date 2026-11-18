@@ -10,14 +10,20 @@ import { runAssistantTurn } from "./engine";
 import { getLlmProvider } from "./llm/index.server";
 import type { LlmProvider } from "./llm/provider";
 import { buildSystemPrompt } from "./prompts";
-import { rateLimiter as defaultRateLimiter, type RateLimiter } from "./rate-limit";
-import { getSettings } from "./settings.server";
+import {
+  clientKey,
+  rateLimiter as defaultRateLimiter,
+  tokenBudget as defaultTokenBudget,
+  type DailyBudget,
+  type RateLimiter,
+} from "./rate-limit";
+import { DEFAULT_SETTINGS, getSettings } from "./settings.server";
 import { getShopName } from "./shopify-clients.server";
 import {
   appendExchange,
   createConversation,
   findConversation,
-  purgeExpiredConversations,
+  purgeAllExpiredConversations,
   recentMessages,
 } from "./store.server";
 import { allTools } from "./tools";
@@ -26,11 +32,14 @@ import type { Audience, ClientAction, GraphqlFn, ProductCard } from "./types";
 
 export const MAX_MESSAGE_LENGTH = 2000;
 const HISTORY_MESSAGES = 20;
+/** A turn that has not finished by now is abandoned; the widget gives up at 60s. */
+const TURN_DEADLINE_MS = 50_000;
 
 export type ChatErrorCode =
   | "invalid_request"
   | "disabled"
   | "rate_limited"
+  | "over_capacity"
   | "not_configured"
   | "assistant_failed";
 
@@ -76,6 +85,7 @@ export interface ChatDeps {
   /** null means "not configured". */
   provider: LlmProvider | null;
   rateLimiter: RateLimiter;
+  tokenBudget: DailyBudget;
   tools: ToolDefinition[];
   now: () => Date;
 }
@@ -85,8 +95,20 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-const lastPurge = new Map<string, number>();
-const PURGE_INTERVAL_MS = 60 * 60 * 1000;
+const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+
+/**
+ * Transcripts are kept for the merchant to read, not as a customer record, so
+ * email addresses are masked before anything is written to the database. The
+ * model still sees the original text for the turn in which it was typed.
+ */
+export function maskForStorage(text: string): string {
+  return text.replace(EMAIL_PATTERN, "[email removed]");
+}
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
 
 export async function handleChatTurn(
   input: ChatTurnInput,
@@ -96,6 +118,7 @@ export async function handleChatTurn(
     db: overrides.db ?? prisma,
     provider: "provider" in overrides ? overrides.provider! : getLlmProvider(),
     rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
+    tokenBudget: overrides.tokenBudget ?? defaultTokenBudget,
     tools: overrides.tools ?? allTools,
     now: overrides.now ?? (() => new Date()),
   };
@@ -144,27 +167,40 @@ export async function handleChatTurn(
     );
   }
 
-  // 3. Rate limits. The storefront endpoint is public, so it gets a per-IP
-  //    limit plus a per-shop ceiling that bounds LLM spend.
+  // 3. Limits. The storefront endpoint is public and every turn costs LLM
+  //    tokens, so there are several independent ceilings. Per-address limits
+  //    come first: a blocked address stops here and never eats into the
+  //    shop-wide budget that other shoppers depend on.
+  const address = clientKey(input.ip);
   const limits =
     input.audience === "shopper"
       ? [
           {
-            key: `chat:ip:${input.shop}:${input.ip ?? "unknown"}`,
+            key: `chat:ip-minute:${input.shop}:${address}`,
             max: envNumber("CHAT_LIMIT_PER_IP_PER_MINUTE", 12),
-            windowMs: 60_000,
+            windowMs: MINUTE_MS,
           },
           {
-            key: `chat:shop:${input.shop}`,
+            key: `chat:ip-hour:${input.shop}:${address}`,
+            max: envNumber("CHAT_LIMIT_PER_IP_PER_HOUR", 60),
+            windowMs: HOUR_MS,
+          },
+          {
+            key: `chat:shop-hour:${input.shop}`,
             max: envNumber("CHAT_LIMIT_PER_SHOP_PER_HOUR", 600),
-            windowMs: 3_600_000,
+            windowMs: HOUR_MS,
+          },
+          {
+            key: `chat:shop-day:${input.shop}`,
+            max: envNumber("CHAT_LIMIT_PER_SHOP_PER_DAY", 3000),
+            windowMs: DAY_MS,
           },
         ]
       : [
           {
             key: `chat:merchant:${input.shop}`,
             max: envNumber("CHAT_LIMIT_MERCHANT_PER_MINUTE", 30),
-            windowMs: 60_000,
+            windowMs: MINUTE_MS,
           },
         ];
   for (const limit of limits) {
@@ -179,6 +215,18 @@ export async function handleChatTurn(
     }
   }
 
+  // The last line of defence on spend: a daily token ceiling for the whole
+  // process, across every shop.
+  const dailyTokenBudget = envNumber("LLM_DAILY_TOKEN_BUDGET", 2_000_000);
+  if (deps.tokenBudget.spent(now) >= dailyTokenBudget) {
+    console.warn("[shopi-assist] daily LLM token budget reached; refusing chat turns");
+    throw new ChatError(
+      "over_capacity",
+      503,
+      "The assistant has reached its limit for today. Please try again tomorrow.",
+    );
+  }
+
   // 4. Find the caller's conversation, or start a new one. An unknown or
   //    foreign id silently starts a fresh conversation.
   const key = { shop: input.shop, audience: input.audience, visitorId };
@@ -188,7 +236,7 @@ export async function handleChatTurn(
   const conversation =
     existing ?? (await createConversation(deps.db, key, input.customerId));
   const history = existing
-    ? await recentMessages(deps.db, conversation.id, HISTORY_MESSAGES)
+    ? await recentMessages(deps.db, input.shop, conversation.id, HISTORY_MESSAGES)
     : [];
 
   // 5. Run the model with the tools this audience is allowed to use.
@@ -196,10 +244,15 @@ export async function handleChatTurn(
     shop: input.shop,
     audience: input.audience,
     storefront: input.storefront,
-    admin: input.admin,
+    // Shoppers get no Admin API access at all unless order lookup is on.
+    admin:
+      input.audience === "merchant" || settings.orderLookupEnabled
+        ? input.admin
+        : undefined,
     settings: { orderLookupEnabled: settings.orderLookupEnabled },
     buyer: { country, language, ip: input.ip },
     rateLimiter: deps.rateLimiter,
+    turn: { orderLookups: 0 },
     now: deps.now,
   };
   const tools = toolsFor(deps.tools, context);
@@ -219,12 +272,15 @@ export async function handleChatTurn(
         today: now,
       }),
       history: [...history, { role: "user", content: message }],
+      signal: AbortSignal.timeout(TURN_DEADLINE_MS),
     });
   } catch (error) {
-    // Log the cause for the developer. Never log message text.
+    // Log the kind of failure only. Provider error messages can echo request
+    // content or configuration, so the message itself is not logged.
+    const name = error instanceof Error ? error.name : "unknown";
+    const status = (error as { status?: unknown } | null)?.status;
     console.error(
-      `[shopi-assist] chat turn failed shop=${input.shop} audience=${input.audience}:`,
-      error instanceof Error ? error.message : "unknown error",
+      `[shopi-assist] chat turn failed shop=${input.shop} audience=${input.audience} error=${name}${typeof status === "number" ? ` status=${status}` : ""}`,
     );
     throw new ChatError(
       "assistant_failed",
@@ -233,29 +289,23 @@ export async function handleChatTurn(
     );
   }
 
+  deps.tokenBudget.add(turn.usage.inputTokens + turn.usage.outputTokens, now);
+
   // 6. Persist the exchange only once it has succeeded.
-  await appendExchange(deps.db, conversation.id, message, turn.reply, {
-    customerId: input.customerId,
-    now,
-  });
+  await appendExchange(
+    deps.db,
+    input.shop,
+    conversation.id,
+    maskForStorage(message),
+    maskForStorage(turn.reply),
+    { customerId: input.customerId, now },
+  );
 
   console.info(
     `[shopi-assist] chat turn shop=${input.shop} audience=${input.audience} steps=${turn.steps} tools=${turn.toolsUsed.join(",") || "-"} tokens=${turn.usage.inputTokens}+${turn.usage.outputTokens} ms=${Date.now() - startedAt}`,
   );
 
-  // 7. Housekeeping: enforce the retention period, at most hourly per shop.
-  const purgedAt = lastPurge.get(input.shop) ?? 0;
-  if (now.getTime() - purgedAt > PURGE_INTERVAL_MS) {
-    lastPurge.set(input.shop, now.getTime());
-    purgeExpiredConversations(deps.db, input.shop, settings.retentionDays, now).catch(
-      (error) => {
-        console.error(
-          `[shopi-assist] retention purge failed shop=${input.shop}:`,
-          error instanceof Error ? error.message : "unknown error",
-        );
-      },
-    );
-  }
+  startRetentionSweeper(deps.db);
 
   return {
     conversationId: conversation.id,
@@ -263,6 +313,33 @@ export async function handleChatTurn(
     cards: turn.cards,
     actions: turn.actions,
   };
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var shopiAssistRetentionSweeper: ReturnType<typeof setInterval> | undefined;
+}
+
+/**
+ * Starts the hourly job that deletes transcripts past each shop's retention
+ * period. It runs on a timer, not only when someone chats, so a quiet shop
+ * still has old transcripts removed on schedule. Safe to call repeatedly.
+ */
+export function startRetentionSweeper(db: PrismaClient = prisma): void {
+  if (globalThis.shopiAssistRetentionSweeper) return;
+
+  const sweep = () => {
+    purgeAllExpiredConversations(db, DEFAULT_SETTINGS.retentionDays).catch((error) => {
+      console.error(
+        "[shopi-assist] retention sweep failed:",
+        error instanceof Error ? error.name : "unknown error",
+      );
+    });
+  };
+  globalThis.shopiAssistRetentionSweeper = setInterval(sweep, HOUR_MS);
+  // Do not keep the process alive just for housekeeping.
+  globalThis.shopiAssistRetentionSweeper.unref?.();
+  sweep();
 }
 
 /** Turns any thrown value into a JSON error response for the chat clients. */
@@ -283,7 +360,7 @@ export function chatErrorResponse(error: unknown): Response {
   }
   console.error(
     "[shopi-assist] unexpected chat error:",
-    error instanceof Error ? error.message : "unknown error",
+    error instanceof Error ? error.name : "unknown error",
   );
   return Response.json(
     {

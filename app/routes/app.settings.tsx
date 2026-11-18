@@ -90,7 +90,7 @@ export default function Settings() {
               <s-text-area
                 name="instructions"
                 label="Guidance for the assistant"
-                details="Optional. Tone of voice and store-specific facts, for example: 'Friendly and brief. Orders placed before 2pm ship the same day. We don't ship outside the EU.'"
+                details="Optional. Tone of voice and store-specific facts, for example: 'Friendly and brief. Orders placed before 2pm ship the same day.' Treat this as public: a determined shopper can get the assistant to repeat it, so don't include anything confidential."
                 rows={5}
                 maxLength={2000}
                 defaultValue={settings.instructions}

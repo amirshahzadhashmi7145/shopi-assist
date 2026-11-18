@@ -8,6 +8,7 @@
 import type { ActionFunctionArgs } from "react-router";
 
 import {
+  countCustomerConversations,
   deleteCustomerConversations,
   deleteShopData,
 } from "../assistant/store.server";
@@ -19,18 +20,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic, payload } = await authenticate.webhook(request);
   const customerId = (payload as { customer?: { id?: number | string } })?.customer?.id;
 
-  // Log the topic only. Payloads contain personal data and must not be logged.
+  // Payloads contain personal data and are never logged. The only identifier
+  // that appears in a log line is the numeric customer id on a data request.
   console.log(`Received ${topic} webhook for ${shop}`);
 
   switch (topic) {
-    case "CUSTOMERS_DATA_REQUEST":
-      // The merchant must be given the customer's data within 30 days. This
-      // app has no automated export yet: find the customer's transcripts on
-      // the Conversations page and pass them to the merchant.
+    case "CUSTOMERS_DATA_REQUEST": {
+      // The merchant must be given the customer's data within 30 days. There
+      // is no automated export yet, so this logs what is needed to do it by
+      // hand: the shop, the customer id and how many transcripts are linked.
+      // Transcripts never contain email addresses (they are masked on save)
+      // and guest conversations are not linked to any customer.
+      const linked =
+        customerId !== undefined && customerId !== null
+          ? await countCustomerConversations(db, shop, String(customerId))
+          : 0;
       console.log(
-        `[shopi-assist] ACTION NEEDED: data request for a customer of ${shop}. Export their conversations for the merchant.`,
+        `[shopi-assist] ACTION NEEDED: data request for customer ${customerId ?? "unknown"} of ${shop}: ${linked} linked conversation(s) to export for the merchant.`,
       );
       break;
+    }
 
     case "CUSTOMERS_REDACT":
       if (customerId !== undefined && customerId !== null) {

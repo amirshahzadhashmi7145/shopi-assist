@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 
+import { clientKey } from "../rate-limit";
 import type { Money, ProductCard } from "../types";
 import { defineTool, ToolError, type ToolDefinition } from "./registry";
 import {
@@ -406,12 +407,14 @@ const addToCart = defineTool({
         id?: string;
         title?: string;
         availableForSale?: boolean;
-        product?: { title: string };
+        product?: { title: string; onlineStoreUrl: string | null };
       } | null;
     }>(VARIANT_FOR_CART_QUERY, { id: `gid://shopify/ProductVariant/${variantId}` });
 
     const variant = data.node;
-    if (!variant?.id || !variant.product) {
+    // Same rule as the catalog tools: a product without a storefront page is
+    // treated as if it did not exist, so ids cannot be used to probe for it.
+    if (!variant?.id || !variant.product?.onlineStoreUrl) {
       throw new ToolError("That variant does not exist. Look it up with get_product_details first.");
     }
     if (!variant.availableForSale) {
@@ -435,8 +438,27 @@ const addToCart = defineTool({
   },
 });
 
-const ORDER_LOOKUP_MAX_ATTEMPTS = 5;
-const ORDER_LOOKUP_WINDOW_MS = 15 * 60 * 1000;
+// Order lookup limits. Guessing an order number for a known email must stay
+// impractical even for someone rotating addresses, so the address is only one
+// of four independent keys.
+const ORDER_LOOKUPS_PER_TURN = 2;
+const ORDER_LOOKUPS_PER_ADDRESS = 5; // per 15 minutes
+const ORDER_LOOKUPS_PER_EMAIL = 5; // per hour, whoever is asking
+const ORDER_LOOKUPS_PER_SHOP = 60; // per hour, all visitors together
+const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const ORDER_LOOKUP_THROTTLED =
+  "Too many order lookups. Ask the shopper to try again later or contact the store.";
+
+/** Short non-reversible key, so email addresses are not held in the limiter. */
+function fingerprint(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
+}
 const ORDER_NOT_FOUND =
   "No order matches that order number and email. Ask the shopper to double-check both, or to contact the store.";
 
@@ -458,20 +480,36 @@ const getOrderStatus = defineTool({
   isAvailable: (context) =>
     Boolean(context.admin) && context.settings.orderLookupEnabled,
   async run({ orderNumber, email }, context) {
+    const wantedEmail = email.trim().toLowerCase();
+
     // Slow down guessing of order number + email pairs.
-    const throttleKey = `order-lookup:${context.shop}:${context.buyer.ip ?? "unknown"}`;
-    const throttle = context.rateLimiter.hit(
-      throttleKey,
-      ORDER_LOOKUP_MAX_ATTEMPTS,
-      ORDER_LOOKUP_WINDOW_MS,
-      context.now().getTime(),
-    );
-    if (!throttle.allowed) {
-      throw new ToolError("Too many order lookups. Ask the shopper to try again later or contact the store.");
+    context.turn.orderLookups += 1;
+    if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
+      throw new ToolError(
+        "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
+      );
+    }
+    const nowMs = context.now().getTime();
+    const limits: Array<[key: string, max: number, windowMs: number]> = [
+      [
+        `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
+        ORDER_LOOKUPS_PER_ADDRESS,
+        FIFTEEN_MINUTES_MS,
+      ],
+      [
+        `order-lookup:email:${context.shop}:${fingerprint(wantedEmail)}`,
+        ORDER_LOOKUPS_PER_EMAIL,
+        ONE_HOUR_MS,
+      ],
+      [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
+    ];
+    for (const [key, max, windowMs] of limits) {
+      if (!context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) {
+        throw new ToolError(ORDER_LOOKUP_THROTTLED);
+      }
     }
 
     const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
-    const wantedEmail = email.trim().toLowerCase();
 
     const data = await context.admin!<{
       orders: {

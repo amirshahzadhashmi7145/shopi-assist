@@ -21,9 +21,10 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>Shopi Assist</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          An AI shopping assistant for your Shopify storefront. Shoppers ask in
+          plain language; answers come from your live catalog and policies.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -39,16 +40,18 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Storefront chat widget</strong>. Product search, best
+            sellers, policy answers and add to cart, inside a chat bubble that
+            matches your brand color.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Answers from real data</strong>. The assistant looks things
+            up in your store instead of guessing prices, stock or policies.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Store assistant for staff</strong>. Ask about top-selling
+            products, sales totals, recent orders and low stock from inside
+            Shopify admin.
           </li>
         </ul>
       </div>

@@ -1,15 +1,24 @@
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { ChatError, handleChatTurn, type ChatTurnInput } from "../app/assistant/chat.server";
-import { RateLimiter } from "../app/assistant/rate-limit";
+import {
+  ChatError,
+  handleChatTurn,
+  maskForStorage,
+  type ChatTurnInput,
+} from "../app/assistant/chat.server";
+import { DailyBudget, RateLimiter } from "../app/assistant/rate-limit";
+import { defineTool } from "../app/assistant/tools/registry";
+import { z } from "zod";
 import { getSettings, saveSettings } from "../app/assistant/settings.server";
 import {
   deleteCustomerConversations,
   deleteShopData,
   getConversationTranscript,
   listConversations,
+  purgeAllExpiredConversations,
   purgeExpiredConversations,
+  recentMessages,
 } from "../app/assistant/store.server";
 import { createTestDb } from "./helpers/db";
 import { fakeGraphql, scriptedProvider, text } from "./helpers/fakes";
@@ -49,6 +58,7 @@ const turn = (
       db,
       provider: scriptedProvider([text("Hi! How can I help?")]),
       rateLimiter: new RateLimiter(),
+      tokenBudget: new DailyBudget(),
       ...deps,
     },
   );
@@ -230,6 +240,153 @@ describe("handleChatTurn", () => {
     expect((await fromIp("198.51.100.4")).reply).toBeTruthy();
   });
 
+  it("stops one address long before it can use up the shop's hourly budget", async () => {
+    const rateLimiter = new RateLimiter();
+    let clock = Date.parse("2026-11-18T12:00:00Z");
+    const now = () => new Date(clock);
+    const abuser = () => turn({ ip: "203.0.113.7" }, { rateLimiter, now });
+
+    let accepted = 0;
+    // 12 a minute for an hour would be 720 turns without an hourly limit.
+    for (let minute = 0; minute < 59; minute += 1) {
+      for (let i = 0; i < 12; i += 1) {
+        await abuser().then(
+          () => (accepted += 1),
+          () => undefined,
+        );
+      }
+      clock += 60_000;
+    }
+
+    expect(accepted).toBe(60);
+    // Everyone else can still chat: the shop-wide bucket was barely touched.
+    for (let i = 0; i < 100; i += 1) {
+      const other = await turn({ ip: `198.51.100.${i}` }, { rateLimiter, now });
+      expect(other.reply).toBeTruthy();
+    }
+  });
+
+  it("groups IPv6 addresses in one /64 under a single limit", async () => {
+    const rateLimiter = new RateLimiter();
+    const now = () => new Date("2026-11-18T12:00:00Z");
+    for (let i = 0; i < 12; i += 1) {
+      await turn({ ip: `2001:db8:1:2::${i.toString(16)}` }, { rateLimiter, now });
+    }
+
+    await expectChatError(
+      turn({ ip: "2001:db8:1:2:ffff:ffff:ffff:ffff" }, { rateLimiter, now }),
+      "rate_limited",
+      429,
+    );
+    expect((await turn({ ip: "2001:db8:1:3::1" }, { rateLimiter, now })).reply).toBeTruthy();
+  });
+
+  it("enforces a daily cap per shop", async () => {
+    process.env.CHAT_LIMIT_PER_SHOP_PER_DAY = "3";
+    try {
+      const rateLimiter = new RateLimiter();
+      const now = () => new Date("2026-11-18T12:00:00Z");
+      for (let i = 0; i < 3; i += 1) await turn({ ip: `198.51.100.${i}` }, { rateLimiter, now });
+
+      await expectChatError(turn({ ip: "198.51.100.50" }, { rateLimiter, now }), "rate_limited", 429);
+      // Another shop has its own cap.
+      expect((await turn({ shop: SHOP_B, ip: "198.51.100.51" }, { rateLimiter, now })).reply).toBeTruthy();
+    } finally {
+      delete process.env.CHAT_LIMIT_PER_SHOP_PER_DAY;
+    }
+  });
+
+  it("stops all chat once the daily token budget is spent, and resumes the next day", async () => {
+    process.env.LLM_DAILY_TOKEN_BUDGET = "1000";
+    try {
+      const tokenBudget = new DailyBudget();
+      const costly = () =>
+        scriptedProvider([{ ...text("ok"), usage: { inputTokens: 700, outputTokens: 100 } }]);
+      const day1 = () => new Date("2026-11-18T12:00:00Z");
+
+      await turn({}, { tokenBudget, provider: costly(), now: day1 });
+      await turn({ shop: SHOP_B }, { tokenBudget, provider: costly(), now: day1 });
+
+      // 1,600 tokens used against a 1,000 budget: refused for every shop.
+      await expectChatError(turn({}, { tokenBudget, now: day1 }), "over_capacity", 503);
+      await expectChatError(turn({ shop: SHOP_B }, { tokenBudget, now: day1 }), "over_capacity", 503);
+
+      const day2 = () => new Date("2026-11-19T00:00:01Z");
+      expect((await turn({}, { tokenBudget, now: day2 })).reply).toBeTruthy();
+    } finally {
+      delete process.env.LLM_DAILY_TOKEN_BUDGET;
+    }
+  });
+
+  it("gives shopper tools no Admin API client unless order lookup is on", async () => {
+    const seen: Array<{ admin: boolean; storefront: boolean }> = [];
+    const probe = defineTool({
+      name: "probe",
+      description: "records which API clients a shopper tool can reach",
+      audiences: ["shopper", "merchant"],
+      schema: z.object({}),
+      async run(_args, context) {
+        seen.push({ admin: Boolean(context.admin), storefront: Boolean(context.storefront) });
+        return { output: {} };
+      },
+    });
+    const callProbe = () =>
+      scriptedProvider([
+        { content: null, toolCalls: [{ id: "c1", name: "probe", arguments: "{}" }] },
+        text("done"),
+      ]);
+    const admin = () => fakeGraphql({ shop: { name: "Shop A" } });
+
+    await turn({ admin: admin() }, { provider: callProbe(), tools: [probe] });
+    expect(seen.at(-1)).toEqual({ admin: false, storefront: true });
+
+    await saveSettings(
+      SHOP_A,
+      { enabled: true, instructions: "", orderLookupEnabled: true, retentionDays: 30 },
+      db,
+    );
+    await turn({ admin: admin() }, { provider: callProbe(), tools: [probe] });
+    expect(seen.at(-1)).toEqual({ admin: true, storefront: true });
+
+    await turn(
+      { audience: "merchant", admin: admin(), storefront: undefined },
+      { provider: callProbe(), tools: [probe] },
+    );
+    expect(seen.at(-1)).toEqual({ admin: true, storefront: false });
+  });
+
+  it("masks email addresses before a transcript is stored", async () => {
+    const provider = scriptedProvider([text("Thanks, I found the order for jane.doe@example.com.")]);
+    const result = await turn(
+      { message: "My order is #1001 and my email is Jane.Doe@Example.com" },
+      { provider },
+    );
+
+    // The model needs the address for this turn...
+    expect(JSON.stringify(provider.requests[0].messages)).toContain("Jane.Doe@Example.com");
+    // ...but it is never written to the database.
+    const stored = await db.message.findMany({ where: { conversationId: result.conversationId } });
+    expect(stored.map((m) => m.content)).toEqual([
+      "My order is #1001 and my email is [email removed]",
+      "Thanks, I found the order for [email removed].",
+    ]);
+    expect(maskForStorage("a@b.co, c.d+tag@sub.example.org!")).toBe(
+      "[email removed], [email removed]!",
+    );
+  });
+
+  it("abandons a turn whose deadline has passed", async () => {
+    const original = AbortSignal.timeout;
+    AbortSignal.timeout = () => AbortSignal.abort();
+    try {
+      const provider = scriptedProvider([text("too late")]);
+      await expectChatError(turn({}, { provider }), "assistant_failed", 502);
+      expect(provider.requests).toHaveLength(0);
+    } finally {
+      AbortSignal.timeout = original;
+    }
+  });
+
   it("stores nothing when the model call fails", async () => {
     const failing = {
       name: "failing",
@@ -278,6 +435,30 @@ describe("data lifecycle", () => {
     expect(await db.conversation.count({ where: { shop: SHOP_B } })).toBe(1);
     // Messages go with their conversation.
     expect(await db.message.count()).toBe(2);
+  });
+
+  it("the scheduled sweep applies each shop's own retention period", async () => {
+    const tenDaysAgo = new Date("2026-11-08T00:00:00Z");
+    const make = (shop: string) =>
+      db.conversation.create({
+        data: { shop, audience: "shopper", visitorId: VISITOR, updatedAt: tenDaysAgo },
+      });
+    await saveSettings(SHOP_A, { enabled: true, instructions: "", orderLookupEnabled: false, retentionDays: 7 }, db);
+    await make(SHOP_A); // 7-day retention: expired
+    await make(SHOP_B); // no settings, default 30 days: kept
+
+    const removed = await purgeAllExpiredConversations(db, 30, new Date("2026-11-18T00:00:00Z"));
+
+    expect(removed).toBe(1);
+    expect(await db.conversation.count({ where: { shop: SHOP_A } })).toBe(0);
+    expect(await db.conversation.count({ where: { shop: SHOP_B } })).toBe(1);
+  });
+
+  it("message history cannot be read with another shop's name", async () => {
+    const result = await turn({ message: "private" });
+
+    expect(await recentMessages(db, SHOP_A, result.conversationId, 20)).toHaveLength(2);
+    expect(await recentMessages(db, SHOP_B, result.conversationId, 20)).toEqual([]);
   });
 
   it("customers/redact removes only that customer's conversations in that shop", async () => {

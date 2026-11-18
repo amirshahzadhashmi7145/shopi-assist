@@ -88,6 +88,72 @@ describe("POST /proxy/chat", () => {
     expect(handleChatTurn.mock.calls[0][0].customerId).toBe("987");
   });
 
+  it("ignores a customer id that is duplicated or not numeric", async () => {
+    await run(
+      post(
+        { message: "hi", visitorId: "visitor-0001" },
+        "&logged_in_customer_id=111&logged_in_customer_id=987",
+      ),
+    );
+    expect(handleChatTurn.mock.calls[0][0].customerId).toBeNull();
+
+    await run(post({ message: "hi", visitorId: "visitor-0001" }, "&logged_in_customer_id=1%20OR%201"));
+    expect(handleChatTurn.mock.calls[1][0].customerId).toBeNull();
+
+    await run(post({ message: "hi", visitorId: "visitor-0001" }, "&logged_in_customer_id="));
+    expect(handleChatTurn.mock.calls[2][0].customerId).toBeNull();
+  });
+
+  it("refuses the 'simple' cross-site POST another website could trigger", async () => {
+    // What <form> or fetch(..., {mode: "no-cors"}) on a third-party page can send.
+    const textPlain = await run(
+      post(JSON.stringify({ message: "spam", visitorId: "visitor-0001" }), "", {
+        "Content-Type": "text/plain;charset=UTF-8",
+      }),
+    );
+    expect(textPlain.status).toBe(415);
+
+    const formPost = await run(
+      post("message=spam", "", { "Content-Type": "application/x-www-form-urlencoded" }),
+    );
+    expect(formPost.status).toBe(415);
+
+    expect(handleChatTurn).not.toHaveBeenCalled();
+  });
+
+  it("refuses requests the browser labels as cross-site", async () => {
+    const body = { message: "hi", visitorId: "visitor-0001" };
+
+    expect((await run(post(body, "", { "Sec-Fetch-Site": "cross-site" }))).status).toBe(403);
+    expect(handleChatTurn).not.toHaveBeenCalled();
+
+    // The widget's own requests, and clients that send no such header.
+    expect((await run(post(body, "", { "Sec-Fetch-Site": "same-origin" }))).status).toBe(200);
+    expect((await run(post(body))).status).toBe(200);
+  });
+
+  it("stops reading a body that is larger than it claims", async () => {
+    // A streamed body carries no Content-Length for the route to check up front.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const chunk = new TextEncoder().encode("x".repeat(8 * 1024));
+        for (let i = 0; i < 64; i += 1) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const request = new Request(`https://app.example/proxy/chat?shop=${SHOP}&signature=abc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+
+    const response = await run(request);
+
+    expect(response.status).toBe(413);
+    expect(handleChatTurn).not.toHaveBeenCalled();
+  });
+
   it("uses the first forwarded address for rate limiting", async () => {
     await run(
       post({ message: "hi", visitorId: "visitor-0001" }, "", {

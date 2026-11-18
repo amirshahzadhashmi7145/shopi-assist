@@ -4,7 +4,7 @@ import { getLlmProvider, getLlmStatus } from "../app/assistant/llm/index.server"
 import { createMockProvider } from "../app/assistant/llm/mock";
 import { createOpenAiProvider, toOpenAiMessages } from "../app/assistant/llm/openai.server";
 import { buildSystemPrompt } from "../app/assistant/prompts";
-import { RateLimiter } from "../app/assistant/rate-limit";
+import { clientKey, DailyBudget, RateLimiter } from "../app/assistant/rate-limit";
 import { parseInline, parseRichText, safeHref } from "../app/assistant/rich-text";
 import { toGraphqlFn } from "../app/assistant/shopify-clients.server";
 
@@ -28,6 +28,35 @@ describe("RateLimiter", () => {
 
     limiter.hit("c", 1, 1000, 120_000);
     expect(limiter.size).toBe(1);
+  });
+});
+
+describe("clientKey", () => {
+  it("keeps IPv4 addresses and groups IPv6 by /64", () => {
+    expect(clientKey("203.0.113.7")).toBe("203.0.113.7");
+    expect(clientKey(" 203.0.113.7 ")).toBe("203.0.113.7");
+    expect(clientKey(undefined)).toBe("unknown");
+    expect(clientKey("")).toBe("unknown");
+
+    const expected = "2001:db8:1:2::/64";
+    expect(clientKey("2001:db8:1:2::1")).toBe(expected);
+    expect(clientKey("2001:0db8:0001:0002:aaaa:bbbb:cccc:dddd")).toBe(expected);
+    expect(clientKey("2001:DB8:1:2:0:0:0:9%eth0")).toBe(expected);
+    expect(clientKey("2001:db8:1:3::1")).not.toBe(expected);
+    expect(clientKey("::1")).toBe("0:0:0:0::/64");
+    // IPv4-mapped addresses are left alone.
+    expect(clientKey("::ffff:203.0.113.7")).toBe("::ffff:203.0.113.7");
+  });
+});
+
+describe("DailyBudget", () => {
+  it("accumulates within a UTC day and resets on the next", () => {
+    const budget = new DailyBudget();
+    budget.add(400, new Date("2026-11-18T01:00:00Z"));
+    budget.add(250, new Date("2026-11-18T23:59:59Z"));
+    budget.add(-999, new Date("2026-11-18T23:59:59Z"));
+    expect(budget.spent(new Date("2026-11-18T23:59:59Z"))).toBe(650);
+    expect(budget.spent(new Date("2026-11-19T00:00:00Z"))).toBe(0);
   });
 });
 

@@ -8,6 +8,7 @@ import {
 } from "../app/assistant/tools/registry";
 import { shopifyqlRows } from "../app/assistant/tools/merchant";
 import { htmlToText, numericId } from "../app/assistant/tools/shopper";
+import { RateLimiter } from "../app/assistant/rate-limit";
 import { fakeGraphql, storefrontProduct, toolContext } from "./helpers/fakes";
 
 const call = (name: string, args: Record<string, unknown> = {}) => ({
@@ -137,7 +138,7 @@ describe("shopper tools", () => {
         id: "gid://shopify/ProductVariant/101",
         title: "Default Title",
         availableForSale: true,
-        product: { title: "Trail Mug" },
+        product: { title: "Trail Mug", onlineStoreUrl: "https://shop.example/products/trail-mug" },
       },
     });
 
@@ -167,11 +168,36 @@ describe("shopper tools", () => {
       { variantId: "101" },
       toolContext({
         storefront: fakeGraphql({
-          node: { id: "x", title: "Small", availableForSale: false, product: { title: "Trail Mug" } },
+          node: {
+            id: "x",
+            title: "Small",
+            availableForSale: false,
+            product: { title: "Trail Mug", onlineStoreUrl: "https://shop.example/products/trail-mug" },
+          },
         }),
       }),
     );
     expect(soldOut.json.error).toMatch(/out of stock/);
+
+    // A real variant of a product with no storefront page looks exactly like
+    // a made-up id, so ids cannot be used to probe unpublished products.
+    const unpublished = await run(
+      "add_to_cart",
+      { variantId: "555" },
+      toolContext({
+        storefront: fakeGraphql({
+          node: {
+            id: "y",
+            title: "Default Title",
+            availableForSale: true,
+            product: { title: "Secret Launch Item", onlineStoreUrl: null },
+          },
+        }),
+      }),
+    );
+    expect(unpublished.content).toBe(missing.content);
+    expect(unpublished.content).not.toContain("Secret Launch Item");
+    expect(unpublished.actions).toEqual([]);
 
     const malformed = await run(
       "add_to_cart",
@@ -298,17 +324,90 @@ describe("get_order_status", () => {
     expect(result.ok).toBe(false);
   });
 
+  /** Each call is a new chat turn; the limiter is what the turns share. */
+  const lookupFrom = (
+    rateLimiter: RateLimiter,
+    admin: ReturnType<typeof fakeGraphql>,
+    ip: string,
+    args: { orderNumber: string; email: string },
+  ) =>
+    run(
+      "get_order_status",
+      args,
+      toolContext({
+        admin,
+        storefront: fakeGraphql({}),
+        settings: { orderLookupEnabled: true },
+        buyer: { ip },
+        rateLimiter,
+      }),
+    );
+
   it("throttles repeated lookups from one address", async () => {
     const admin = fakeGraphql({ orders: { nodes: [] } });
-    const context = enabled(admin);
-    const attempt = () =>
-      run("get_order_status", { orderNumber: "1", email: "a@b.co" }, context);
+    const rateLimiter = new RateLimiter();
+    const attempt = (n: number) =>
+      lookupFrom(rateLimiter, admin, "203.0.113.7", { orderNumber: String(n), email: `a${n}@b.co` });
 
-    for (let i = 0; i < 5; i += 1) await attempt();
-    const sixth = await attempt();
+    for (let i = 0; i < 5; i += 1) await attempt(i);
+    const sixth = await attempt(6);
 
     expect(sixth.json.error).toMatch(/Too many order lookups/);
     expect(admin.calls).toHaveLength(5);
+  });
+
+  it("throttles guesses against one email even when the address keeps changing", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [] } });
+    const rateLimiter = new RateLimiter();
+    const guess = (n: number) =>
+      lookupFrom(rateLimiter, admin, `198.51.100.${n}`, {
+        orderNumber: String(1000 + n),
+        email: "Victim@Example.com",
+      });
+
+    for (let i = 0; i < 5; i += 1) expect((await guess(i)).json.error).not.toMatch(/Too many/);
+    const sixth = await guess(6);
+
+    expect(sixth.json.error).toMatch(/Too many order lookups/);
+    expect(admin.calls).toHaveLength(5);
+    // A different email from a fresh address is unaffected.
+    const other = await lookupFrom(rateLimiter, admin, "198.51.100.99", {
+      orderNumber: "1",
+      email: "someone@else.com",
+    });
+    expect(other.json.error).not.toMatch(/Too many/);
+  });
+
+  it("caps total lookups per shop per hour", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [] } });
+    const rateLimiter = new RateLimiter();
+    const results = [];
+    for (let i = 0; i < 61; i += 1) {
+      results.push(
+        await lookupFrom(rateLimiter, admin, `2001:db8:${i}::1`, {
+          orderNumber: String(i),
+          email: `user${i}@example.com`,
+        }),
+      );
+    }
+
+    expect(results.slice(0, 60).every((r) => !/Too many/.test(r.json.error))).toBe(true);
+    expect(results[60].json.error).toMatch(/Too many order lookups/);
+    expect(admin.calls).toHaveLength(60);
+  });
+
+  it("allows at most two lookups in a single chat turn", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [] } });
+    const context = enabled(admin);
+    const attempt = (n: number) =>
+      run("get_order_status", { orderNumber: String(n), email: `a${n}@b.co` }, context);
+
+    await attempt(1);
+    await attempt(2);
+    const third = await attempt(3);
+
+    expect(third.json.error).toMatch(/per message/);
+    expect(admin.calls).toHaveLength(2);
   });
 });
 

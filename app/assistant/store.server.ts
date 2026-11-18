@@ -55,11 +55,12 @@ export async function createConversation(
 /** The last `limit` messages, oldest first. */
 export async function recentMessages(
   db: PrismaClient,
+  shop: string,
   conversationId: string,
   limit: number,
 ): Promise<StoredMessage[]> {
   const rows = await db.message.findMany({
-    where: { conversationId },
+    where: { conversationId, conversation: { shop } },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit,
     select: { role: true, content: true },
@@ -75,12 +76,21 @@ export async function recentMessages(
 /** Stores one completed exchange and bumps the conversation's activity time. */
 export async function appendExchange(
   db: PrismaClient,
+  shop: string,
   conversationId: string,
   userMessage: string,
   assistantReply: string,
   options: { customerId?: string | null; now?: Date } = {},
 ): Promise<void> {
   const now = options.now ?? new Date();
+
+  // Re-check ownership here rather than trusting the caller's earlier lookup.
+  const owned = await db.conversation.findFirst({
+    where: { id: conversationId, shop },
+    select: { id: true },
+  });
+  if (!owned) throw new Error("Conversation does not belong to this shop");
+
   await db.$transaction([
     db.message.create({
       data: { conversationId, role: "user", content: userMessage, createdAt: now },
@@ -94,8 +104,8 @@ export async function appendExchange(
         createdAt: new Date(now.getTime() + 1),
       },
     }),
-    db.conversation.update({
-      where: { id: conversationId },
+    db.conversation.updateMany({
+      where: { id: conversationId, shop },
       data: {
         updatedAt: now,
         // Remember the customer once they log in mid-conversation.
@@ -180,6 +190,44 @@ export async function purgeExpiredConversations(
     where: { shop, updatedAt: { lt: cutoff } },
   });
   return result.count;
+}
+
+/**
+ * Applies every shop's retention period. Runs on a timer so that a shop with
+ * no chat traffic still has its old transcripts removed on schedule.
+ */
+export async function purgeAllExpiredConversations(
+  db: PrismaClient,
+  defaultRetentionDays: number,
+  now: Date = new Date(),
+): Promise<number> {
+  const shops = await db.conversation.findMany({
+    distinct: ["shop"],
+    select: { shop: true },
+  });
+  let removed = 0;
+  for (const { shop } of shops) {
+    const settings = await db.shopSettings.findUnique({
+      where: { shop },
+      select: { retentionDays: true },
+    });
+    removed += await purgeExpiredConversations(
+      db,
+      shop,
+      settings?.retentionDays ?? defaultRetentionDays,
+      now,
+    );
+  }
+  return removed;
+}
+
+/** customers/data_request: how many transcripts are linked to this customer. */
+export async function countCustomerConversations(
+  db: PrismaClient,
+  shop: string,
+  customerId: string,
+): Promise<number> {
+  return db.conversation.count({ where: { shop, customerId } });
 }
 
 /** customers/redact: remove everything tied to one customer of one shop. */

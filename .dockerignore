@@ -1,3 +1,18 @@
 .cache
 build
 node_modules
+
+# Never bake local secrets, databases, CLI state or history into an image.
+.env
+.env.*
+!.env.example
+prisma/*.sqlite
+prisma/*.sqlite-journal
+.shopify
+.git
+.github
+.react-router
+app/types
+test
+scripts
+coverage

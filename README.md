@@ -65,11 +65,14 @@ App server  /proxy/chat
 
 - **Two audiences, decided by the server.** A request through the app proxy is always a `shopper`; a request through the authenticated admin is always a `merchant`. Each tool declares which audience may use it, and a tool call for the wrong audience is refused. Nothing the browser sends can change the audience or the shop.
 - **Shoppers only see public data.** Catalog tools use the Storefront API, which returns published products only. Sales figures, inventory counts and other customers' data are not reachable from the widget.
-- **Order lookup** is opt-in, needs both order number and checkout email to match exactly, returns only status and tracking, gives the same answer for "wrong email" and "no such order", and is throttled.
+- **Order lookup** is opt-in, needs both order number and checkout email to match exactly, returns only status and tracking, and gives the same answer for "wrong email" and "no such order". Guessing is throttled four ways: per chat turn, per visitor address, per email address and per shop.
+- **No Admin API for shoppers.** A shopper's chat turn is not handed an Admin API client at all unless the merchant has turned order lookup on.
 - **Tenant isolation.** Every database query filters by the authenticated shop. A conversation id from one shop (or one visitor) cannot be continued or read by another.
 - **No HTML from the model.** The widget renders replies with DOM text nodes and a tiny Markdown subset; only `http(s)` and same-site links become links.
-- **Abuse limits.** Per-IP and per-shop rate limits, message length cap, bounded tool steps and output tokens.
-- **Secrets** stay on the server in environment variables. Message text is never written to logs.
+- **Abuse and spend limits.** Per-address limits (per minute and per hour, IPv6 grouped by /64), per-shop limits (per hour and per day), a daily token ceiling across all shops, a 50-second deadline per turn, a message length cap, and bounded tool steps and output tokens. A blocked address does not use up the shop's shared budget.
+- **Widget-only endpoint.** The chat endpoint accepts only JSON requests from the same origin, so another website cannot make visitors' browsers post to it.
+- **Privacy.** Email addresses are masked before a transcript is stored. Transcripts are deleted after the shop's retention period by an hourly job. Links in stored shopper transcripts are shown as plain text in the admin.
+- **Secrets** stay on the server in environment variables. Message text and provider error messages are never written to logs.
 
 ## Getting started
 
@@ -92,7 +95,7 @@ Dev stores are password protected; unlock the storefront in the same browser fir
 ### Testing without a store
 
 ```bash
-npm test                    # 96 unit and integration tests
+npm test                    # 114 unit and integration tests
 npm run widget:preview      # the real widget on a fake storefront, canned replies → http://localhost:4010
 npm run build && npm run smoke   # real HTTP requests, signed like Shopify's proxy, against the built server
 npm run graphql-codegen     # validates every GraphQL query against Shopify's Admin and Storefront schemas
@@ -107,9 +110,12 @@ npm run graphql-codegen     # validates every GraphQL query against Shopify's Ad
 | `OPENAI_MODEL` | `gpt-4o` | Any chat-completions model with tool calling |
 | `OPENAI_BASE_URL` | none | Use an OpenAI-compatible endpoint |
 | `OPENAI_MAX_OUTPUT_TOKENS` | `1200` | Cap per model reply |
-| `CHAT_LIMIT_PER_IP_PER_MINUTE` | `12` | Storefront rate limit per visitor address |
-| `CHAT_LIMIT_PER_SHOP_PER_HOUR` | `600` | Storefront ceiling per shop (bounds LLM spend) |
+| `CHAT_LIMIT_PER_IP_PER_MINUTE` | `12` | Storefront burst limit per visitor address |
+| `CHAT_LIMIT_PER_IP_PER_HOUR` | `60` | Storefront hourly limit per visitor address |
+| `CHAT_LIMIT_PER_SHOP_PER_HOUR` | `600` | Storefront ceiling per shop, all visitors together |
+| `CHAT_LIMIT_PER_SHOP_PER_DAY` | `3000` | Storefront daily ceiling per shop |
 | `CHAT_LIMIT_MERCHANT_PER_MINUTE` | `30` | Admin assistant limit per shop |
+| `LLM_DAILY_TOKEN_BUDGET` | `2000000` | Token ceiling per UTC day across **all** shops. Chat stops when it is reached. Size it to your budget |
 
 Widget appearance (title, welcome message, accent color, position, suggested questions) is set by the merchant in the theme editor. Behaviour (pause chat, extra guidance for the assistant, order lookup, transcript retention) is set on the app's Settings page.
 
@@ -131,9 +137,10 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 
 Verified locally:
 
-- 96 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate limits, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
+- 114 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
 - All 15 GraphQL queries validate against Shopify's published 2026-10 Admin and Storefront schemas.
-- The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and replayed ones (`npm run smoke`).
+- The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and stale ones (`npm run smoke`). Shopify's signature covers the query string and a timestamp with a 90-second window; it does not stop the same request being re-sent inside that window, which is one reason the limits above exist.
+- An independent security review of the code; its findings are fixed or listed below.
 - `shopify theme check` and `shopify app security check` report no findings.
 - The widget was rendered in headless Chrome at desktop and mobile sizes.
 
@@ -145,13 +152,17 @@ Not yet verified, because it needs your Shopify login, a dev store and an API ke
 - Storefront API results on a real catalog. In particular, confirm that best sellers and search return your Online Store products; if they come back empty, the products may need to be made available to the app's channel.
 - ShopifyQL responses on a real store (row format and access).
 - The admin pages inside the real Shopify admin.
+- **Which visitor address Shopify's proxy reports.** The per-address limits use the first `X-Forwarded-For` value. Shopify's docs say the proxy sets it to the client address but not whether a value sent by the visitor is replaced. On the dev store, request the proxy URL with `curl -H "X-Forwarded-For: 1.2.3.4"` and check the app log. If the visitor's value survives, the per-address limits can be dodged and the address must be read from a different position. The per-email, per-shop and token limits do not depend on it.
 
 ## Before going live
 
 - **Data handling.** Shopper messages and the store data needed to answer them are sent to the LLM provider. Transcripts are stored in the app database for the retention period. Cover both in your privacy policy and get whatever approvals your organisation requires before connecting real customer data.
 - **Database.** SQLite is for development. Use a hosted database in production and change `datasource` in `prisma/schema.prisma`.
-- **Rate limits** are held in memory per process. Move them to a shared store before running more than one instance.
-- **Customer data requests.** The `customers/data_request` webhook is acknowledged and logged but the export is manual.
+- **Limits are held in memory per process.** Rate limits and the daily token budget reset on restart and are per instance. Move them to a shared store before running more than one instance, and set a hard spending limit in your LLM provider's dashboard as the real backstop.
+- **App Store listing.** The landing page (`app/routes/_index`) and `auth.login` include the template's "enter your shop domain" form. The App Store does not allow asking for a myshopify.com URL, so remove both forms before submitting.
+- **Access tokens** are stored unencrypted in the database, as in Shopify's template. Use a database with encryption at rest.
+- **Shared devices.** The widget keeps the conversation in the browser's local storage for up to a day so it survives page changes.
+- **Customer data requests.** The `customers/data_request` webhook logs the shop, customer id and number of linked transcripts; the export itself is manual. Guest conversations are not linked to a customer, which is why email addresses are masked rather than stored.
 - **Protected customer data** approval is needed for orders and analytics on live stores.
 - **Hosting.** `shopify app deploy` publishes configuration and the widget extension; the app server needs its own host.
 

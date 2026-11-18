@@ -69,6 +69,8 @@ export async function runAssistantTurn(
 
   for (let step = 0; step < maxSteps; step += 1) {
     const isLastStep = step === maxSteps - 1;
+    // Stop spending tokens once the turn's deadline has passed.
+    input.signal?.throwIfAborted();
     steps += 1;
 
     const response = await input.provider.complete({
