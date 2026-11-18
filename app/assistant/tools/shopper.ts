@@ -102,9 +102,23 @@ function formatMoney(money: Money): string {
   return `${money.amount} ${money.currencyCode}`;
 }
 
-/** Products without a storefront page are dropped: the shopper could not open them. */
-function isBrowsable(product: Partial<StorefrontProduct> | null | undefined): product is StorefrontProduct {
-  return Boolean(product && product.id && product.onlineStoreUrl);
+/**
+ * The Storefront API only returns products the store has published, so
+ * anything it returns is public. `onlineStoreUrl` cannot be used as a
+ * "published" test: Shopify returns null for every product while the store is
+ * password-protected (all dev stores, and real stores before launch).
+ */
+function isProduct(product: Partial<StorefrontProduct> | null | undefined): product is StorefrontProduct {
+  return Boolean(product && product.id && product.handle);
+}
+
+/**
+ * Link to a product page. Falls back to the standard storefront path when
+ * Shopify gives no URL; the widget runs on the storefront, so a relative link
+ * resolves against the shop's own domain.
+ */
+function productUrl(product: { handle: string; onlineStoreUrl: string | null }): string {
+  return product.onlineStoreUrl ?? `/products/${product.handle}`;
 }
 
 export function toProductCard(product: StorefrontProduct): ProductCard {
@@ -117,7 +131,7 @@ export function toProductCard(product: StorefrontProduct): ProductCard {
     id: product.id,
     title: product.title,
     handle: product.handle,
-    url: product.onlineStoreUrl,
+    url: productUrl(product),
     imageUrl: product.featuredImage?.url ?? null,
     imageAlt: product.featuredImage?.altText ?? null,
     price,
@@ -147,7 +161,11 @@ function toProductSummary(product: StorefrontProduct) {
   };
 }
 
-function productListResult(products: StorefrontProduct[], extra: Record<string, unknown> = {}) {
+function productListResult(
+  nodes: Array<Partial<StorefrontProduct> | null>,
+  extra: Record<string, unknown> = {},
+) {
+  const products = nodes.filter(isProduct);
   return {
     output: {
       ...extra,
@@ -217,7 +235,7 @@ const searchProducts = defineTool({
     const data = await context.storefront!<{
       search: { nodes: Array<Partial<StorefrontProduct>> };
     }>(SEARCH_PRODUCTS_QUERY, { query, first: limit, ...buyerVariables(context) });
-    return productListResult(data.search.nodes.filter(isBrowsable), { query });
+    return productListResult(data.search.nodes, { query });
   },
 });
 
@@ -248,7 +266,7 @@ const getBestSellers = defineTool({
       if (!data.collection) {
         throw new ToolError(`No collection with handle "${collectionHandle}".`);
       }
-      return productListResult(data.collection.products.nodes.filter(isBrowsable), {
+      return productListResult(data.collection.products.nodes, {
         collection: data.collection.title,
         rankedBy: "best selling",
       });
@@ -257,7 +275,7 @@ const getBestSellers = defineTool({
     const data = await context.storefront!<{
       products: { nodes: Array<Partial<StorefrontProduct>> };
     }>(BEST_SELLERS_QUERY, { first: limit, ...buyerVariables(context) });
-    return productListResult(data.products.nodes.filter(isBrowsable), {
+    return productListResult(data.products.nodes, {
       rankedBy: "best selling",
     });
   },
@@ -278,7 +296,7 @@ const getProductDetails = defineTool({
     }>(PRODUCT_DETAILS_QUERY, { handle, ...buyerVariables(context) });
 
     const product = data.product;
-    if (!isBrowsable(product)) {
+    if (!isProduct(product)) {
       throw new ToolError(`No product with handle "${handle}" is available in this store.`);
     }
     const details = product as StorefrontProductDetails;
@@ -330,12 +348,10 @@ const listCollections = defineTool({
 
     return {
       output: {
-        collections: data.collections.nodes
-          .filter((collection) => collection.onlineStoreUrl)
-          .map((collection) => ({
+        collections: data.collections.nodes.map((collection) => ({
             title: collection.title,
             handle: collection.handle,
-            url: collection.onlineStoreUrl,
+            url: collection.onlineStoreUrl ?? `/collections/${collection.handle}`,
             description: collection.description || undefined,
           })),
       },
@@ -407,14 +423,14 @@ const addToCart = defineTool({
         id?: string;
         title?: string;
         availableForSale?: boolean;
-        product?: { title: string; onlineStoreUrl: string | null };
+        product?: { title: string };
       } | null;
     }>(VARIANT_FOR_CART_QUERY, { id: `gid://shopify/ProductVariant/${variantId}` });
 
     const variant = data.node;
-    // Same rule as the catalog tools: a product without a storefront page is
-    // treated as if it did not exist, so ids cannot be used to probe for it.
-    if (!variant?.id || !variant.product?.onlineStoreUrl) {
+    // The Storefront API resolves only variants of published products, so a
+    // draft or unpublished product's variant id comes back as null here.
+    if (!variant?.id || !variant.product) {
       throw new ToolError("That variant does not exist. Look it up with get_product_details first.");
     }
     if (!variant.availableForSale) {

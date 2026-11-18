@@ -2,7 +2,7 @@
 
 An AI shopping assistant for Shopify stores. Installing the app adds a chat widget to the storefront; shoppers ask questions in plain language and the assistant answers from live store data using LLM tool calling (GPT-4o by default).
 
-**Status: built and tested locally, not yet run against a real Shopify store.** See [What has and hasn't been verified](#what-has-and-hasnt-been-verified).
+**Status: working on a development store with the mock model; not yet tested with a real LLM or released.** See [What has and hasn't been verified](#what-has-and-hasnt-been-verified).
 
 ## What it does
 
@@ -64,7 +64,7 @@ App server  /proxy/chat
 ### Security model
 
 - **Two audiences, decided by the server.** A request through the app proxy is always a `shopper`; a request through the authenticated admin is always a `merchant`. Each tool declares which audience may use it, and a tool call for the wrong audience is refused. Nothing the browser sends can change the audience or the shop.
-- **Shoppers only see public data.** Catalog tools use the Storefront API, which returns published products only. Sales figures, inventory counts and other customers' data are not reachable from the widget.
+- **Shoppers only see public data.** Catalog tools use the Storefront API, which returns only products the store has published. Sales figures, inventory counts and other customers' data are not reachable from the widget.
 - **Order lookup** is opt-in, needs both order number and checkout email to match exactly, returns only status and tracking, and gives the same answer for "wrong email" and "no such order". Guessing is throttled four ways: per chat turn, per visitor address, per email address and per shop.
 - **No Admin API for shoppers.** A shopper's chat turn is not handed an Admin API client at all unless the merchant has turned order lookup on.
 - **Tenant isolation.** Every database query filters by the authenticated shop. A conversation id from one shop (or one visitor) cannot be continued or read by another.
@@ -97,7 +97,7 @@ If linking to a new app blanks the `scopes` line in `shopify.app.toml`, restore 
 ### Testing without a store
 
 ```bash
-npm test                    # 114 unit and integration tests
+npm test                    # 115 unit and integration tests
 npm run widget:preview      # the real widget on a fake storefront, canned replies → http://localhost:4010
 npm run build && npm run smoke   # real HTTP requests, signed like Shopify's proxy, against the built server
 npm run graphql-codegen     # validates every GraphQL query against Shopify's Admin and Storefront schemas
@@ -139,21 +139,31 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 
 Verified locally:
 
-- 114 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
+- 115 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
 - All 15 GraphQL queries validate against Shopify's published 2026-10 Admin and Storefront schemas.
 - The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and stale ones (`npm run smoke`). Shopify's signature covers the query string and a timestamp with a 90-second window; it does not stop the same request being re-sent inside that window, which is one reason the limits above exist.
 - An independent security review of the code; its findings are fixed or listed below.
 - `shopify theme check` and `shopify app security check` report no findings.
 - The widget was rendered in headless Chrome at desktop and mobile sizes.
 
-Not yet verified, because it needs your Shopify login, a dev store and an API key:
+Verified on a real development store (with the mock model):
 
-- Install and OAuth on a real store, and the app proxy registration.
-- The theme editor deep link and the widget-status check on the home page.
-- Real answers from GPT-4o, including how well it picks tools.
-- Storefront API results on a real catalog. In particular, confirm that best sellers and search return your Online Store products; if they come back empty, the products may need to be made available to the app's channel.
-- ShopifyQL responses on a real store (row format and access).
-- The admin pages inside the real Shopify admin.
+- Install, OAuth and scopes; the app proxy; Shopify's signature on real proxied requests.
+- The widget rendering inside a real theme (Dawn) through the CLI's local preview.
+- Best sellers from the real Storefront API, returned as product cards.
+
+Two things only showed up on the real store and are now fixed and tested:
+
+- Dawn hides empty `<div>`s, which hid the widget's mount point (its content is in a shadow root).
+- On a password-protected store Shopify returns no storefront URL for any product, so products were being discarded. They are now linked by handle.
+
+Not yet verified:
+
+- Real answers from GPT-4o, including how well it picks tools. Everything so far used the mock model.
+- The other shopper tools on a real store: search, product details, collections, policies, add to cart from chat, order status.
+- The merchant assistant on a real store, including ShopifyQL responses (row format and access).
+- The admin pages inside the real Shopify admin, including the widget-status check.
+- The widget on a published theme after `npm run deploy` (so far it has only been seen in the dev preview).
 - **Which visitor address Shopify's proxy reports.** The per-address limits use the first `X-Forwarded-For` value. Shopify's docs say the proxy sets it to the client address but not whether a value sent by the visitor is replaced. On the dev store, request the proxy URL with `curl -H "X-Forwarded-For: 1.2.3.4"` and check the app log. If the visitor's value survives, the per-address limits can be dodged and the address must be read from a different position. The per-email, per-shop and token limits do not depend on it.
 
 ## Before going live

@@ -255,6 +255,11 @@
     var root = this.host.attachShadow ? this.host.attachShadow({ mode: "open" }) : this.host;
     this.root = root;
 
+    // The host element has no light-DOM children, so theme rules like Dawn's
+    // `div:empty { display: none }` would hide it and everything in its shadow
+    // root. Force it visible; the wrapper inside is position: fixed anyway.
+    this.host.style.setProperty("display", "block", "important");
+
     var wrapper = el("div", "sa");
     wrapper.setAttribute("data-position", config.position);
     wrapper.style.setProperty("--sa-accent", config.accent);

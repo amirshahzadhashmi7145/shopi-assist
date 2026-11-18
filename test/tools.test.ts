@@ -84,8 +84,15 @@ describe("shopper tools", () => {
       products: {
         nodes: [
           storefrontProduct(),
-          // Not on the Online Store: must be dropped.
-          storefrontProduct({ id: "gid://shopify/Product/2", handle: "hidden", onlineStoreUrl: null }),
+          // What a password-protected store returns: published, but no URL.
+          storefrontProduct({
+            id: "gid://shopify/Product/2",
+            title: "Camp Kettle",
+            handle: "camp-kettle",
+            onlineStoreUrl: null,
+          }),
+          // A malformed node (for example a non-product search hit) is skipped.
+          {},
         ],
       },
     });
@@ -96,11 +103,20 @@ describe("shopper tools", () => {
     expect(result.ok).toBe(true);
     expect(storefront.calls[0].query).toContain("sortKey: BEST_SELLING");
     expect(storefront.calls[0].variables).toEqual({ first: 4, country: "CA", language: "FR" });
+    expect(result.json.count).toBe(2);
     expect(result.json.products).toEqual([
       expect.objectContaining({ title: "Trail Mug", price: "18.0 USD", inStock: true }),
+      expect.objectContaining({ title: "Camp Kettle" }),
     ]);
     expect(result.cards).toEqual([
-      expect.objectContaining({ handle: "trail-mug", variantId: "101", compareAtPrice: null }),
+      expect.objectContaining({
+        handle: "trail-mug",
+        variantId: "101",
+        compareAtPrice: null,
+        url: "https://test-shop.example/products/trail-mug",
+      }),
+      // No URL from Shopify: link by handle, relative to the storefront.
+      expect.objectContaining({ handle: "camp-kettle", url: "/products/camp-kettle" }),
     ]);
   });
 
@@ -138,7 +154,7 @@ describe("shopper tools", () => {
         id: "gid://shopify/ProductVariant/101",
         title: "Default Title",
         availableForSale: true,
-        product: { title: "Trail Mug", onlineStoreUrl: "https://shop.example/products/trail-mug" },
+        product: { title: "Trail Mug" },
       },
     });
 
@@ -172,32 +188,12 @@ describe("shopper tools", () => {
             id: "x",
             title: "Small",
             availableForSale: false,
-            product: { title: "Trail Mug", onlineStoreUrl: "https://shop.example/products/trail-mug" },
+            product: { title: "Trail Mug" },
           },
         }),
       }),
     );
     expect(soldOut.json.error).toMatch(/out of stock/);
-
-    // A real variant of a product with no storefront page looks exactly like
-    // a made-up id, so ids cannot be used to probe unpublished products.
-    const unpublished = await run(
-      "add_to_cart",
-      { variantId: "555" },
-      toolContext({
-        storefront: fakeGraphql({
-          node: {
-            id: "y",
-            title: "Default Title",
-            availableForSale: true,
-            product: { title: "Secret Launch Item", onlineStoreUrl: null },
-          },
-        }),
-      }),
-    );
-    expect(unpublished.content).toBe(missing.content);
-    expect(unpublished.content).not.toContain("Secret Launch Item");
-    expect(unpublished.actions).toEqual([]);
 
     const malformed = await run(
       "add_to_cart",

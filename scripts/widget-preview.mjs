@@ -82,6 +82,8 @@ function page(url) {
 <title>Widget preview</title>
 <style>
   body { margin: 0; font-family: Georgia, "Times New Roman", serif; color: #23201c; background: #faf7f2; }
+  /* Shopify's Dawn theme ships this rule. It once hid the whole widget, so the preview keeps it. */
+  div:empty { display: none; }
   header { padding: 18px 32px; border-bottom: 1px solid #e6dfd3; display: flex; justify-content: space-between; align-items: center; }
   header strong { font-size: 22px; letter-spacing: 0.04em; }
   nav { font: 14px/1 system-ui, sans-serif; color: #6b655c; display: flex; gap: 22px; }

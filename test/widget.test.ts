@@ -415,6 +415,23 @@ describe("chat widget", () => {
     expect(widget.root.activeElement).toBe(widget.launcher);
   });
 
+  it("stays visible in themes that hide empty divs (Dawn's div:empty rule)", () => {
+    const style = document.createElement("style");
+    style.textContent = "div:empty { display: none; }";
+    document.head.appendChild(style);
+    try {
+      const widget = mountWidget();
+      // The host has no light-DOM children, so the theme rule matches it...
+      expect(widget.host.matches("div:empty")).toBe(true);
+      // ...and only an !important inline style keeps it rendered.
+      expect(widget.host.style.getPropertyValue("display")).toBe("block");
+      expect(widget.host.style.getPropertyPriority("display")).toBe("important");
+      expect(getComputedStyle(widget.host).display).toBe("block");
+    } finally {
+      style.remove();
+    }
+  });
+
   it("never writes HTML strings into the page", () => {
     const code = WIDGET_SOURCE.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
     expect(code).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);

@@ -5,11 +5,16 @@
   inside a shadow root so theme styles and widget styles cannot clash.
   Turning this embed off in the theme editor removes the widget completely.
 
+  The inline `display` matters: the mount point has no child elements (its
+  content is in the shadow root), and themes such as Dawn hide empty divs
+  with `div:empty { display: none }`, which would hide the whole widget.
+
   The endpoint is the app proxy path configured in shopify.app.toml
   ([app_proxy] prefix + subpath). Change both together.
 {%- endcomment -%}
 <div
   id="shopi-assist-root"
+  style="display: block !important;"
   data-endpoint="/apps/shopi-assist/chat"
   data-stylesheet="{{ 'shopi-assist.css' | asset_url | escape }}"
   data-title="{{ block.settings.title | escape }}"
