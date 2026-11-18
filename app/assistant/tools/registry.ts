@@ -22,8 +22,12 @@ export interface ToolContext {
    * lookup), so a mistakenly tagged tool still has nothing to call.
    */
   admin?: GraphqlFn;
+  /** What the merchant has switched on for shoppers. */
   settings: {
     orderLookupEnabled: boolean;
+    allowAddToCart: boolean;
+    allowCheckout: boolean;
+    allowReturns: boolean;
   };
   buyer: {
     /** ISO country code for localized prices, e.g. "US". */

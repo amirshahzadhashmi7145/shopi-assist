@@ -11,7 +11,12 @@ import { z } from "zod";
 
 import { clientKey } from "../rate-limit";
 import type { Money, ProductCard } from "../types";
-import { defineTool, ToolError, type ToolDefinition } from "./registry";
+import {
+  defineTool,
+  ToolError,
+  type ToolContext,
+  type ToolDefinition,
+} from "./registry";
 import {
   BEST_SELLERS_QUERY,
   COLLECTION_BEST_SELLERS_QUERY,
@@ -37,12 +42,42 @@ export const ORDER_STATUS_QUERY = `#graphql
         cancelledAt
         displayFinancialStatus
         displayFulfillmentStatus
+        id
         fulfillments(first: 5) {
           status
           estimatedDeliveryAt
           trackingInfo(first: 3) { company number url }
         }
       }
+    }
+  }
+`;
+
+/** Admin API. What on an order can still be returned. */
+export const RETURNABLE_ITEMS_QUERY = `#graphql
+  query ShopiAssistReturnableItems($orderId: ID!) {
+    returnableFulfillments(orderId: $orderId, first: 10) {
+      nodes {
+        returnableFulfillmentLineItems(first: 30) {
+          nodes {
+            quantity
+            fulfillmentLineItem {
+              id
+              lineItem { title }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+/** Admin API. Creates a return request for the merchant to approve or decline. */
+export const RETURN_REQUEST_MUTATION = `#graphql
+  mutation ShopiAssistReturnRequest($input: ReturnRequestInput!) {
+    returnRequest(input: $input) {
+      return { name status }
+      userErrors { field message }
     }
   }
 `;
@@ -414,7 +449,7 @@ const addToCart = defineTool({
       .regex(/^\d{1,20}$/, "Use the numeric variantId from get_product_details."),
     quantity: z.number().int().min(1).max(10).default(1),
   }),
-  isAvailable: (context) => Boolean(context.storefront),
+  isAvailable: (context) => Boolean(context.storefront) && context.settings.allowAddToCart,
   async run({ variantId, quantity }, context) {
     // Confirm the variant is real and purchasable, so a made-up id cannot
     // produce a confusing error in the shopper's browser.
@@ -454,17 +489,38 @@ const addToCart = defineTool({
   },
 });
 
+const startCheckout = defineTool({
+  name: "start_checkout",
+  description:
+    "Show the shopper a button that takes them to the store's secure checkout with what is in their cart. Use when they say they want to buy, pay, order or check out. You cannot take payment or place the order yourself.",
+  audiences: ["shopper"],
+  schema: z.object({}),
+  isAvailable: (context) => context.settings.allowCheckout,
+  async run() {
+    return {
+      output: {
+        status: "button_shown",
+        note: "A 'Go to checkout' button is now shown in the chat. Tell the shopper to press it; they review the cart and pay on the store's checkout page.",
+      },
+      actions: [{ type: "checkout" as const }],
+    };
+  },
+});
+
 // Order lookup limits. Guessing an order number for a known email must stay
 // impractical even for someone rotating addresses, so the address is only one
-// of four independent keys.
+// of four independent keys. Return requests count against the same limits.
 const ORDER_LOOKUPS_PER_TURN = 2;
 const ORDER_LOOKUPS_PER_ADDRESS = 5; // per 15 minutes
 const ORDER_LOOKUPS_PER_EMAIL = 5; // per hour, whoever is asking
 const ORDER_LOOKUPS_PER_SHOP = 60; // per hour, all visitors together
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const ORDER_LOOKUP_THROTTLED =
   "Too many order lookups. Ask the shopper to try again later or contact the store.";
+const ORDER_NOT_FOUND =
+  "No order matches that order number and email. Ask the shopper to double-check both, or to contact the store.";
 
 /** Short non-reversible key, so email addresses are not held in the limiter. */
 function fingerprint(value: string): string {
@@ -475,89 +531,98 @@ function fingerprint(value: string): string {
   }
   return (hash >>> 0).toString(16);
 }
-const ORDER_NOT_FOUND =
-  "No order matches that order number and email. Ask the shopper to double-check both, or to contact the store.";
+
+interface VerifiedOrder {
+  id: string;
+  name: string;
+  email: string | null;
+  processedAt: string;
+  cancelledAt: string | null;
+  displayFinancialStatus: string | null;
+  displayFulfillmentStatus: string;
+  fulfillments: Array<{
+    status: string;
+    estimatedDeliveryAt: string | null;
+    trackingInfo: Array<{ company: string | null; number: string | null; url: string | null }>;
+  }>;
+}
+
+const orderProofSchema = {
+  orderNumber: z
+    .string()
+    .trim()
+    .min(1)
+    .max(40)
+    .regex(/^#?[A-Za-z0-9\-_.]+$/, "Order number like 1001 or #1001."),
+  email: z.email().max(254),
+};
+
+/**
+ * Finds the order only if the shopper proved it is theirs by giving both the
+ * order number and the checkout email, after applying the lookup throttles.
+ * Throws the same error for "no such order" and "wrong email", so it cannot
+ * be used to discover which order numbers exist.
+ */
+async function findVerifiedOrder(
+  context: ToolContext,
+  orderNumber: string,
+  email: string,
+): Promise<VerifiedOrder> {
+  const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
+  const wantedEmail = email.trim().toLowerCase();
+
+  context.turn.orderLookups += 1;
+  if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
+    throw new ToolError(
+      "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
+    );
+  }
+  const nowMs = context.now().getTime();
+  const limits: Array<[key: string, max: number, windowMs: number]> = [
+    [
+      `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
+      ORDER_LOOKUPS_PER_ADDRESS,
+      FIFTEEN_MINUTES_MS,
+    ],
+    [
+      `order-lookup:email:${context.shop}:${fingerprint(wantedEmail)}`,
+      ORDER_LOOKUPS_PER_EMAIL,
+      ONE_HOUR_MS,
+    ],
+    [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
+  ];
+  for (const [key, max, windowMs] of limits) {
+    if (!context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) {
+      throw new ToolError(ORDER_LOOKUP_THROTTLED);
+    }
+  }
+
+  const data = await context.admin!<{ orders: { nodes: VerifiedOrder[] } }>(
+    ORDER_STATUS_QUERY,
+    { query: `name:${wantedName}` },
+  );
+
+  // The search is fuzzy, so require an exact match on both fields here.
+  const order = data.orders.nodes.find(
+    (candidate) =>
+      candidate.name.replace(/^#/, "").toLowerCase() === wantedName &&
+      (candidate.email ?? "").toLowerCase() === wantedEmail,
+  );
+  if (!order) throw new ToolError(ORDER_NOT_FOUND);
+  return order;
+}
 
 const getOrderStatus = defineTool({
   name: "get_order_status",
   description:
     "Check the status and tracking of the shopper's own order. Requires BOTH the order number and the email address used at checkout; ask for whichever is missing before calling.",
   audiences: ["shopper"],
-  schema: z.object({
-    orderNumber: z
-      .string()
-      .trim()
-      .min(1)
-      .max(40)
-      .regex(/^#?[A-Za-z0-9\-_.]+$/, "Order number like 1001 or #1001."),
-    email: z.email().max(254),
-  }),
+  schema: z.object(orderProofSchema),
   // Off unless the merchant turned it on in the app settings.
   isAvailable: (context) =>
     Boolean(context.admin) && context.settings.orderLookupEnabled,
   async run({ orderNumber, email }, context) {
-    const wantedEmail = email.trim().toLowerCase();
-
-    // Slow down guessing of order number + email pairs.
-    context.turn.orderLookups += 1;
-    if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
-      throw new ToolError(
-        "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
-      );
-    }
-    const nowMs = context.now().getTime();
-    const limits: Array<[key: string, max: number, windowMs: number]> = [
-      [
-        `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
-        ORDER_LOOKUPS_PER_ADDRESS,
-        FIFTEEN_MINUTES_MS,
-      ],
-      [
-        `order-lookup:email:${context.shop}:${fingerprint(wantedEmail)}`,
-        ORDER_LOOKUPS_PER_EMAIL,
-        ONE_HOUR_MS,
-      ],
-      [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
-    ];
-    for (const [key, max, windowMs] of limits) {
-      if (!context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) {
-        throw new ToolError(ORDER_LOOKUP_THROTTLED);
-      }
-    }
-
-    const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
-
-    const data = await context.admin!<{
-      orders: {
-        nodes: Array<{
-          name: string;
-          email: string | null;
-          processedAt: string;
-          cancelledAt: string | null;
-          displayFinancialStatus: string | null;
-          displayFulfillmentStatus: string;
-          fulfillments: Array<{
-            status: string;
-            estimatedDeliveryAt: string | null;
-            trackingInfo: Array<{
-              company: string | null;
-              number: string | null;
-              url: string | null;
-            }>;
-          }>;
-        }>;
-      };
-    }>(ORDER_STATUS_QUERY, { query: `name:${wantedName}` });
-
-    // The search is fuzzy, so require an exact match on both fields here.
-    // The same message is used for "no such order" and "wrong email" so the
-    // tool cannot be used to discover which order numbers exist.
-    const order = data.orders.nodes.find(
-      (candidate) =>
-        candidate.name.replace(/^#/, "").toLowerCase() === wantedName &&
-        (candidate.email ?? "").toLowerCase() === wantedEmail,
-    );
-    if (!order) throw new ToolError(ORDER_NOT_FOUND);
+    const order = await findVerifiedOrder(context, orderNumber, email);
 
     return {
       output: {
@@ -580,6 +645,141 @@ const getOrderStatus = defineTool({
   },
 });
 
+interface ReturnableItem {
+  fulfillmentLineItemId: string;
+  title: string;
+  quantity: number;
+}
+
+const requestReturn = defineTool({
+  name: "request_return",
+  description:
+    "Ask the store to accept a return for the shopper's own order. Requires BOTH the order number and the checkout email, and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
+  audiences: ["shopper"],
+  schema: z.object({
+    ...orderProofSchema,
+    reason: z
+      .string()
+      .trim()
+      .min(3)
+      .max(300)
+      .describe("Why the shopper wants to return it, in their words."),
+    itemTitle: z
+      .string()
+      .trim()
+      .max(200)
+      .optional()
+      .describe("Which item to return, when the order has more than one."),
+    quantity: z.number().int().min(1).max(20).default(1),
+  }),
+  // Off unless the merchant turned it on in the app settings.
+  isAvailable: (context) => Boolean(context.admin) && context.settings.allowReturns,
+  async run({ orderNumber, email, reason, itemTitle, quantity }, context) {
+    const order = await findVerifiedOrder(context, orderNumber, email);
+
+    const data = await context.admin!<{
+      returnableFulfillments: {
+        nodes: Array<{
+          returnableFulfillmentLineItems: {
+            nodes: Array<{
+              quantity: number;
+              fulfillmentLineItem: { id: string; lineItem: { title: string } };
+            }>;
+          };
+        }>;
+      };
+    }>(RETURNABLE_ITEMS_QUERY, { orderId: order.id });
+
+    const items: ReturnableItem[] = data.returnableFulfillments.nodes
+      .flatMap((fulfillment) => fulfillment.returnableFulfillmentLineItems.nodes)
+      .filter((item) => item.quantity > 0)
+      .map((item) => ({
+        fulfillmentLineItemId: item.fulfillmentLineItem.id,
+        title: item.fulfillmentLineItem.lineItem.title,
+        quantity: item.quantity,
+      }));
+
+    if (items.length === 0) {
+      throw new ToolError(
+        "Nothing on this order can be returned right now. It may not have shipped yet, or a return may already be open. Suggest contacting the store.",
+      );
+    }
+
+    const wanted = itemTitle?.toLowerCase();
+    const matches = wanted
+      ? items.filter((item) => item.title.toLowerCase().includes(wanted))
+      : items;
+
+    // Never guess which item: with more than one candidate, hand the list back.
+    if (matches.length !== 1) {
+      return {
+        output: {
+          status: "need_item",
+          note: "No request was sent. Ask the shopper which one item they want to return, then call again with itemTitle.",
+          returnableItems: (matches.length ? matches : items).map((item) => ({
+            title: item.title,
+            quantity: item.quantity,
+          })),
+        },
+      };
+    }
+    const item = matches[0];
+
+    // One request per order per day, so a repeated message cannot pile up
+    // duplicate requests in the merchant's admin.
+    const once = context.rateLimiter.hit(
+      `return-request:${context.shop}:${order.id}`,
+      1,
+      ONE_DAY_MS,
+      context.now().getTime(),
+    );
+    if (!once.allowed) {
+      throw new ToolError(
+        "A return was already requested for this order today. The store will be in touch by email.",
+      );
+    }
+
+    const result = await context.admin!<{
+      returnRequest: {
+        return: { name: string; status: string } | null;
+        userErrors: Array<{ message: string }>;
+      } | null;
+    }>(RETURN_REQUEST_MUTATION, {
+      input: {
+        orderId: order.id,
+        returnLineItems: [
+          {
+            fulfillmentLineItemId: item.fulfillmentLineItemId,
+            quantity: Math.min(quantity, item.quantity),
+            customerNote: reason,
+          },
+        ],
+      },
+    });
+
+    const created = result.returnRequest?.return;
+    if (!created) {
+      throw new ToolError(
+        `The store's system did not accept the return request${
+          result.returnRequest?.userErrors[0]
+            ? `: ${result.returnRequest.userErrors[0].message}`
+            : "."
+        } Suggest contacting the store.`,
+      );
+    }
+
+    return {
+      output: {
+        status: "requested",
+        returnReference: created.name,
+        item: item.title,
+        quantity: Math.min(quantity, item.quantity),
+        note: "The request has been sent to the store for review. Tell the shopper it is a request, not an approval: the store will reply by email with the decision and return instructions. Do not promise a refund.",
+      },
+    };
+  },
+});
+
 export const shopperTools: ToolDefinition[] = [
   searchProducts,
   getBestSellers,
@@ -587,5 +787,7 @@ export const shopperTools: ToolDefinition[] = [
   listCollections,
   getStorePolicy,
   addToCart,
+  startCheckout,
   getOrderStatus,
+  requestReturn,
 ];

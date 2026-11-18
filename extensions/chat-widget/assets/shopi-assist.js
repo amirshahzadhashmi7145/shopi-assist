@@ -222,6 +222,7 @@
       locale: data.locale || document.documentElement.lang || "",
       cartUrl: data.cartUrl || "/cart",
       cartAddUrl: data.cartAddUrl || "/cart/add",
+      checkoutUrl: "/checkout",
     };
     this.pending = false;
     this.lastFailedMessage = null;
@@ -832,6 +833,19 @@
 
   Widget.prototype.runAction = function (action) {
     var self = this;
+    if (action && action.type === "checkout") {
+      // A plain link to the store's own checkout. The widget never handles payment.
+      var entry = {
+        role: "notice",
+        text: "Ready when you are.",
+        link: { label: "Go to checkout", href: this.config.checkoutUrl },
+      };
+      this.state.messages.push(entry);
+      this.saveState();
+      this.renderMessage(entry);
+      this.scrollToEnd();
+      return;
+    }
     if (!action || action.type !== "add_to_cart") return;
     if (!/^\d+$/.test(String(action.variantId))) return;
     var quantity = Math.max(1, Math.min(10, parseInt(action.quantity, 10) || 1));

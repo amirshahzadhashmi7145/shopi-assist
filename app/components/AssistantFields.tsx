@@ -14,15 +14,126 @@ interface FieldGroupProps {
   errors?: SettingsErrors;
 }
 
+const errorProp = (message: string | undefined) => (message ? { error: message } : {});
+
 /** Which settings each group edits. The server reads exactly these. */
 export const FIELD_GROUPS = {
+  abilities: ["allowAddToCart", "allowCheckout", "orderLookupEnabled", "allowReturns"],
+  quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
+  personality: ["assistantName", "greeting", "tone"],
+  // Optional free text, shown only on the Settings page.
   business: ["businessDescription"],
   policies: ["returnPolicy", "shippingInfo"],
   questions: ["faq"],
-  personality: ["assistantName", "greeting", "tone"],
 } as const satisfies Record<string, readonly SettingsField[]>;
 
-const errorProp = (message: string | undefined) => (message ? { error: message } : {});
+const checked = (on: boolean) => (on ? { defaultChecked: true } : {});
+
+/** Step 1 of setup: what the assistant may do. All checkboxes, no typing. */
+export function AbilityFields({ settings }: FieldGroupProps) {
+  return (
+    <s-stack direction="block" gap="base">
+      <s-checkbox
+        label="Answer product questions and recommend products"
+        details="Always on. Uses your live catalog, best sellers and published policies."
+        defaultChecked
+        disabled
+      />
+      <s-checkbox
+        name="allowAddToCart"
+        label="Add items to the cart"
+        details="Shoppers can say 'add the small one to my cart', and product cards get an Add to cart button."
+        {...checked(settings.allowAddToCart)}
+      />
+      <s-checkbox
+        name="allowCheckout"
+        label="Help shoppers place an order"
+        details="When a shopper is ready to buy, the assistant shows a Go to checkout button. Payment always happens on your normal Shopify checkout."
+        {...checked(settings.allowCheckout)}
+      />
+      <s-checkbox
+        name="orderLookupEnabled"
+        label="Check order status"
+        details="The shopper gives their order number and checkout email, and gets payment status, delivery status and tracking."
+        {...checked(settings.orderLookupEnabled)}
+      />
+      <s-checkbox
+        name="allowReturns"
+        label="Take return requests"
+        details="The shopper gives their order number, checkout email and a reason. The request appears in your Shopify admin for you to approve or decline. Nothing is refunded automatically."
+        {...checked(settings.allowReturns)}
+      />
+    </s-stack>
+  );
+}
+
+const NOT_SET = "Not set (use my policy pages)";
+
+/** Step 2 of setup: policies picked from dropdowns. */
+export function QuickPolicyFields({ settings, errors = {} }: FieldGroupProps) {
+  return (
+    <s-stack direction="block" gap="base">
+      <s-select
+        name="returnWindow"
+        label="How long do customers have to return an item?"
+        value={settings.returnWindow}
+        {...errorProp(errors.returnWindow)}
+      >
+        <s-option value="">{NOT_SET}</s-option>
+        <s-option value="none">We don&apos;t accept returns</s-option>
+        <s-option value="7">7 days</s-option>
+        <s-option value="14">14 days</s-option>
+        <s-option value="30">30 days</s-option>
+        <s-option value="60">60 days</s-option>
+        <s-option value="90">90 days</s-option>
+      </s-select>
+      <s-select
+        name="returnShipping"
+        label="Who pays for return shipping?"
+        value={settings.returnShipping}
+        {...errorProp(errors.returnShipping)}
+      >
+        <s-option value="">{NOT_SET}</s-option>
+        <s-option value="customer">The customer</s-option>
+        <s-option value="free">We do (free returns)</s-option>
+      </s-select>
+      <s-select
+        name="processingTime"
+        label="How quickly do orders ship?"
+        value={settings.processingTime}
+        {...errorProp(errors.processingTime)}
+      >
+        <s-option value="">{NOT_SET}</s-option>
+        <s-option value="same_day">Same business day</s-option>
+        <s-option value="1_2">Within 1 to 2 business days</s-option>
+        <s-option value="3_5">Within 3 to 5 business days</s-option>
+      </s-select>
+      <s-select
+        name="deliveryTime"
+        label="How long does delivery usually take?"
+        value={settings.deliveryTime}
+        {...errorProp(errors.deliveryTime)}
+      >
+        <s-option value="">{NOT_SET}</s-option>
+        <s-option value="2_4">2 to 4 business days</s-option>
+        <s-option value="3_5">3 to 5 business days</s-option>
+        <s-option value="5_8">5 to 8 business days</s-option>
+        <s-option value="7_14">7 to 14 business days</s-option>
+      </s-select>
+      <s-select
+        name="shipsTo"
+        label="Where do you ship?"
+        value={settings.shipsTo}
+        {...errorProp(errors.shipsTo)}
+      >
+        <s-option value="">{NOT_SET}</s-option>
+        <s-option value="domestic">Within my country only</s-option>
+        <s-option value="international">Internationally</s-option>
+      </s-select>
+    </s-stack>
+  );
+}
+
 
 export function BusinessFields({ settings, errors = {} }: FieldGroupProps) {
   return (

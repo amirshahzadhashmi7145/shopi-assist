@@ -17,7 +17,7 @@ import {
   type DailyBudget,
   type RateLimiter,
 } from "./rate-limit";
-import { DEFAULT_SETTINGS, getSettings } from "./settings.server";
+import { DEFAULT_SETTINGS, describeQuickPolicies, getSettings } from "./settings.server";
 import { getShopName } from "./shopify-clients.server";
 import {
   appendExchange,
@@ -257,12 +257,18 @@ export async function handleChatTurn(
     shop: input.shop,
     audience: input.audience,
     storefront: input.storefront,
-    // Shoppers get no Admin API access at all unless order lookup is on.
+    // Shoppers get no Admin API access at all unless the merchant switched
+    // on a feature that needs it (order status or return requests).
     admin:
-      input.audience === "merchant" || settings.orderLookupEnabled
+      input.audience === "merchant" || settings.orderLookupEnabled || settings.allowReturns
         ? input.admin
         : undefined,
-    settings: { orderLookupEnabled: settings.orderLookupEnabled },
+    settings: {
+      orderLookupEnabled: settings.orderLookupEnabled,
+      allowAddToCart: settings.allowAddToCart,
+      allowCheckout: settings.allowCheckout,
+      allowReturns: settings.allowReturns,
+    },
     buyer: { country, language, ip: input.ip },
     rateLimiter: deps.rateLimiter,
     turn: { orderLookups: 0 },
@@ -282,6 +288,12 @@ export async function handleChatTurn(
         shopName,
         assistantName: settings.assistantName,
         tone: settings.tone,
+        abilities: {
+          addToCart: tools.some((tool) => tool.name === "add_to_cart"),
+          checkout: tools.some((tool) => tool.name === "start_checkout"),
+          returns: tools.some((tool) => tool.name === "request_return"),
+        },
+        quickPolicies: describeQuickPolicies(settings),
         knowledge: {
           businessDescription: settings.businessDescription,
           returnPolicy: settings.returnPolicy,
@@ -331,7 +343,11 @@ export async function handleChatTurn(
   return {
     conversationId: conversation.id,
     reply: turn.reply,
-    cards: turn.cards,
+    // With add to cart switched off, cards link to the product but offer no
+    // one-click add.
+    cards: settings.allowAddToCart
+      ? turn.cards
+      : turn.cards.map((card) => ({ ...card, variantId: null })),
     actions: turn.actions,
   };
 }

@@ -12,6 +12,18 @@ const text = (max: number, label: string) =>
     .trim()
     .max(max, `Keep ${label} under ${max.toLocaleString("en-US")} characters.`);
 
+/** Dropdown choices. The empty string always means "not set". */
+export const POLICY_CHOICES = {
+  returnWindow: ["", "none", "7", "14", "30", "60", "90"],
+  returnShipping: ["", "customer", "free"],
+  processingTime: ["", "same_day", "1_2", "3_5"],
+  deliveryTime: ["", "2_4", "3_5", "5_8", "7_14"],
+  shipsTo: ["", "domestic", "international"],
+} as const;
+
+const choice = <T extends readonly [string, ...string[]]>(values: T) =>
+  z.enum(values, "Choose one of the listed options.");
+
 export const settingsSchema = z.object({
   enabled: z.boolean(),
   instructions: text(2000, "instructions"),
@@ -30,6 +42,16 @@ export const settingsSchema = z.object({
   assistantName: text(40, "the name"),
   greeting: text(300, "the welcome message"),
   tone: z.enum(TONES, "Choose one of the listed tones."),
+  // What the assistant may do for shoppers.
+  allowAddToCart: z.boolean(),
+  allowCheckout: z.boolean(),
+  allowReturns: z.boolean(),
+  // Quick policy picks.
+  returnWindow: choice(POLICY_CHOICES.returnWindow),
+  returnShipping: choice(POLICY_CHOICES.returnShipping),
+  processingTime: choice(POLICY_CHOICES.processingTime),
+  deliveryTime: choice(POLICY_CHOICES.deliveryTime),
+  shipsTo: choice(POLICY_CHOICES.shipsTo),
 });
 
 export type AssistantSettings = z.infer<typeof settingsSchema>;
@@ -48,7 +70,20 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   assistantName: "",
   greeting: "",
   tone: "friendly",
+  allowAddToCart: true,
+  allowCheckout: true,
+  allowReturns: false,
+  returnWindow: "",
+  returnShipping: "",
+  processingTime: "",
+  deliveryTime: "",
+  shipsTo: "",
 };
+
+/** Returns the stored value when it is a known choice, otherwise "not set". */
+function pick<T extends readonly string[]>(choices: T, value: string): T[number] {
+  return (choices as readonly string[]).includes(value) ? (value as T[number]) : "";
+}
 
 /** Settings for one shop, falling back to defaults when none are saved yet. */
 export async function getSettings(
@@ -69,6 +104,14 @@ export async function getSettings(
     assistantName: row.assistantName,
     greeting: row.greeting,
     tone: (TONES as readonly string[]).includes(row.tone) ? (row.tone as Tone) : "friendly",
+    allowAddToCart: row.allowAddToCart,
+    allowCheckout: row.allowCheckout,
+    allowReturns: row.allowReturns,
+    returnWindow: pick(POLICY_CHOICES.returnWindow, row.returnWindow),
+    returnShipping: pick(POLICY_CHOICES.returnShipping, row.returnShipping),
+    processingTime: pick(POLICY_CHOICES.processingTime, row.processingTime),
+    deliveryTime: pick(POLICY_CHOICES.deliveryTime, row.deliveryTime),
+    shipsTo: pick(POLICY_CHOICES.shipsTo, row.shipsTo),
   };
 }
 
@@ -100,7 +143,13 @@ export async function saveSettings(
   return { ok: true, settings: await getSettings(shop, db) };
 }
 
-const BOOLEAN_FIELDS: readonly SettingsField[] = ["enabled", "orderLookupEnabled"];
+const BOOLEAN_FIELDS: readonly SettingsField[] = [
+  "enabled",
+  "orderLookupEnabled",
+  "allowAddToCart",
+  "allowCheckout",
+  "allowReturns",
+];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
 
 /**
@@ -181,9 +230,66 @@ export async function markSetupCompleted(
  */
 export function setupProgress(settings: AssistantSettings) {
   return {
-    business: settings.businessDescription.length > 0,
-    policies: settings.returnPolicy.length > 0 || settings.shippingInfo.length > 0,
-    questions: settings.faq.length > 0,
+    policies:
+      [
+        settings.returnWindow,
+        settings.returnShipping,
+        settings.processingTime,
+        settings.deliveryTime,
+        settings.shipsTo,
+        settings.returnPolicy,
+        settings.shippingInfo,
+      ].some((value) => value.length > 0),
     personality: settings.assistantName.length > 0 || settings.greeting.length > 0,
+    details:
+      settings.businessDescription.length > 0 ||
+      settings.faq.length > 0 ||
+      settings.instructions.length > 0,
   };
+}
+
+const DAYS: Record<string, string> = {
+  "1_2": "1 to 2",
+  "2_4": "2 to 4",
+  "3_5": "3 to 5",
+  "5_8": "5 to 8",
+  "7_14": "7 to 14",
+};
+
+/**
+ * Turns the dropdown picks into plain sentences for the assistant. Only what
+ * the merchant actually chose is stated; unset picks say nothing.
+ */
+export function describeQuickPolicies(settings: AssistantSettings): string {
+  const lines: string[] = [];
+
+  if (settings.returnWindow === "none") {
+    lines.push("Returns: this store does not accept returns.");
+  } else if (settings.returnWindow) {
+    lines.push(`Returns: accepted within ${settings.returnWindow} days of delivery.`);
+  }
+  if (settings.returnWindow !== "none") {
+    if (settings.returnShipping === "customer") {
+      lines.push("Return shipping: paid by the customer.");
+    } else if (settings.returnShipping === "free") {
+      lines.push("Return shipping: free for the customer.");
+    }
+  }
+  if (settings.processingTime === "same_day") {
+    lines.push("Dispatch: orders usually ship the same business day.");
+  } else if (settings.processingTime) {
+    lines.push(`Dispatch: orders usually ship within ${DAYS[settings.processingTime]} business days.`);
+  }
+  if (settings.deliveryTime) {
+    lines.push(
+      `Delivery: usually ${DAYS[settings.deliveryTime]} business days after the order ships.`,
+    );
+  }
+  if (settings.shipsTo === "domestic") {
+    lines.push("Shipping area: the store's home country only. No international shipping.");
+  } else if (settings.shipsTo === "international") {
+    lines.push("Shipping area: ships internationally.");
+  }
+
+  return lines.join("\n");
 }

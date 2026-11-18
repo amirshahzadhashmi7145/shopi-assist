@@ -37,10 +37,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 const SETUP_ITEMS = [
-  { key: "business", label: "Describe your business" },
-  { key: "policies", label: "Returns and shipping" },
-  { key: "questions", label: "Common questions" },
-  { key: "personality", label: "Name and tone" },
+  { key: "policies", label: "Pick your return and shipping policies" },
+  { key: "personality", label: "Name your assistant" },
   { key: "live", label: "Turn on the chat widget" },
 ] as const;
 
@@ -69,7 +67,7 @@ export default function Home() {
         <s-section heading="Finish setting up your assistant">
           <s-stack direction="block" gap="base">
             <s-paragraph>
-              A few short steps teach the assistant about your store. Skip any you like; it
+              A few quick picks teach the assistant about your store. Skip any you like; it
               already knows your products and published policies.
             </s-paragraph>
             <s-unordered-list>
@@ -172,9 +170,9 @@ export default function Home() {
               )}
             </s-stack>
             <s-paragraph>
-              Tell the assistant about your business, returns and shipping, give it a name,
-              choose whether shoppers can check order status, and set how long transcripts are
-              kept.
+              Choose what the assistant can do (cart, checkout, order status, returns), pick
+              your return and shipping policies, give it a name, and set how long transcripts
+              are kept.
             </s-paragraph>
             <s-stack direction="inline" gap="small">
               <s-button href="/app/settings">Open settings</s-button>

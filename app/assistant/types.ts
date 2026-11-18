@@ -38,13 +38,16 @@ export interface ProductCard {
 }
 
 /** Something the server asks the storefront widget to do in the browser. */
-export type ClientAction = {
-  type: "add_to_cart";
-  /** Numeric variant id, as used by the storefront /cart/add.js endpoint. */
-  variantId: string;
-  quantity: number;
-  title?: string;
-};
+export type ClientAction =
+  | {
+      type: "add_to_cart";
+      /** Numeric variant id, as used by the storefront /cart/add.js endpoint. */
+      variantId: string;
+      quantity: number;
+      title?: string;
+    }
+  /** Show a button that takes the shopper to the store's checkout. */
+  | { type: "checkout" };
 
 /**
  * Minimal GraphQL caller. Resolves with the `data` payload and rejects on

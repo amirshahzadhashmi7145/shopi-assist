@@ -29,19 +29,17 @@ import {
 } from "../assistant/settings.server";
 import { AssistantChat } from "../components/AssistantChat";
 import {
-  BusinessFields,
+  AbilityFields,
   FIELD_GROUPS,
   PersonalityFields,
-  PolicyFields,
-  QuestionFields,
+  QuickPolicyFields,
 } from "../components/AssistantFields";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
 import { authenticate } from "../shopify.server";
 
 const STEPS = [
-  { key: "business", title: "Your business" },
-  { key: "policies", title: "Returns and shipping" },
-  { key: "questions", title: "Common questions" },
+  { key: "abilities", title: "What it can do" },
+  { key: "policies", title: "Your policies" },
   { key: "personality", title: "Name and tone" },
   { key: "live", title: "Go live" },
 ] as const;
@@ -50,10 +48,9 @@ const LAST_STEP = STEPS.length;
 
 /** Fields each step is allowed to save. The last step saves nothing. */
 const STEP_FIELDS: Record<number, readonly SettingsField[]> = {
-  1: FIELD_GROUPS.business,
-  2: FIELD_GROUPS.policies,
-  3: FIELD_GROUPS.questions,
-  4: FIELD_GROUPS.personality,
+  1: FIELD_GROUPS.abilities,
+  2: FIELD_GROUPS.quickPolicies,
+  3: FIELD_GROUPS.personality,
 };
 
 function clampStep(value: unknown): number {
@@ -132,9 +129,9 @@ export default function Setup() {
   };
 
   const stepDone: Record<string, boolean> = {
-    business: progress.business,
+    // Abilities have sensible defaults, so the step counts once the tour moves past it.
+    abilities: step > 1 || completed,
     policies: progress.policies,
-    questions: progress.questions,
     personality: progress.personality,
     live: embedStatus === "active",
   };
@@ -147,9 +144,9 @@ export default function Setup() {
         <s-stack direction="block" gap="base">
           {step === 1 && (
             <s-paragraph>
-              Welcome! Your assistant can already search your products and read your published
-              store policies. These steps teach it the things only you know. Each one is
-              optional, takes about a minute, and can be changed later in Settings.
+              Welcome! Your assistant already knows your products and reads your published
+              store policies. Setup is mostly ticking boxes and picking from lists, takes
+              about two minutes, and can be changed later in Settings.
             </s-paragraph>
           )}
 
@@ -159,37 +156,26 @@ export default function Setup() {
               <s-stack direction="block" gap="base">
                 {step === 1 && (
                   <>
-                    <s-paragraph>
-                      Tell the assistant what your store is about, so it can describe your
-                      business and recommend the right products.
-                    </s-paragraph>
-                    <BusinessFields {...fieldProps} />
+                    <s-paragraph>Tick what you want the assistant to do for shoppers.</s-paragraph>
+                    <AbilityFields {...fieldProps} />
                   </>
                 )}
                 {step === 2 && (
                   <>
                     <s-paragraph>
-                      Returns and shipping are the questions shoppers ask most. Give the short
-                      answers here. For anything you leave out, the assistant falls back to
-                      your published policy pages.
+                      Pick the answers to the questions shoppers ask most. Leave any on
+                      &quot;Not set&quot; and the assistant uses your published policy pages
+                      for it instead.
                     </s-paragraph>
-                    <PolicyFields {...fieldProps} />
+                    <QuickPolicyFields {...fieldProps} />
                   </>
                 )}
                 {step === 3 && (
                   <>
                     <s-paragraph>
-                      Add the answers you find yourself repeating. The assistant answers from
-                      what you write here and will not invent an answer you did not give.
-                    </s-paragraph>
-                    <QuestionFields {...fieldProps} />
-                  </>
-                )}
-                {step === 4 && (
-                  <>
-                    <s-paragraph>
-                      Give the assistant a name and a voice that fits your brand. You can pick
-                      the chat window&apos;s color in the theme editor in the next step.
+                      Optional. Give the assistant a name and a voice that fits your brand. You
+                      can pick the chat window&apos;s color in the theme editor in the next
+                      step.
                     </s-paragraph>
                     <PersonalityFields {...fieldProps} />
                   </>
@@ -314,7 +300,8 @@ export default function Setup() {
       <s-section slot="aside" heading="Good to know">
         <s-paragraph>
           Nothing here is required. You can leave the tour at any time and finish from the
-          Home page, or edit every answer later in Settings.
+          Home page. In Settings you can also add more detail in your own words, such as a
+          description of your business or answers to common questions.
         </s-paragraph>
       </s-section>
     </s-page>

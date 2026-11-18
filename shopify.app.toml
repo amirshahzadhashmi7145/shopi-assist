@@ -9,7 +9,8 @@ client_id = ""
 #   read_reports                           merchant assistant: ShopifyQL sales analytics (top sellers, sales summary)
 #   unauthenticated_read_product_listings  storefront widget: catalog search, best sellers, product details
 #   write_app_proxy                        lets the app register the /apps/shopi-assist storefront proxy
-scopes = "read_products,read_orders,read_reports,unauthenticated_read_product_listings,write_app_proxy"
+#   write_returns                          shopper return requests (opt-in); the merchant approves each one
+scopes = "read_products,read_orders,read_reports,unauthenticated_read_product_listings,write_app_proxy,write_returns"
 
 [webhooks]
 api_version = "2026-10"

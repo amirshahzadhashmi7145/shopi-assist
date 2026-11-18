@@ -17,25 +17,29 @@ import {
   type SettingsField,
 } from "../assistant/settings.server";
 import {
+  AbilityFields,
   BusinessFields,
   FIELD_GROUPS,
   PersonalityFields,
   PolicyFields,
   QuestionFields,
+  QuickPolicyFields,
 } from "../components/AssistantFields";
+
+import { authenticate } from "../shopify.server";
 
 /** Every setting this page shows, and so every setting its form may change. */
 const SETTINGS_PAGE_FIELDS: readonly SettingsField[] = [
+  ...FIELD_GROUPS.abilities,
+  ...FIELD_GROUPS.quickPolicies,
+  ...FIELD_GROUPS.personality,
   ...FIELD_GROUPS.business,
   ...FIELD_GROUPS.policies,
   ...FIELD_GROUPS.questions,
-  ...FIELD_GROUPS.personality,
   "enabled",
   "instructions",
-  "orderLookupEnabled",
   "retentionDays",
 ];
-import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -96,35 +100,40 @@ export default function Settings() {
             </s-banner>
           )}
 
-          <s-section heading="About your business">
-            <BusinessFields settings={settings} errors={errors} />
+          <s-section heading="What the assistant can do">
+            <s-stack direction="block" gap="base">
+              <AbilityFields settings={settings} errors={errors} />
+              <s-banner tone="info">
+                Order status and return requests read order details, including the email
+                address on the order, which Shopify classes as protected customer data. Before
+                turning them on for a live store, request protected customer data access
+                (including the email field) for this app in your Shopify Dev Dashboard.
+              </s-banner>
+            </s-stack>
           </s-section>
 
-          <s-section heading="Returns and shipping">
-            <PolicyFields settings={settings} errors={errors} />
-          </s-section>
-
-          <s-section heading="Common questions">
-            <QuestionFields settings={settings} errors={errors} />
+          <s-section heading="Your policies">
+            <QuickPolicyFields settings={settings} errors={errors} />
           </s-section>
 
           <s-section heading="Name and tone">
             <PersonalityFields settings={settings} errors={errors} />
           </s-section>
 
-          <s-section heading="Storefront chat">
+          <s-section heading="More detail (optional)">
             <s-stack direction="block" gap="base">
-              <s-checkbox
-                name="enabled"
-                label="Answer shoppers in the storefront chat"
-                details="Turn this off to pause the assistant without removing the widget from your theme. Shoppers who open the chat see a short notice."
-                {...(settings.enabled ? { defaultChecked: true } : {})}
-              />
+              <s-paragraph>
+                Only if you want to. Anything you write here is added to what the assistant
+                knows, on top of the choices above.
+              </s-paragraph>
+              <BusinessFields settings={settings} errors={errors} />
+              <PolicyFields settings={settings} errors={errors} />
+              <QuestionFields settings={settings} errors={errors} />
               <s-text-area
                 name="instructions"
                 label="Anything else the assistant should know or do"
-                details="Optional. Tone of voice and store-specific facts, for example: 'Friendly and brief. Orders placed before 2pm ship the same day.' Treat this as public: a determined shopper can get the assistant to repeat it, so don't include anything confidential."
-                rows={5}
+                details="Treat everything on this page as public: a determined shopper can get the assistant to repeat it, so don't include anything confidential."
+                rows={4}
                 maxLength={2000}
                 defaultValue={settings.instructions}
                 {...(errors.instructions ? { error: errors.instructions } : {})}
@@ -132,21 +141,13 @@ export default function Settings() {
             </s-stack>
           </s-section>
 
-          <s-section heading="Order status">
-            <s-stack direction="block" gap="base">
-              <s-checkbox
-                name="orderLookupEnabled"
-                label="Let shoppers check their order status in chat"
-                details="The shopper must give both the order number and the email used at checkout. The assistant then shares only payment status, fulfillment status and tracking links."
-                {...(settings.orderLookupEnabled ? { defaultChecked: true } : {})}
-              />
-              <s-banner tone="info">
-                Order lookups read order email addresses, which Shopify classes as protected
-                customer data. Before turning this on for a live store, request protected
-                customer data access (including the email field) for this app in your Shopify
-                Dev Dashboard.
-              </s-banner>
-            </s-stack>
+          <s-section heading="Storefront chat">
+            <s-checkbox
+              name="enabled"
+              label="Answer shoppers in the storefront chat"
+              details="Turn this off to pause the assistant. The chat bubble is hidden from shoppers until you turn it back on."
+              {...(settings.enabled ? { defaultChecked: true } : {})}
+            />
           </s-section>
 
           <s-section heading="Privacy">

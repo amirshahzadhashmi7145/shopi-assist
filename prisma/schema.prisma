@@ -59,6 +59,20 @@ model ShopSettings {
   // "friendly" | "professional" | "playful"
   tone                String  @default("friendly")
 
+  // What the assistant is allowed to do for shoppers (ticked in setup).
+  allowAddToCart      Boolean @default(true)
+  allowCheckout       Boolean @default(true)
+  // Opt-in: lets shoppers ask for a return with order number + checkout email.
+  // It creates a return REQUEST that the merchant approves or declines.
+  allowReturns        Boolean @default(false)
+
+  // Quick policy picks from dropdowns. "" means "not set".
+  returnWindow        String  @default("") // "none" | "7" | "14" | "30" | "60" | "90"
+  returnShipping      String  @default("") // "customer" | "free"
+  processingTime      String  @default("") // "same_day" | "1_2" | "3_5"
+  deliveryTime        String  @default("") // "2_4" | "3_5" | "5_8" | "7_14"
+  shipsTo             String  @default("") // "domestic" | "international"
+
   // Setup tour: opened automatically until it has been seen once.
   setupStartedAt      DateTime?
   setupCompletedAt    DateTime?

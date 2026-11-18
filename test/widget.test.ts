@@ -305,6 +305,22 @@ describe("chat widget", () => {
     expect(notice.querySelector("a")!.getAttribute("href")).toBe("/cart");
   });
 
+  it("shows a checkout link when the assistant offers checkout", async () => {
+    fetchMock.mockImplementation(() =>
+      reply("Great, you're all set.", { actions: [{ type: "checkout" }] }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("I want to buy it");
+    await flush();
+
+    const link = widget.$(".sa-notice a");
+    expect(link.textContent).toBe("Go to checkout");
+    expect(link.getAttribute("href")).toBe("/checkout");
+    // Only the chat message was sent: the widget itself places no order.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("tells the shopper when the cart rejects an item", async () => {
     fetchMock.mockImplementation((url: string) =>
       url === "/cart/add.js"

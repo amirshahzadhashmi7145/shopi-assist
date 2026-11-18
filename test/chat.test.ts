@@ -12,6 +12,7 @@ import { defineTool } from "../app/assistant/tools/registry";
 import { z } from "zod";
 import {
   DEFAULT_SETTINGS,
+  describeQuickPolicies,
   getSettings,
   getSetupState,
   markSetupCompleted,
@@ -244,6 +245,73 @@ describe("handleChatTurn", () => {
     }
     // Owner notes come after the fixed rules, which they cannot override.
     expect(system.indexOf("Rules:")).toBeLessThan(system.indexOf("Notes from the store owner"));
+  });
+
+  it("gives the assistant only the abilities the merchant ticked", async () => {
+    const names = async () => {
+      const provider = scriptedProvider([text("ok")]);
+      await turn({ admin: fakeGraphql({ shop: { name: "Shop A" } }) }, { provider });
+      return {
+        tools: provider.requests[0].tools.map((tool) => tool.name),
+        system: provider.requests[0].messages[0].content as string,
+      };
+    };
+
+    // Defaults: cart and checkout on, order status and returns off.
+    const byDefault = await names();
+    expect(byDefault.tools).toEqual(expect.arrayContaining(["add_to_cart", "start_checkout"]));
+    expect(byDefault.tools).not.toContain("request_return");
+    expect(byDefault.tools).not.toContain("get_order_status");
+    expect(byDefault.system).toContain("you cannot start a return");
+
+    await saveSettings(
+      SHOP_A,
+      { allowAddToCart: false, allowCheckout: false, allowReturns: true, returnWindow: "14" },
+      db,
+    );
+    const changed = await names();
+    expect(changed.tools).not.toContain("add_to_cart");
+    expect(changed.tools).not.toContain("start_checkout");
+    expect(changed.tools).toContain("request_return");
+    expect(changed.system).toContain("You cannot add items to the cart");
+    expect(changed.system).toContain("You cannot start a checkout");
+    expect(changed.system).toContain("it is a request the store will review");
+    expect(changed.system).toContain("Returns: accepted within 14 days of delivery.");
+  });
+
+  it("removes one-click add from product cards when add to cart is off", async () => {
+    const product = {
+      id: "gid://shopify/Product/1",
+      title: "Trail Mug",
+      handle: "trail-mug",
+      vendor: "",
+      productType: "",
+      availableForSale: true,
+      onlineStoreUrl: null,
+      description: "",
+      featuredImage: null,
+      priceRange: {
+        minVariantPrice: { amount: "18.0", currencyCode: "USD" },
+        maxVariantPrice: { amount: "18.0", currencyCode: "USD" },
+      },
+      compareAtPriceRange: { maxVariantPrice: { amount: "0.0", currencyCode: "USD" } },
+      variants: { nodes: [{ id: "gid://shopify/ProductVariant/101", availableForSale: true }] },
+    };
+    const ask = () =>
+      turn(
+        { storefront: fakeGraphql({ products: { nodes: [product] } }) },
+        {
+          provider: scriptedProvider([
+            { content: null, toolCalls: [{ id: "c1", name: "get_best_sellers", arguments: "{}" }] },
+            text("Try the Trail Mug."),
+          ]),
+        },
+      );
+
+    expect((await ask()).cards[0].variantId).toBe("101");
+    await saveSettings(SHOP_A, { allowAddToCart: false }, db);
+    const off = await ask();
+    expect(off.cards[0]).toMatchObject({ title: "Trail Mug", variantId: null });
   });
 
   it("runs a staff preview as a shopper but keeps it out of the conversation log", async () => {
@@ -632,21 +700,55 @@ describe("settings", () => {
     expect(await getSetupState(SHOP_A, db)).toEqual({ started: true, completed: false });
     // Opening the tour fills nothing in.
     expect(setupProgress(await getSettings(SHOP_A, db))).toEqual({
-      business: false,
       policies: false,
-      questions: false,
       personality: false,
+      details: false,
     });
 
-    await saveSettings(SHOP_A, { shippingInfo: "Ships in 2 days." }, db);
+    await saveSettings(SHOP_A, { returnWindow: "30" }, db);
     await markSetupCompleted(SHOP_A, db);
     expect(await getSetupState(SHOP_A, db)).toEqual({ started: true, completed: true });
     expect(setupProgress(await getSettings(SHOP_A, db))).toMatchObject({
-      business: false,
       policies: true,
+      personality: false,
     });
-    // Starting the tour never wiped the saved answer.
-    expect((await getSettings(SHOP_A, db)).shippingInfo).toBe("Ships in 2 days.");
+    // Starting the tour never wiped the saved pick.
+    expect((await getSettings(SHOP_A, db)).returnWindow).toBe("30");
+  });
+
+  it("turns dropdown picks into plain sentences and says nothing for unset ones", async () => {
+    expect(describeQuickPolicies(DEFAULT_SETTINGS)).toBe("");
+
+    await saveSettings(
+      SHOP_A,
+      {
+        returnWindow: "30",
+        returnShipping: "free",
+        processingTime: "same_day",
+        deliveryTime: "5_8",
+        shipsTo: "domestic",
+      },
+      db,
+    );
+    expect(describeQuickPolicies(await getSettings(SHOP_A, db)).split("\n")).toEqual([
+      "Returns: accepted within 30 days of delivery.",
+      "Return shipping: free for the customer.",
+      "Dispatch: orders usually ship the same business day.",
+      "Delivery: usually 5 to 8 business days after the order ships.",
+      "Shipping area: the store's home country only. No international shipping.",
+    ]);
+
+    // "No returns" drops the return-shipping line, which would contradict it.
+    await saveSettings(SHOP_A, { returnWindow: "none" }, db);
+    const noReturns = describeQuickPolicies(await getSettings(SHOP_A, db));
+    expect(noReturns).toContain("does not accept returns");
+    expect(noReturns).not.toContain("Return shipping");
+  });
+
+  it("rejects a dropdown value that is not one of the choices", async () => {
+    const result = await saveSettings(SHOP_A, { returnWindow: "45", shipsTo: "mars" }, db);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(Object.keys(result.errors).sort()).toEqual(["returnWindow", "shipsTo"]);
   });
 
   it("rejects out-of-range values with a message per field", async () => {

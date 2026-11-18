@@ -146,7 +146,7 @@ export function selectCards(reply: string, cards: ProductCard[]): ProductCard[] 
 function dedupeActions(actions: ClientAction[]): ClientAction[] {
   const seen = new Set<string>();
   return actions.filter((action) => {
-    const key = `${action.type}:${action.variantId}`;
+    const key = action.type === "add_to_cart" ? `add_to_cart:${action.variantId}` : action.type;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

@@ -11,6 +11,13 @@ import { htmlToText, numericId } from "../app/assistant/tools/shopper";
 import { RateLimiter } from "../app/assistant/rate-limit";
 import { fakeGraphql, storefrontProduct, toolContext } from "./helpers/fakes";
 
+const SHOPPER_DEFAULTS = {
+  orderLookupEnabled: false,
+  allowAddToCart: true,
+  allowCheckout: true,
+  allowReturns: false,
+};
+
 const call = (name: string, args: Record<string, unknown> = {}) => ({
   id: "c1",
   name,
@@ -32,7 +39,7 @@ describe("audience boundary", () => {
       audience: "shopper",
       admin: fakeGraphql({}),
       storefront: fakeGraphql({}),
-      settings: { orderLookupEnabled: true },
+      settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
     });
     const names = toolsFor(allTools, context).map((tool) => tool.name);
 
@@ -256,7 +263,7 @@ describe("get_order_status", () => {
     toolContext({
       admin,
       storefront: fakeGraphql({}),
-      settings: { orderLookupEnabled: true },
+      settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
       buyer: { ip: "203.0.113.7" },
     });
 
@@ -333,7 +340,7 @@ describe("get_order_status", () => {
       toolContext({
         admin,
         storefront: fakeGraphql({}),
-        settings: { orderLookupEnabled: true },
+        settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
         buyer: { ip },
         rateLimiter,
       }),
@@ -404,6 +411,162 @@ describe("get_order_status", () => {
 
     expect(third.json.error).toMatch(/per message/);
     expect(admin.calls).toHaveLength(2);
+  });
+});
+
+describe("start_checkout", () => {
+  it("shows a checkout button and never claims to place the order", async () => {
+    const result = await run("start_checkout", {}, toolContext({ storefront: fakeGraphql({}) }));
+    expect(result.actions).toEqual([{ type: "checkout" }]);
+    expect(result.json.note).toMatch(/pay on the store's checkout page/);
+  });
+
+  it("is unavailable when the merchant switched it off, as is add to cart", async () => {
+    const context = toolContext({
+      storefront: fakeGraphql({}),
+      settings: { ...SHOPPER_DEFAULTS, allowCheckout: false, allowAddToCart: false },
+    });
+    expect((await run("start_checkout", {}, context)).json.error).toMatch(/Unknown tool/);
+    expect((await run("add_to_cart", { variantId: "101" }, context)).json.error).toMatch(/Unknown tool/);
+  });
+});
+
+describe("request_return", () => {
+  const order = {
+    id: "gid://shopify/Order/9001",
+    name: "#1001",
+    email: "buyer@example.com",
+    processedAt: "2026-11-10T09:00:00Z",
+    cancelledAt: null,
+    displayFinancialStatus: "PAID",
+    displayFulfillmentStatus: "FULFILLED",
+    fulfillments: [],
+  };
+  const returnable = (...items: Array<[id: string, title: string, quantity: number]>) => ({
+    returnableFulfillments: {
+      nodes: [
+        {
+          returnableFulfillmentLineItems: {
+            nodes: items.map(([id, title, quantity]) => ({
+              quantity,
+              fulfillmentLineItem: { id, lineItem: { title } },
+            })),
+          },
+        },
+      ],
+    },
+  });
+  const created = { returnRequest: { return: { name: "#1001-R1", status: "REQUESTED" }, userErrors: [] } };
+  const proof = { orderNumber: "1001", email: "buyer@example.com", reason: "Too small" };
+  const returnsOn = (admin: ReturnType<typeof fakeGraphql>, rateLimiter = new RateLimiter()) =>
+    toolContext({
+      admin,
+      storefront: fakeGraphql({}),
+      settings: { ...SHOPPER_DEFAULTS, allowReturns: true },
+      buyer: { ip: "203.0.113.7" },
+      rateLimiter,
+    });
+
+  it("is off by default", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [order] } });
+    const result = await run("request_return", proof, toolContext({ admin, storefront: fakeGraphql({}) }));
+    expect(result.json.error).toMatch(/Unknown tool/);
+    expect(admin.calls).toHaveLength(0);
+  });
+
+  it("sends a return request for a single-item order", async () => {
+    const admin = fakeGraphql(
+      { orders: { nodes: [order] } },
+      returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 2]),
+      created,
+    );
+
+    const result = await run("request_return", { ...proof, quantity: 5 }, returnsOn(admin));
+
+    expect(result.json).toMatchObject({ status: "requested", returnReference: "#1001-R1", quantity: 2 });
+    expect(result.json.note).toMatch(/request, not an approval/);
+    expect(admin.calls[2].variables).toEqual({
+      input: {
+        orderId: "gid://shopify/Order/9001",
+        returnLineItems: [
+          {
+            fulfillmentLineItemId: "gid://shopify/FulfillmentLineItem/1",
+            // Capped at what can actually be returned.
+            quantity: 2,
+            customerNote: "Too small",
+          },
+        ],
+      },
+    });
+  });
+
+  it("asks which item instead of guessing when the order has several", async () => {
+    const items = returnable(
+      ["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1],
+      ["gid://shopify/FulfillmentLineItem/2", "Camp Kettle", 1],
+    );
+    const admin = fakeGraphql({ orders: { nodes: [order] } }, items);
+
+    const result = await run("request_return", proof, returnsOn(admin));
+
+    expect(result.json.status).toBe("need_item");
+    expect(result.json.returnableItems.map((item: { title: string }) => item.title)).toEqual([
+      "Trail Mug",
+      "Camp Kettle",
+    ]);
+    // Looked up the order and its items, but sent nothing.
+    expect(admin.calls).toHaveLength(2);
+
+    const second = fakeGraphql({ orders: { nodes: [order] } }, items, created);
+    const chosen = await run("request_return", { ...proof, itemTitle: "kettle" }, returnsOn(second));
+    expect(chosen.json).toMatchObject({ status: "requested", item: "Camp Kettle" });
+  });
+
+  it("refuses without proof of ownership and never reaches the returns API", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [order] } });
+    const result = await run(
+      "request_return",
+      { ...proof, email: "someone@else.com" },
+      returnsOn(admin),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.json.error).toMatch(/No order matches/);
+    expect(admin.calls).toHaveLength(1);
+  });
+
+  it("allows one request per order per day", async () => {
+    const rateLimiter = new RateLimiter();
+    const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
+    const first = fakeGraphql({ orders: { nodes: [order] } }, item, created);
+    const again = fakeGraphql({ orders: { nodes: [order] } }, item, created);
+
+    expect((await run("request_return", proof, returnsOn(first, rateLimiter))).json.status).toBe("requested");
+    const repeat = await run("request_return", proof, returnsOn(again, rateLimiter));
+
+    expect(repeat.json.error).toMatch(/already requested for this order today/);
+    expect(again.calls).toHaveLength(2);
+  });
+
+  it("explains when nothing can be returned or Shopify rejects the request", async () => {
+    const nothing = await run(
+      "request_return",
+      proof,
+      returnsOn(fakeGraphql({ orders: { nodes: [order] } }, returnable())),
+    );
+    expect(nothing.json.error).toMatch(/Nothing on this order can be returned/);
+
+    const rejected = await run(
+      "request_return",
+      proof,
+      returnsOn(
+        fakeGraphql(
+          { orders: { nodes: [order] } },
+          returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]),
+          { returnRequest: { return: null, userErrors: [{ message: "Return window has closed" }] } },
+        ),
+      ),
+    );
+    expect(rejected.json.error).toMatch(/did not accept the return request: Return window has closed/);
   });
 });
 

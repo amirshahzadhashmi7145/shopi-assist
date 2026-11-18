@@ -59,7 +59,12 @@ export function toolContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     shop: "test-shop.myshopify.com",
     audience,
-    settings: { orderLookupEnabled: false },
+    settings: {
+      orderLookupEnabled: false,
+      allowAddToCart: true,
+      allowCheckout: true,
+      allowReturns: false,
+    },
     buyer: {},
     rateLimiter: new RateLimiter(),
     turn: { orderLookups: 0 },
