@@ -1,0 +1,38 @@
+# Shopi Assist app configuration.
+# `shopify app dev` fills in client_id, name and URLs when you link this project to an app.
+client_id = ""
+
+[access_scopes]
+# Keep this list minimal. What each scope is for:
+#   read_products                          merchant assistant: product search, low-stock report
+#   read_orders                            merchant assistant: recent orders; shopper order-status lookup (opt-in)
+#   read_reports                           merchant assistant: ShopifyQL sales analytics (top sellers, sales summary)
+#   unauthenticated_read_product_listings  storefront widget: catalog search, best sellers, product details
+#   write_app_proxy                        lets the app register the /apps/shopi-assist storefront proxy
+scopes = "read_products,read_orders,read_reports,unauthenticated_read_product_listings,write_app_proxy"
+
+[webhooks]
+api_version = "2026-10"
+
+  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = ["app/uninstalled"]
+
+  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
+  [[webhooks.subscriptions]]
+  topics = ["app/scopes_update"]
+  uri = "/webhooks/app/scopes_update"
+
+  # Mandatory privacy webhooks. Handled by: /app/routes/webhooks.compliance.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance"
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+
+# The storefront chat widget talks to the app through this proxy:
+#   https://{shop}/apps/shopi-assist/chat  ->  {app url}/proxy/chat
+# Shopify signs every proxied request, which is how the server knows which shop it came from.
+[app_proxy]
+url = "/proxy"
+prefix = "apps"
+subpath = "shopi-assist"

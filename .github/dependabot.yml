@@ -1,0 +1,18 @@
+# Weekly dependency update PRs, grouped to keep the noise down.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      shopify:
+        patterns:
+          - "@shopify/*"
+      react-router:
+        patterns:
+          - "react-router"
+          - "@react-router/*"
+      dev-dependencies:
+        dependency-type: development

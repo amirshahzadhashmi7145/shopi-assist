@@ -1,0 +1,246 @@
+import { describe, expect, it } from "vitest";
+
+import { getLlmProvider, getLlmStatus } from "../app/assistant/llm/index.server";
+import { createMockProvider } from "../app/assistant/llm/mock";
+import { createOpenAiProvider, toOpenAiMessages } from "../app/assistant/llm/openai.server";
+import { buildSystemPrompt } from "../app/assistant/prompts";
+import { RateLimiter } from "../app/assistant/rate-limit";
+import { parseInline, parseRichText, safeHref } from "../app/assistant/rich-text";
+import { toGraphqlFn } from "../app/assistant/shopify-clients.server";
+
+describe("RateLimiter", () => {
+  it("allows up to the maximum per window, then blocks until the window resets", () => {
+    const limiter = new RateLimiter();
+    expect(limiter.hit("k", 2, 1000, 0).allowed).toBe(true);
+    expect(limiter.hit("k", 2, 1000, 10).allowed).toBe(true);
+
+    const blocked = limiter.hit("k", 2, 1000, 400);
+    expect(blocked).toEqual({ allowed: false, retryAfterMs: 600 });
+
+    expect(limiter.hit("k", 2, 1000, 1000).allowed).toBe(true);
+  });
+
+  it("tracks keys independently and forgets expired ones", () => {
+    const limiter = new RateLimiter();
+    limiter.hit("a", 1, 1000, 0);
+    expect(limiter.hit("b", 1, 1000, 0).allowed).toBe(true);
+    expect(limiter.size).toBe(2);
+
+    limiter.hit("c", 1, 1000, 120_000);
+    expect(limiter.size).toBe(1);
+  });
+});
+
+describe("rich text", () => {
+  it("parses paragraphs, lists, bold and links", () => {
+    const blocks = parseRichText(
+      "Here are **two** picks:\n\n- [Trail Mug](/products/trail-mug)\n- Camp Kettle\n\n1. First\n2. Second",
+    );
+
+    expect(blocks.map((block) => block.type)).toEqual(["paragraph", "list", "list"]);
+    expect(blocks[0]).toEqual({
+      type: "paragraph",
+      lines: [
+        [
+          { type: "text", text: "Here are " },
+          { type: "bold", text: "two" },
+          { type: "text", text: " picks:" },
+        ],
+      ],
+    });
+    expect(blocks[1]).toMatchObject({ ordered: false });
+    expect((blocks[1] as { items: unknown[][] }).items[0]).toEqual([
+      { type: "link", text: "Trail Mug", href: "/products/trail-mug" },
+    ]);
+    expect(blocks[2]).toMatchObject({ ordered: true });
+  });
+
+  it("never produces links for unsafe URLs", () => {
+    expect(safeHref("javascript:alert(1)")).toBeNull();
+    expect(safeHref("data:text/html,<script>")).toBeNull();
+    expect(safeHref("//evil.example")).toBeNull();
+    expect(safeHref("https://shop.example/a")).toBe("https://shop.example/a");
+    expect(safeHref("/cart")).toBe("/cart");
+
+    expect(parseInline("[click](javascript:alert(1))")[0]).toEqual({ type: "text", text: "click" });
+  });
+
+  it("links bare URLs without swallowing trailing punctuation", () => {
+    expect(parseInline("See https://shop.example/faq.")).toEqual([
+      { type: "text", text: "See " },
+      { type: "link", text: "https://shop.example/faq", href: "https://shop.example/faq" },
+      { type: "text", text: "." },
+    ]);
+  });
+});
+
+describe("LLM configuration", () => {
+  it("defaults to OpenAI gpt-4o and requires a key", () => {
+    expect(getLlmStatus({})).toMatchObject({ ready: false, provider: "openai", model: "gpt-4o" });
+    expect(getLlmStatus({}).problem).toMatch(/OPENAI_API_KEY/);
+    expect(getLlmProvider({})).toBeNull();
+
+    expect(getLlmStatus({ OPENAI_API_KEY: "k", OPENAI_MODEL: "gpt-4o-mini" })).toEqual({
+      ready: true,
+      provider: "openai",
+      model: "gpt-4o-mini",
+    });
+  });
+
+  it("supports mock mode without a key and rejects unknown providers", () => {
+    expect(getLlmStatus({ LLM_PROVIDER: "mock" }).ready).toBe(true);
+    expect(getLlmProvider({ LLM_PROVIDER: "mock" })!.name).toBe("mock");
+    expect(getLlmStatus({ LLM_PROVIDER: "nope" }).ready).toBe(false);
+  });
+
+  it("never includes the key in the status", () => {
+    const status = getLlmStatus({ OPENAI_API_KEY: "fake-key-value-2" });
+    expect(JSON.stringify(status)).not.toContain("fake-key-value-2");
+  });
+});
+
+describe("OpenAI adapter", () => {
+  const fakeClient = (message: Record<string, unknown>) => {
+    const calls: Array<Record<string, unknown>> = [];
+    return {
+      calls,
+      client: {
+        chat: {
+          completions: {
+            create: async (params: Record<string, unknown>) => {
+              calls.push(params);
+              return {
+                choices: [{ message }],
+                usage: { prompt_tokens: 12, completion_tokens: 5 },
+              };
+            },
+          },
+        },
+      } as never,
+    };
+  };
+  const tool = {
+    name: "get_best_sellers",
+    description: "List best sellers",
+    parameters: { type: "object", properties: {} },
+  };
+
+  it("sends tools and maps a tool call back", async () => {
+    const { client, calls } = fakeClient({
+      content: null,
+      tool_calls: [
+        { id: "call_1", type: "function", function: { name: "get_best_sellers", arguments: '{"limit":3}' } },
+      ],
+    });
+    const provider = createOpenAiProvider({ apiKey: "k", model: "gpt-4o", client });
+
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "top sellers?" }],
+      tools: [tool],
+    });
+
+    expect(calls[0]).toMatchObject({
+      model: "gpt-4o",
+      tool_choice: "auto",
+      tools: [{ type: "function", function: { name: "get_best_sellers" } }],
+    });
+    expect(calls[0]).not.toHaveProperty("temperature");
+    expect(response.toolCalls).toEqual([
+      { id: "call_1", name: "get_best_sellers", arguments: '{"limit":3}' },
+    ]);
+    expect(response.usage).toEqual({ inputTokens: 12, outputTokens: 5 });
+  });
+
+  it("passes tool_choice none and omits tools when there are none", async () => {
+    const forced = fakeClient({ content: "Done" });
+    await createOpenAiProvider({ apiKey: "k", model: "m", client: forced.client }).complete({
+      messages: [],
+      tools: [tool],
+      toolChoice: "none",
+    });
+    expect(forced.calls[0].tool_choice).toBe("none");
+
+    const bare = fakeClient({ content: "Done" });
+    await createOpenAiProvider({ apiKey: "k", model: "m", client: bare.client }).complete({
+      messages: [],
+      tools: [],
+    });
+    expect(bare.calls[0]).not.toHaveProperty("tools");
+    expect(bare.calls[0]).not.toHaveProperty("tool_choice");
+  });
+
+  it("converts a tool-call transcript to the OpenAI wire format", () => {
+    expect(
+      toOpenAiMessages([
+        { role: "system", content: "s" },
+        { role: "user", content: "u" },
+        { role: "assistant", content: null, toolCalls: [{ id: "c1", name: "t", arguments: "{}" }] },
+        { role: "tool", toolCallId: "c1", name: "t", content: '{"ok":true}' },
+        { role: "assistant", content: "a" },
+      ]),
+    ).toEqual([
+      { role: "system", content: "s" },
+      { role: "user", content: "u" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c1", type: "function", function: { name: "t", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "c1", content: '{"ok":true}' },
+      { role: "assistant", content: "a" },
+    ]);
+  });
+});
+
+describe("mock provider", () => {
+  it("calls the best-seller tool when asked about popular products", async () => {
+    const provider = createMockProvider();
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "What are your top selling items?" }],
+      tools: [{ name: "get_best_sellers", description: "", parameters: {} }],
+    });
+    expect(response.toolCalls[0].name).toBe("get_best_sellers");
+  });
+});
+
+describe("system prompts", () => {
+  const input = {
+    shopName: "Alpine Outfitters",
+    orderLookupEnabled: false,
+    today: new Date("2026-11-18T00:00:00Z"),
+  };
+
+  it("tells the shopper assistant it has no private store data", () => {
+    const prompt = buildSystemPrompt({ ...input, audience: "shopper" });
+    expect(prompt).toContain("Alpine Outfitters");
+    expect(prompt).toContain("2026-11-18");
+    expect(prompt).toMatch(/no access to the store's private data/);
+    expect(prompt).toMatch(/cannot look up orders/);
+  });
+
+  it("caps merchant guidance and keeps it below the fixed rules", () => {
+    const prompt = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      merchantInstructions: "x".repeat(5000),
+    });
+    expect(prompt.match(/x+/g)!.sort((a, b) => b.length - a.length)[0]).toHaveLength(2000);
+    expect(prompt.indexOf("Rules:")).toBeLessThan(prompt.indexOf("Additional guidance"));
+  });
+
+  it("tells the merchant assistant it is read-only", () => {
+    expect(buildSystemPrompt({ ...input, audience: "merchant" })).toMatch(/read-only/);
+  });
+});
+
+describe("toGraphqlFn", () => {
+  const client = (body: unknown) => ({ graphql: async () => Response.json(body) });
+
+  it("returns data and throws on GraphQL errors", async () => {
+    expect(await toGraphqlFn(client({ data: { ok: 1 } }), "Admin")("q")).toEqual({ ok: 1 });
+    await expect(
+      toGraphqlFn(client({ errors: [{ message: "Access denied" }] }), "Admin")("q"),
+    ).rejects.toThrow("Admin GraphQL error: Access denied");
+    await expect(toGraphqlFn(client({}), "Storefront")("q")).rejects.toThrow(/no data/);
+  });
+});

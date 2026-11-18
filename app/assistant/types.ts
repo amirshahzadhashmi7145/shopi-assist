@@ -1,0 +1,62 @@
+/**
+ * Shared types for the assistant. Nothing in this file touches Shopify, the
+ * database or an LLM, so it is safe to import from anywhere (including tests).
+ */
+
+/**
+ * Who is on the other end of the chat. This is decided by the server route
+ * that received the request, never by anything the client sends:
+ *  - "shopper":  anonymous storefront visitor, reached through the app proxy.
+ *  - "merchant": store staff inside the Shopify admin, authenticated by Shopify.
+ */
+export type Audience = "shopper" | "merchant";
+
+export interface Money {
+  amount: string;
+  currencyCode: string;
+}
+
+/** A product the widget can render as a card under an assistant reply. */
+export interface ProductCard {
+  id: string;
+  title: string;
+  handle: string;
+  /** Absolute online-store URL, or null when the product has no storefront page. */
+  url: string | null;
+  imageUrl: string | null;
+  imageAlt: string | null;
+  price: Money | null;
+  /** Set only when the product is on sale. */
+  compareAtPrice: Money | null;
+  available: boolean;
+  /**
+   * Numeric variant id for a one-click "Add to cart". Only set when the
+   * product has exactly one variant; otherwise the shopper must choose options
+   * on the product page.
+   */
+  variantId: string | null;
+}
+
+/** Something the server asks the storefront widget to do in the browser. */
+export type ClientAction = {
+  type: "add_to_cart";
+  /** Numeric variant id, as used by the storefront /cart/add.js endpoint. */
+  variantId: string;
+  quantity: number;
+  title?: string;
+};
+
+/**
+ * Minimal GraphQL caller. Resolves with the `data` payload and rejects on
+ * transport or GraphQL errors. Tools depend on this instead of on Shopify's
+ * client classes so they can be unit tested with plain functions.
+ */
+export type GraphqlFn = <T = unknown>(
+  query: string,
+  variables?: Record<string, unknown>,
+) => Promise<T>;
+
+export interface StoredMessage {
+  role: "user" | "assistant";
+  content: string;
+}

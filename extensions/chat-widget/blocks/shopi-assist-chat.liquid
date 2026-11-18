@@ -1,0 +1,90 @@
+{%- comment -%}
+  Shopi Assist chat widget (app embed block).
+
+  Renders an empty mount point; assets/shopi-assist.js builds the chat UI
+  inside a shadow root so theme styles and widget styles cannot clash.
+  Turning this embed off in the theme editor removes the widget completely.
+
+  The endpoint is the app proxy path configured in shopify.app.toml
+  ([app_proxy] prefix + subpath). Change both together.
+{%- endcomment -%}
+<div
+  id="shopi-assist-root"
+  data-endpoint="/apps/shopi-assist/chat"
+  data-stylesheet="{{ 'shopi-assist.css' | asset_url | escape }}"
+  data-title="{{ block.settings.title | escape }}"
+  data-greeting="{{ block.settings.greeting | escape }}"
+  data-accent="{{ block.settings.accent_color | escape }}"
+  data-position="{{ block.settings.position | escape }}"
+  data-suggestion-1="{{ block.settings.suggestion_1 | escape }}"
+  data-suggestion-2="{{ block.settings.suggestion_2 | escape }}"
+  data-suggestion-3="{{ block.settings.suggestion_3 | escape }}"
+  data-country="{{ localization.country.iso_code | escape }}"
+  data-locale="{{ request.locale.iso_code | escape }}"
+  data-cart-url="{{ routes.cart_url | escape }}"
+  data-cart-add-url="{{ routes.cart_add_url | escape }}"
+></div>
+<script src="{{ 'shopi-assist.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Shopi Assist chat",
+  "target": "body",
+  "settings": [
+    {
+      "type": "text",
+      "id": "title",
+      "label": "Chat title",
+      "default": "Shopping assistant"
+    },
+    {
+      "type": "textarea",
+      "id": "greeting",
+      "label": "Welcome message",
+      "default": "Hi! Ask me about products, best sellers, shipping or returns."
+    },
+    {
+      "type": "color",
+      "id": "accent_color",
+      "label": "Accent color",
+      "default": "#1F3D2F"
+    },
+    {
+      "type": "select",
+      "id": "position",
+      "label": "Position",
+      "options": [
+        { "value": "right", "label": "Bottom right" },
+        { "value": "left", "label": "Bottom left" }
+      ],
+      "default": "right"
+    },
+    {
+      "type": "header",
+      "content": "Suggested questions"
+    },
+    {
+      "type": "paragraph",
+      "content": "Shown as one-tap buttons before the shopper sends a first message. Leave a field empty to hide it."
+    },
+    {
+      "type": "text",
+      "id": "suggestion_1",
+      "label": "Suggestion 1",
+      "default": "What are your best sellers?"
+    },
+    {
+      "type": "text",
+      "id": "suggestion_2",
+      "label": "Suggestion 2",
+      "default": "What's your return policy?"
+    },
+    {
+      "type": "text",
+      "id": "suggestion_3",
+      "label": "Suggestion 3",
+      "default": "Help me find a gift"
+    }
+  ]
+}
+{% endschema %}

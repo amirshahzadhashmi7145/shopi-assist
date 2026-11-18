@@ -1,0 +1,559 @@
+/*
+ * Shopi Assist chat widget styles. Loaded inside the widget's shadow root, so
+ * nothing here can leak into the theme and theme CSS cannot restyle the chat.
+ * --sa-accent and --sa-on-accent are set from the merchant's color setting.
+ */
+
+:host {
+  all: initial;
+}
+
+.sa {
+  --sa-accent: #1f3d2f;
+  --sa-on-accent: #ffffff;
+  --sa-ink: #1c1c1a;
+  --sa-ink-soft: #5f5f5a;
+  --sa-surface: #ffffff;
+  --sa-surface-soft: #f4f4f1;
+  --sa-line: rgba(28, 28, 26, 0.12);
+  --sa-danger: #a12a1f;
+  --sa-danger-soft: #fdf0ee;
+  --sa-radius: 16px;
+  --sa-gap: 20px;
+
+  position: fixed;
+  bottom: var(--sa-gap);
+  right: var(--sa-gap);
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  /* Use the theme's body font when it exposes one, so the chat feels native. */
+  font-family: var(--font-body-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--sa-ink);
+  -webkit-text-size-adjust: 100%;
+}
+
+.sa[data-position="left"] {
+  right: auto;
+  left: var(--sa-gap);
+  align-items: flex-start;
+}
+
+.sa *,
+.sa *::before,
+.sa *::after {
+  box-sizing: border-box;
+}
+
+.sa [hidden],
+.sa[hidden] {
+  display: none !important;
+}
+
+/* :where() keeps these resets at low specificity, so the component rules
+   further down (for example white text on accent buttons) always win. */
+.sa :where(button) {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sa :where(a) {
+  color: inherit;
+}
+
+.sa :focus-visible {
+  outline: 2px solid var(--sa-ink);
+  outline-offset: 2px;
+}
+
+/* Launcher ---------------------------------------------------------------- */
+
+.sa-launcher {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.sa-launcher:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.26);
+}
+
+.sa-launcher:focus-visible {
+  outline-color: var(--sa-accent);
+  outline-offset: 3px;
+}
+
+/* Panel ------------------------------------------------------------------- */
+
+.sa-panel {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  max-width: calc(100vw - 2 * var(--sa-gap));
+  height: min(620px, calc(100vh - 120px));
+  height: min(620px, calc(100dvh - 120px));
+  background: var(--sa-surface);
+  border: 1px solid var(--sa-line);
+  border-radius: var(--sa-radius);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  animation: sa-rise 180ms ease-out;
+}
+
+@keyframes sa-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sa-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 12px 14px 18px;
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
+}
+
+.sa-title {
+  margin: 0;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-header-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sa-icon-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.sa-icon-button:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.25);
+}
+
+.sa-icon-button:focus-visible {
+  outline-color: var(--sa-on-accent);
+  outline-offset: -2px;
+}
+
+/* Messages ---------------------------------------------------------------- */
+
+.sa-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Positioned so the script can measure message offsets within the list. */
+  position: relative;
+}
+
+.sa-messages:focus-visible {
+  outline-offset: -2px;
+}
+
+.sa-row {
+  display: flex;
+}
+
+.sa-row-user {
+  justify-content: flex-end;
+}
+
+.sa-bubble {
+  max-width: 86%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  border-bottom-left-radius: 5px;
+  background: var(--sa-surface-soft);
+  overflow-wrap: anywhere;
+}
+
+.sa-row-user .sa-bubble {
+  border-radius: 16px;
+  border-bottom-right-radius: 5px;
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
+  white-space: pre-wrap;
+}
+
+.sa-bubble p,
+.sa-bubble ul,
+.sa-bubble ol {
+  margin: 0;
+}
+
+.sa-bubble p + p,
+.sa-bubble p + ul,
+.sa-bubble p + ol,
+.sa-bubble ul + p,
+.sa-bubble ol + p {
+  margin-top: 8px;
+}
+
+.sa-bubble ul,
+.sa-bubble ol {
+  padding-left: 20px;
+}
+
+.sa-bubble li + li {
+  margin-top: 4px;
+}
+
+.sa-bubble a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sa-bubble strong {
+  font-weight: 650;
+}
+
+/* Typing indicator */
+
+.sa-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 14px;
+}
+
+.sa-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sa-ink-soft);
+  animation: sa-bounce 1.2s infinite ease-in-out;
+}
+
+.sa-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.sa-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes sa-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Notices (cart confirmations, errors) */
+
+.sa-notice {
+  align-self: center;
+  max-width: 100%;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: var(--sa-surface-soft);
+  color: var(--sa-ink-soft);
+  font-size: 13px;
+  text-align: center;
+}
+
+.sa-notice a {
+  color: var(--sa-ink);
+  font-weight: 600;
+}
+
+.sa-notice-error {
+  background: var(--sa-danger-soft);
+  color: var(--sa-danger);
+}
+
+.sa-retry {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--sa-danger);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Product cards ----------------------------------------------------------- */
+
+.sa-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sa-card {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--sa-line);
+  border-radius: 12px;
+  background: var(--sa-surface);
+}
+
+.sa-card-image {
+  flex: 0 0 64px;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--sa-surface-soft);
+}
+
+.sa-card-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sa-card-title {
+  font-weight: 600;
+  line-height: 1.3;
+  text-decoration: none;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+a.sa-card-title:hover {
+  text-decoration: underline;
+}
+
+.sa-card-price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sa-card-price s {
+  color: var(--sa-ink-soft);
+  font-size: 13px;
+}
+
+.sa-card-soldout {
+  color: var(--sa-ink-soft);
+  font-size: 13px;
+}
+
+.sa-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.sa-card-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 5px 12px;
+  border: 1px solid var(--sa-line);
+  border-radius: 999px;
+  background: var(--sa-surface);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.sa-card-button:hover {
+  border-color: var(--sa-ink);
+}
+
+.sa-card-button-primary {
+  border-color: var(--sa-accent);
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
+}
+
+.sa-card-button-primary:hover {
+  border-color: var(--sa-accent);
+  filter: brightness(1.08);
+}
+
+.sa-card-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Suggestions ------------------------------------------------------------- */
+
+.sa-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 14px 10px;
+}
+
+.sa-chip {
+  padding: 7px 12px;
+  border: 1px solid var(--sa-line);
+  border-radius: 999px;
+  background: var(--sa-surface);
+  font-size: 13px;
+  text-align: left;
+}
+
+.sa-chip:hover {
+  border-color: var(--sa-ink);
+}
+
+/* Composer ---------------------------------------------------------------- */
+
+.sa-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--sa-line);
+}
+
+.sa-input {
+  flex: 1 1 auto;
+  min-height: 40px;
+  max-height: 112px;
+  padding: 9px 12px;
+  border: 1px solid var(--sa-line);
+  border-radius: 12px;
+  background: var(--sa-surface);
+  color: var(--sa-ink);
+  font: inherit;
+  /* 16px stops iOS Safari from zooming the page when the field is focused. */
+  font-size: 16px;
+  line-height: 1.35;
+  resize: none;
+}
+
+.sa-input::placeholder {
+  color: var(--sa-ink-soft);
+}
+
+.sa-input:focus-visible {
+  outline: 2px solid var(--sa-accent);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+.sa-send {
+  flex: 0 0 40px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
+}
+
+.sa-send:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.sa-send:focus-visible {
+  outline-color: var(--sa-accent);
+}
+
+.sa-footnote {
+  margin: 0;
+  padding: 0 14px 10px;
+  color: var(--sa-ink-soft);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+/* Small screens: the panel takes over the screen ---------------------------- */
+
+@media (max-width: 480px) {
+  .sa.sa-open {
+    inset: 0;
+    gap: 0;
+  }
+
+  .sa.sa-open .sa-panel {
+    width: 100vw;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  /* The header's close button replaces the launcher while the chat is open. */
+  .sa.sa-open .sa-launcher {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sa-panel,
+  .sa-dot {
+    animation: none;
+  }
+
+  .sa-launcher {
+    transition: none;
+  }
+}
