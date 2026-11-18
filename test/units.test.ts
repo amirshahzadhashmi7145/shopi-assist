@@ -257,6 +257,13 @@ describe("system prompts", () => {
     expect(prompt.indexOf("Rules:")).toBeLessThan(prompt.indexOf("Additional guidance"));
   });
 
+  it("tells the shopper assistant not to add figures of its own and to share partial answers", () => {
+    const prompt = buildSystemPrompt({ ...input, audience: "shopper" });
+    expect(prompt).toMatch(/Do not add specific figures of your own/);
+    expect(prompt).toMatch(/only when it comes from a tool result or the store owner's notes/);
+    expect(prompt).toMatch(/answer only part of a question, share that part/);
+  });
+
   it("adds no owner section when the merchant wrote nothing", () => {
     const prompt = buildSystemPrompt({ ...input, audience: "shopper" });
     expect(prompt).not.toContain("Notes from the store owner");
