@@ -84,13 +84,15 @@ cp .env.example .env        # add OPENAI_API_KEY, or set LLM_PROVIDER=mock
 npm run dev                 # logs in to Shopify, creates/links the app, starts a tunnel
 ```
 
-`npm run dev` prints a preview link. Open it, install the app on your dev store, then:
+`npm run dev` asks you to log in, name the app, and pick or create a dev store. It also asks for the dev store's **storefront password** (Shopify admin → Online Store → Preferences), which is not your account password. Then:
 
-1. On the app's home page click **Turn on chat widget**, then **Save** in the theme editor.
-2. Open the storefront. The chat bubble is in the corner.
-3. Ask "What are your best sellers?"
+1. Press `p` in the terminal to open the app and install it.
+2. Turn the widget on **in the host theme**. While developing, the CLI serves the widget only to a separate development theme it uploads, named "App Ext. Host (...)". Open Online Store → Themes, click **Customize** on that theme, go to **App embeds**, switch on **Shopi Assist chat** and **Save**.
+3. Open the local preview the CLI prints, `http://127.0.0.1:9293`, in Chrome. The chat bubble is in the corner. Ask "What are your best sellers?"
 
-Dev stores are password protected; unlock the storefront in the same browser first.
+During development the widget does **not** appear at the store's own address (`your-store.myshopify.com`). That address shows the published theme, which only gets the widget after `npm run deploy` releases a version of the app. The **Turn on chat widget** button on the app's home page targets the published theme, so it is the right button for merchants on a released app but not for this dev preview.
+
+If linking to a new app blanks the `scopes` line in `shopify.app.toml`, restore it from git and restart `npm run dev`; the app proxy needs `write_app_proxy`.
 
 ### Testing without a store
 
