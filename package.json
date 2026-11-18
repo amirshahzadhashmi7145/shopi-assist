@@ -2,7 +2,7 @@
   "name": "shopi-assist",
   "private": true,
   "scripts": {
-    "build": "react-router build",
+    "build": "prisma generate && react-router build",
     "dev": "shopify app dev",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
@@ -17,11 +17,12 @@
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
-    "typecheck": "react-router typegen && tsc --noEmit",
+    "typecheck": "prisma generate && react-router typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "node scripts/smoke-test.mjs",
-    "widget:preview": "node scripts/widget-preview.mjs"
+    "widget:preview": "node scripts/widget-preview.mjs",
+    "pretest": "prisma generate"
   },
   "type": "module",
   "engines": {
