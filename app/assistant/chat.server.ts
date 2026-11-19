@@ -364,7 +364,7 @@ export async function handleChatTurn(
   );
 
   console.info(
-    `[shopi-assist] chat turn shop=${input.shop} audience=${input.audience} steps=${turn.steps} tools=${turn.toolsUsed.join(",") || "-"} tokens=${turn.usage.inputTokens}+${turn.usage.outputTokens} ms=${Date.now() - startedAt}`,
+    `[shopi-assist] chat turn shop=${input.shop} audience=${input.audience} steps=${turn.steps} tools=${turn.toolsUsed.join(",") || "-"} tokens=${turn.usage.inputTokens}+${turn.usage.outputTokens} cart=${context.cart ? context.cart.length : "-"} ms=${Date.now() - startedAt}`,
   );
 
   startRetentionSweeper(deps.db);

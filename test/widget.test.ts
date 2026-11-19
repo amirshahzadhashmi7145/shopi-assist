@@ -1234,6 +1234,24 @@ describe("chat widget", () => {
     }
   });
 
+  it("is stamped with the fingerprint of its current script and stylesheet", async () => {
+    // The Liquid block adds this fingerprint to both asset URLs, which is what
+    // makes a browser drop an older cached widget. If this fails, the assets
+    // changed without the stamp: run `npm run widget:stamp`.
+    const { createHash } = await import("node:crypto");
+    const root = join(process.cwd(), "extensions/chat-widget");
+    const hash = createHash("sha256");
+    for (const file of ["assets/shopi-assist.js", "assets/shopi-assist.css"]) {
+      hash.update(readFileSync(join(root, file)));
+    }
+    const block = readFileSync(join(root, "blocks/shopi-assist-chat.liquid"), "utf8");
+
+    expect(block).toContain(`assign shopi_assist_build = '${hash.digest("hex").slice(0, 12)}'`);
+    // Both URLs carry it.
+    expect(block).toContain("shopi_assist_css | append: shopi_assist_stamp");
+    expect(block).toContain("shopi_assist_js | append: shopi_assist_stamp");
+  });
+
   it("never writes HTML strings into the page", () => {
     const code = WIDGET_SOURCE.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
     expect(code).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);

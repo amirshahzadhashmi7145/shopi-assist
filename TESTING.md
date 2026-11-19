@@ -52,7 +52,7 @@ Order status and return requests must be ticked in the app's setup first.
 
 ## If the chat looks out of date
 
-The browser keeps an old copy of the widget. Hard refresh the storefront page (Ctrl+Shift+R, or Cmd+Shift+R on a Mac). If the order summary has no Remove buttons, you are on an old copy.
+Reload the storefront page. The page asks for a new copy of the widget whenever its code changes, so a normal reload is enough. To confirm, look at the app log after sending a message: `cart=2` (or any number) means the current widget is running; `cart=-` means the browser is still on an old copy, so hard refresh once (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
 
 ## Without a store
 

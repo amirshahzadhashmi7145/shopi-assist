@@ -12,11 +12,24 @@
   The endpoint is the app proxy path configured in shopify.app.toml
   ([app_proxy] prefix + subpath). Change both together.
 {%- endcomment -%}
+{%- comment -%}
+  A fingerprint of the widget's script and stylesheet, added to both URLs so a
+  browser never keeps running an older cached copy after an update. Written by
+  `npm run widget:stamp`; a test fails when it is out of date.
+{%- endcomment -%}
+{%- assign shopi_assist_build = 'f404ca26c0c9' -%}
+{%- assign shopi_assist_js = 'shopi-assist.js' | asset_url -%}
+{%- assign shopi_assist_css = 'shopi-assist.css' | asset_url -%}
+{%- if shopi_assist_js contains '?' -%}
+  {%- assign shopi_assist_stamp = '&sa=' | append: shopi_assist_build -%}
+{%- else -%}
+  {%- assign shopi_assist_stamp = '?sa=' | append: shopi_assist_build -%}
+{%- endif -%}
 <div
   id="shopi-assist-root"
   style="display: block !important;"
   data-endpoint="/apps/shopi-assist/chat"
-  data-stylesheet="{{ 'shopi-assist.css' | asset_url | escape }}"
+  data-stylesheet="{{ shopi_assist_css | append: shopi_assist_stamp | escape }}"
   data-title="{{ block.settings.title | escape }}"
   data-greeting="{{ block.settings.greeting | escape }}"
   data-accent="{{ block.settings.accent_color | escape }}"
@@ -29,7 +42,7 @@
   data-cart-url="{{ routes.cart_url | escape }}"
   data-cart-add-url="{{ routes.cart_add_url | escape }}"
 ></div>
-<script src="{{ 'shopi-assist.js' | asset_url }}" defer></script>
+<script src="{{ shopi_assist_js | append: shopi_assist_stamp }}" defer></script>
 
 {% schema %}
 {

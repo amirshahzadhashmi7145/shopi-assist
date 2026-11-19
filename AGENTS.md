@@ -19,6 +19,7 @@ An embedded Shopify app (React Router template) plus a theme app extension. Read
 npm run typecheck && npm run lint && npm test
 npm run graphql-codegen          # after touching any GraphQL document
 npm run build && npm run smoke   # after touching the proxy route or chat pipeline
+npm run widget:stamp             # after touching the widget's JS or CSS (a test fails if you forget)
 npx shopify theme check --path extensions/chat-widget   # after touching the widget
 ```
 
