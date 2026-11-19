@@ -15,8 +15,15 @@ vi.mock("../app/assistant/chat.server", async (importOriginal) => {
   return { ...original, handleChatTurn: (...args: unknown[]) => handleChatTurn(...args) };
 });
 
+const settings = {
+  enabled: true,
+  assistantName: "Ava",
+  greeting: "Hi there!",
+  allowCheckout: true,
+  allowChatOrders: false,
+};
 vi.mock("../app/assistant/settings.server", () => ({
-  getSettings: async () => ({ enabled: true, assistantName: "Ava", greeting: "Hi there!" }),
+  getSettings: async () => settings,
 }));
 
 const { action, loader } = await import("../app/routes/proxy.chat");
@@ -64,6 +71,12 @@ describe("POST /proxy/chat", () => {
     expect(thrown).toBeInstanceOf(Response);
     expect((thrown as Response).status).toBe(400);
     expect(handleChatTurn).not.toHaveBeenCalled();
+  });
+
+  it("passes the shopper's cart along as untrusted information", async () => {
+    const cart = [{ variantId: "101", title: "Trail Mug", quantity: 2 }];
+    await run(post({ message: "hi", visitorId: "visitor-0001", cart }));
+    expect(handleChatTurn.mock.calls[0][0].cart).toEqual(cart);
   });
 
   it("takes the shop and audience from the signed request, never from the body", async () => {
@@ -185,10 +198,13 @@ describe("POST /proxy/chat", () => {
 
     const response = await run(post({ message: "hi", visitorId: "visitor-0001" }));
 
-    expect(response.status).toBe(429);
-    expect(response.headers.get("Retry-After")).toBe("30");
+    // Shopify's proxy swallows the body of an error response, so the message
+    // travels as a 200 with the real status inside.
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await response.json()).toEqual({
-      error: { code: "rate_limited", message: "Slow down." },
+      ok: false,
+      error: { code: "rate_limited", message: "Slow down.", status: 429 },
     });
   });
 
@@ -197,8 +213,9 @@ describe("POST /proxy/chat", () => {
 
     const response = await run(post({ message: "hi", visitorId: "visitor-0001" }));
 
-    expect(response.status).toBe(500);
-    expect(JSON.stringify(await response.json())).not.toContain("SQLITE");
+    const body = await response.json();
+    expect(body.error.status).toBe(500);
+    expect(JSON.stringify(body)).not.toContain("SQLITE");
   });
 });
 
@@ -217,6 +234,38 @@ describe("GET /proxy/chat", () => {
       enabled: true,
       title: "Ava",
       greeting: "Hi there!",
+    });
+  });
+
+  it("offers test conveniences only on a development store that takes chat orders", async () => {
+    const config = async (shop: string, partnerDevelopment: boolean, chatOrders: boolean) => {
+      settings.allowChatOrders = chatOrders;
+      appProxy.mockResolvedValue({
+        session: { shop },
+        admin: {
+          graphql: async () => Response.json({ data: { shop: { plan: { partnerDevelopment } } } }),
+        },
+        storefront: graphqlClient,
+      });
+      const response = (await loader({
+        request: new Request(`https://app.example/proxy/chat?shop=${shop}`),
+        params: {},
+        context: {},
+      } as unknown as Parameters<typeof loader>[0])) as Response;
+      return response.json();
+    };
+
+    expect(await config("dev-store.myshopify.com", true, true)).toMatchObject({
+      chatOrders: true,
+      testMode: true,
+    });
+    expect(await config("live-store.myshopify.com", false, true)).toMatchObject({
+      chatOrders: true,
+      testMode: false,
+    });
+    expect(await config("dev-store-2.myshopify.com", true, false)).toMatchObject({
+      chatOrders: false,
+      testMode: false,
     });
   });
 });

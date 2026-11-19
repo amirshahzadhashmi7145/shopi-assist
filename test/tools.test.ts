@@ -155,6 +155,108 @@ describe("shopper tools", () => {
     expect(result.cards[0].compareAtPrice).toEqual({ amount: "30.0", currencyCode: "USD" });
   });
 
+  it("get_products_by_price asks Shopify to do the sorting", async () => {
+    const products = [
+      storefrontProduct({ title: "Budget Board", handle: "budget-board" }),
+      storefrontProduct({ title: "Trail Mug" }),
+    ];
+
+    // Whole catalog, cheapest first.
+    const all = fakeGraphql({ products: { nodes: products } });
+    const cheapest = await run(
+      "get_products_by_price",
+      {},
+      toolContext({ storefront: all, buyer: { country: "US" } }),
+    );
+    expect(all.calls[0].query).toMatch(/sortKey: PRICE/);
+    expect(all.calls[0].query).toMatch(/available_for_sale:true/);
+    expect(all.calls[0].variables).toMatchObject({ first: 5, reverse: false, country: "US" });
+    expect(cheapest.json.rankedBy).toBe("price, lowest first");
+    expect(cheapest.json.products.map((product: { title: string }) => product.title)).toEqual([
+      "Budget Board",
+      "Trail Mug",
+    ]);
+    expect(cheapest.cards).toHaveLength(2);
+
+    // Most expensive of a kind.
+    const search = fakeGraphql({ search: { nodes: products } });
+    const dearest = await run(
+      "get_products_by_price",
+      { order: "highest_first", query: "snowboard", limit: 3 },
+      toolContext({ storefront: search }),
+    );
+    expect(search.calls[0].query).toMatch(/search\(/);
+    expect(search.calls[0].variables).toMatchObject({ query: "snowboard", first: 3, reverse: true });
+    expect(dearest.json.rankedBy).toBe("price, highest first");
+
+    // Within a collection.
+    const collection = fakeGraphql({ collection: { title: "Winter", products: { nodes: products } } });
+    const inCollection = await run(
+      "get_products_by_price",
+      { collectionHandle: "winter" },
+      toolContext({ storefront: collection }),
+    );
+    expect(collection.calls[0].variables).toMatchObject({ handle: "winter", reverse: false });
+    expect(inCollection.json.collection).toBe("Winter");
+
+    const missing = await run(
+      "get_products_by_price",
+      { collectionHandle: "nope" },
+      toolContext({ storefront: fakeGraphql({ collection: null }) }),
+    );
+    expect(missing.json.error).toMatch(/No collection/);
+  });
+
+  it("get_product_details does not present a product without options as having sizes", async () => {
+    const details = (variants: Array<Record<string, unknown>>, options: unknown[]) =>
+      fakeGraphql({
+        product: {
+          ...storefrontProduct(),
+          fullDescription: "A mug.",
+          tags: [],
+          options,
+          allVariants: { nodes: variants },
+        },
+      });
+    const variant = (id: string, title: string) => ({
+      id: `gid://shopify/ProductVariant/${id}`,
+      title,
+      availableForSale: true,
+      price: { amount: "18.0", currencyCode: "USD" },
+      compareAtPrice: null,
+      selectedOptions: [],
+    });
+
+    const single = await run(
+      "get_product_details",
+      { handle: "trail-mug" },
+      toolContext({
+        storefront: details(
+          [variant("101", "Default Title")],
+          [{ name: "Title", optionValues: [{ name: "Default Title" }] }],
+        ),
+      }),
+    );
+    expect(single.json.options).toBeUndefined();
+    expect(single.json.choices).toMatch(/one version only/);
+    expect(single.json.variants).toEqual([{ variantId: "101", price: "18.0 USD", inStock: true }]);
+    expect(single.content).not.toContain("Default Title");
+
+    const sized = await run(
+      "get_product_details",
+      { handle: "trail-mug" },
+      toolContext({
+        storefront: details(
+          [variant("101", "Small"), variant("102", "Large")],
+          [{ name: "Size", optionValues: [{ name: "Small" }, { name: "Large" }] }],
+        ),
+      }),
+    );
+    expect(sized.json.choices).toBeUndefined();
+    expect(sized.json.options).toEqual([{ name: "Size", values: ["Small", "Large"] }]);
+    expect(sized.json.variants.map((entry: { title: string }) => entry.title)).toEqual(["Small", "Large"]);
+  });
+
   it("add_to_cart verifies the variant before telling the widget to add it", async () => {
     const storefront = fakeGraphql({
       node: {
@@ -469,7 +571,8 @@ describe("place_order", () => {
     ]);
     expect(result.json.itemsTotal).toBe("143.50 USD");
     // The model is told the order is not placed yet.
-    expect(result.json.note).toMatch(/placed only when they finish paying/);
+    expect(result.json.note).toMatch(/not placed until they complete it/);
+    expect(result.json.note).toMatch(/lists everything in the cart/);
   });
 
   it("starts nothing when one item is made up or sold out", async () => {
@@ -521,6 +624,83 @@ describe("place_order", () => {
   it("is never offered to the merchant assistant", () => {
     const context = toolContext({ audience: "merchant", admin: fakeGraphql({}) });
     expect(toolsFor(allTools, context).map((tool) => tool.name)).not.toContain("place_order");
+  });
+});
+
+describe("changing the cart", () => {
+  const cart = [
+    { variantId: "101", title: "Trail Mug", quantity: 2 },
+    { variantId: "103", title: "Camp Blanket", quantity: 1 },
+  ];
+
+  it("place_order can make the order hold only the named items", async () => {
+    const storefront = fakeGraphql({
+      nodes: [
+        {
+          id: "gid://shopify/ProductVariant/103",
+          title: "Default Title",
+          availableForSale: true,
+          price: { amount: "89.50", currencyCode: "USD" },
+          product: { title: "Camp Blanket" },
+        },
+      ],
+    });
+    const result = await run(
+      "place_order",
+      { items: [{ variantId: "103" }], onlyTheseItems: true },
+      toolContext({ storefront, cart }),
+    );
+
+    expect(result.actions).toEqual([
+      {
+        type: "order",
+        replace: true,
+        items: [{ variantId: "103", quantity: 1, title: "Camp Blanket" }],
+      },
+    ]);
+    expect(result.json.note).toMatch(/emptying the shopper's cart, putting in only these items/);
+  });
+
+  it("remove_from_cart takes out an item that is in the cart", async () => {
+    const result = await run("remove_from_cart", { variantId: "103" }, toolContext({ cart }));
+    expect(result.actions).toEqual([
+      { type: "remove_from_cart", variantId: "103", title: "Camp Blanket" },
+    ]);
+
+    const missing = await run("remove_from_cart", { variantId: "999" }, toolContext({ cart }));
+    expect(missing.json.error).toMatch(/not in the shopper's cart/);
+    expect(missing.actions).toEqual([]);
+
+    // With no view of the cart, the widget is left to find out.
+    const blind = await run("remove_from_cart", { variantId: "999" }, toolContext());
+    expect(blind.actions).toEqual([{ type: "remove_from_cart", variantId: "999", title: undefined }]);
+
+    const malformed = await run("remove_from_cart", { variantId: "1 OR 1=1" }, toolContext({ cart }));
+    expect(malformed.json.error).toMatch(/Invalid arguments/);
+  });
+
+  it("clear_cart empties the cart", async () => {
+    const result = await run("clear_cart", {}, toolContext({ cart }));
+    expect(result.actions).toEqual([{ type: "clear_cart" }]);
+  });
+
+  it("is off when the merchant does not let the assistant touch the cart", async () => {
+    const context = toolContext({
+      cart,
+      settings: { ...SHOPPER_DEFAULTS, allowAddToCart: false },
+    });
+    expect((await run("clear_cart", {}, context)).json.error).toMatch(/Unknown tool/);
+    expect((await run("remove_from_cart", { variantId: "103" }, context)).json.error).toMatch(
+      /Unknown tool/,
+    );
+  });
+
+  it("is never offered to the merchant assistant", () => {
+    const names = toolsFor(allTools, toolContext({ audience: "merchant", admin: fakeGraphql({}) })).map(
+      (tool) => tool.name,
+    );
+    expect(names).not.toContain("clear_cart");
+    expect(names).not.toContain("remove_from_cart");
   });
 });
 

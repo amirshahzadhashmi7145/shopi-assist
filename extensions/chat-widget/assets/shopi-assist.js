@@ -158,6 +158,29 @@
     return order;
   }
 
+  /** The cart in the few words the assistant needs: what, and how many. */
+  function cartSnapshot(cart) {
+    var byVariant = {};
+    var lines = [];
+    cart.items.forEach(function (line) {
+      var id = String(line.variant_id);
+      var quantity = parseInt(line.quantity, 10) || 0;
+      if (!/^\d{1,20}$/.test(id) || quantity < 1) return;
+      if (byVariant[id]) {
+        byVariant[id].quantity += quantity;
+        return;
+      }
+      if (lines.length >= 20) return;
+      byVariant[id] = {
+        variantId: id,
+        title: String(line.title || line.product_title || "Item").slice(0, 120),
+        quantity: quantity,
+      };
+      lines.push(byVariant[id]);
+    });
+    return lines;
+  }
+
   /** What the order summary shows, taken from the storefront cart as it is now. */
   function orderSummary(cart) {
     var lines = cart.items.slice(0, MAX_SUMMARY_LINES).map(function (line) {
@@ -166,6 +189,8 @@
         title: String(line.title || line.product_title || "Item").slice(0, 120),
         quantity: Math.max(1, parseInt(line.quantity, 10) || 1),
         total: fromCents(amount),
+        // Identifies the cart line, so it can be removed from the summary.
+        key: typeof line.key === "string" ? line.key.slice(0, 200) : "",
       };
     });
     return {
@@ -277,6 +302,8 @@
     this.chatOrders = false;
     // The open order form, if any. Its contents are never stored.
     this.orderForm = null;
+    // True on a development store: the order form offers to fill in test details.
+    this.testMode = false;
     this.pending = false;
     this.lastFailedMessage = null;
     // False only while the stylesheet is still loading.
@@ -475,6 +502,7 @@
     if (this.pausedByShop) return;
 
     var changed = false;
+    this.testMode = remote.testMode === true;
     var chatOrders = remote.chatOrders === true;
     if (chatOrders !== this.chatOrders) {
       this.chatOrders = chatOrders;
@@ -702,6 +730,16 @@
       item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " \u00d7"));
       item.appendChild(el("span", "sa-order-item", line.title));
       item.appendChild(el("span", "sa-order-amount", money(line.total)));
+      if (line.key) {
+        var remove = el("button", "sa-order-remove", "Remove");
+        remove.type = "button";
+        remove.setAttribute("aria-label", "Remove " + line.title);
+        remove.addEventListener("click", function () {
+          remove.disabled = true;
+          self.removeFromCart(line.key);
+        });
+        item.appendChild(remove);
+      }
       list.appendChild(item);
     });
     box.appendChild(list);
@@ -877,19 +915,25 @@
       if (controller) controller.abort();
     }, REQUEST_TIMEOUT_MS);
 
-    return window
-      .fetch(this.config.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        credentials: "same-origin",
-        signal: controller ? controller.signal : undefined,
-        body: JSON.stringify({
+    // The assistant is told what is in the cart, so it can answer questions
+    // about it and warn when an order will include items already there.
+    return this.fetchCart()
+      .then(function (cart) {
+        var payload = {
           message: text,
-          visitorId: this.state.visitorId,
-          conversationId: this.state.conversationId,
-          country: this.config.country,
-          language: (this.config.locale || "").slice(0, 2),
-        }),
+          visitorId: self.state.visitorId,
+          conversationId: self.state.conversationId,
+          country: self.config.country,
+          language: (self.config.locale || "").slice(0, 2),
+        };
+        if (cart) payload.cart = cartSnapshot(cart);
+        return window.fetch(self.config.endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          credentials: "same-origin",
+          signal: controller ? controller.signal : undefined,
+          body: JSON.stringify(payload),
+        });
       })
       .then(function (response) {
         return response
@@ -992,12 +1036,51 @@
     if (action.type === "order") {
       var items = cleanOrderItems(action.items);
       if (!items.length) return Promise.resolve();
-      return this.ensureInCart(items).then(function (result) {
+      // "Only these items": empty the cart first, then put in exactly these.
+      var filled =
+        action.replace === true
+          ? this.clearCart().then(function (cleared) {
+              if (!cleared) return { ok: false, message: "Your cart couldn't be updated. Please try again." };
+              return self.addItems(
+                items.map(function (item) {
+                  return { id: Number(item.variantId), quantity: item.quantity };
+                }),
+              );
+            })
+          : this.ensureInCart(items);
+      return filled.then(function (result) {
         if (!result.ok) {
           self.pushEntry({ role: "notice", tone: "error", text: result.message });
           return null;
         }
         return self.showOrderSummary();
+      });
+    }
+
+    if (action.type === "clear_cart") {
+      return this.clearCart().then(function (cleared) {
+        self.pushEntry(
+          cleared
+            ? { role: "notice", text: "Your cart is empty now." }
+            : { role: "notice", tone: "error", text: "Your cart couldn't be emptied. Please try again." },
+        );
+        if (cleared) self.dropOrderSummary();
+      });
+    }
+
+    if (action.type === "remove_from_cart") {
+      if (!/^\d+$/.test(String(action.variantId))) return Promise.resolve();
+      return this.removeVariant(String(action.variantId)).then(function (removed) {
+        self.pushEntry(
+          removed
+            ? { role: "notice", text: "Removed from your cart." }
+            : { role: "notice", tone: "error", text: "That item isn't in your cart." },
+        );
+        // A summary on screen would now be wrong: show the cart as it is.
+        if (removed && self.messagesEl.querySelector(".sa-order:not(.sa-order-form)")) {
+          return self.showOrderSummary();
+        }
+        return null;
       });
     }
 
@@ -1073,6 +1156,9 @@
         });
         return;
       }
+      // One summary at a time: an older one would show a cart that has changed.
+      self.dropOrderSummary();
+
       if (!cart.items.length) {
         self.pushEntry({
           role: "notice",
@@ -1080,16 +1166,75 @@
         });
         return;
       }
-
-      // One summary at a time: an older one would show a cart that has changed.
-      // An open order form was started from that older cart, so it goes too.
-      self.closeOrderForm();
-      self.state.messages = self.state.messages.filter(function (message) {
-        return message.role !== "order";
-      });
-      var stale = self.messagesEl.querySelectorAll(".sa-order");
-      for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
       self.pushEntry(orderSummary(cart));
+    });
+  };
+
+  /**
+   * Takes the order summary, and any order form opened from it, off the
+   * screen and out of the saved chat. Both describe a cart that has changed.
+   */
+  Widget.prototype.dropOrderSummary = function () {
+    this.closeOrderForm();
+    this.state.messages = this.state.messages.filter(function (message) {
+      return message.role !== "order";
+    });
+    this.saveState();
+    var stale = this.messagesEl.querySelectorAll(".sa-order");
+    for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
+  };
+
+  /** Sets one cart line's quantity to zero. Resolves true when Shopify agreed. */
+  Widget.prototype.changeCartLine = function (key) {
+    return window
+      .fetch(this.config.cartUrl + "/change.js", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ id: key, quantity: 0 }),
+      })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (cart) {
+        if (cart) {
+          document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
+        }
+        return Boolean(cart);
+      })
+      .catch(function () {
+        return false;
+      });
+  };
+
+  /** Takes one line out of the storefront cart, then shows the summary again. */
+  Widget.prototype.removeFromCart = function (key) {
+    var self = this;
+    // The summary is read from the cart again, so it shows the truth either way.
+    return this.changeCartLine(key).then(function () {
+      return self.showOrderSummary();
+    });
+  };
+
+  /** Takes every line with this variant out of the cart. Resolves false when there is none. */
+  Widget.prototype.removeVariant = function (variantId) {
+    var self = this;
+    return this.fetchCart().then(function (cart) {
+      var keys = (cart ? cart.items : [])
+        .filter(function (line) {
+          return String(line.variant_id) === variantId && typeof line.key === "string";
+        })
+        .map(function (line) {
+          return line.key;
+        });
+      // One after another: each change gives the remaining lines new positions.
+      return keys.reduce(function (chain, key) {
+        return chain.then(function (removed) {
+          return self.changeCartLine(key).then(function (ok) {
+            return removed || ok;
+          });
+        });
+      }, Promise.resolve(false));
     });
   };
 
@@ -1141,10 +1286,23 @@
     { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
     { name: "address2", label: "Apartment, suite (optional)", autocomplete: "address-line2" },
     { name: "city", label: "City", autocomplete: "address-level2", required: true },
-    { name: "province", label: "State / province (optional)", autocomplete: "address-level1" },
-    { name: "zip", label: "Postal code (optional)", autocomplete: "postal-code" },
+    // Needed in some countries and not in others; the store says when it is.
+    { name: "province", label: "State / province", autocomplete: "address-level1" },
+    { name: "zip", label: "Postal code", autocomplete: "postal-code" },
   ];
   var USE_CHECKOUT = " Please use the checkout instead.";
+
+  // Made-up people at real, well-known addresses, offered only on development
+  // stores. The phone numbers are from ranges reserved for fiction.
+  var TEST_DETAILS = {
+    US: { address1: "742 Evergreen Terrace", city: "Springfield", province: "IL", zip: "62704", phone: "+1 202 555 0143" },
+    CA: { address1: "151 O'Connor Street", city: "Ottawa", province: "ON", zip: "K2P 2L8", phone: "+1 613 555 0143" },
+    GB: { address1: "221B Baker Street", city: "London", province: "", zip: "NW1 6XE", phone: "+44 20 7946 0143" },
+    AU: { address1: "42 Wallaby Way", city: "Sydney", province: "NSW", zip: "2000", phone: "+61 2 5550 0143" },
+    PK: { address1: "12 Mall Road", city: "Lahore", province: "Punjab", zip: "54000", phone: "+92 300 5550143" },
+    IN: { address1: "12 MG Road", city: "Bengaluru", province: "KA", zip: "560001", phone: "+91 80 5550 0143" },
+    AE: { address1: "12 Sheikh Zayed Road", city: "Dubai", province: "DU", zip: "", phone: "+971 4 555 0143" },
+  };
 
   /** Sends one step of an order to the app. Never rejects. */
   Widget.prototype.postOrder = function (payload) {
@@ -1266,6 +1424,36 @@
     form.textContent = "";
     state.inputs = {};
     form.appendChild(el("h3", "sa-order-title", "Delivery details"));
+
+    if (this.testMode && state.countries.length) {
+      var fillTest = el("button", "sa-order-test", "Fill test details");
+      fillTest.type = "button";
+      fillTest.title = "Shown on development stores only";
+      fillTest.addEventListener("click", function () {
+        var country = state.inputs.countryCode.value;
+        var sample = TEST_DETAILS[country] || {
+          address1: "1 Test Street",
+          city: "Test City",
+          province: "",
+          zip: "",
+          phone: "+1 202 555 0143",
+        };
+        var values = {
+          name: "Test Buyer",
+          email: "test.buyer@example.com",
+          phone: sample.phone,
+          address1: sample.address1,
+          address2: "",
+          city: sample.city,
+          province: sample.province,
+          zip: sample.zip,
+        };
+        Object.keys(values).forEach(function (name) {
+          state.inputs[name].value = values[name];
+        });
+      });
+      form.appendChild(fillTest);
+    }
 
     if (!state.countries.length) {
       form.appendChild(
@@ -1573,7 +1761,7 @@
     });
   };
 
-  /** Empties the storefront cart once its contents have been ordered. */
+  /** Empties the storefront cart. Resolves true when Shopify agreed. */
   Widget.prototype.clearCart = function () {
     return window
       .fetch(this.config.cartUrl + "/clear.js", {
@@ -1589,9 +1777,10 @@
         if (cart) {
           document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
         }
+        return Boolean(cart);
       })
       .catch(function () {
-        // The order stands; the shopper can empty the cart themselves.
+        return false;
       });
   };
 

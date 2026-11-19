@@ -5,6 +5,7 @@ An embedded Shopify app (React Router template) plus a theme app extension. Read
 ## Rules that must keep holding
 
 - The chat **audience** (`shopper` or `merchant`) and the **shop** come from the authenticated request only: `authenticate.public.appProxy` for the storefront, `authenticate.admin` for the admin. Never read either from a request body.
+- The widget also sends the shopper's cart with each message. It is untrusted and only ever shown to the model as information about the shopper's own cart (`readCart` in `chat.server.ts`). Never price, order or authorise anything from it.
 - Every tool declares its `audiences`. Tools reachable by `shopper` may only expose what an anonymous storefront visitor could already see. Admin-data tools are `merchant` only.
 - Every Prisma query on `Conversation`, `Message` or `ShopSettings` filters by the authenticated shop.
 - The widget never assigns HTML strings (`innerHTML` and friends). Model output is rendered as text nodes.

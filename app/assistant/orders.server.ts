@@ -21,6 +21,7 @@ import { z } from "zod";
 import prisma from "../db.server";
 import { clientKey, rateLimiter as defaultRateLimiter, type RateLimiter } from "./rate-limit";
 import { getSettings } from "./settings.server";
+import { isDevelopmentStore } from "./shopify-clients.server";
 import { fingerprint } from "./tools/shopper";
 import {
   DELIVERY_COUNTRIES_QUERY,
@@ -184,8 +185,16 @@ export interface ChatOrderDeps {
   rateLimiter: RateLimiter;
   /** Keyed by shop and the widget's idempotency key. */
   placed: Map<string, Remembered>;
+  /** Whether the shop exists only for testing. Asked of Shopify. */
+  isTestStore: (shop: string, admin: GraphqlFn) => Promise<boolean>;
   now: () => Date;
 }
+
+/**
+ * How much looser the order limits are on a development store, where a team
+ * places the same test order from one office and one phone number all day.
+ */
+const TEST_STORE_LIMIT_FACTOR = 50;
 
 // ---------------------------------------------------------------------------
 // Input
@@ -233,8 +242,12 @@ const orderSchema = z.object({
       .regex(/^[A-Za-z]{2}$/, "Choose a country.")
       .transform((value) => value.toUpperCase()),
   }),
-  /** The delivery option the shopper picked. Missing means the cheapest. */
-  shippingRateHandle: z.string().max(300).optional(),
+  /**
+   * The delivery option the shopper picked. Missing means the cheapest.
+   * Shopify's handles are signed tokens of 300-odd characters that grow with
+   * the option's name, so the limit is generous. An unknown handle is ignored.
+   */
+  shippingRateHandle: z.string().max(2000).optional(),
 });
 
 const placeSchema = orderSchema.extend({
@@ -480,6 +493,22 @@ async function quoteOrder(input: ChatOrderInput, order: OrderDetails): Promise<O
   }
   const rates = unshipped.availableShippingRates;
   if (!rates.length) {
+    // Seen on a real store: Shopify returns no delivery options, and no error,
+    // for an address without a state or postal code. Ask for what is missing
+    // before telling the shopper the address cannot be delivered to.
+    const fields: Partial<Record<OrderField, string>> = {};
+    if (!order.address.zip) fields.zip = "Add your postal code so delivery can be worked out.";
+    if (!order.address.province) {
+      fields.province = "Add your state or province so delivery can be worked out.";
+    }
+    if (Object.keys(fields).length) {
+      throw new OrderError(
+        "invalid_order",
+        422,
+        "We need a bit more of your address to work out delivery.",
+        { fields },
+      );
+    }
     throw new OrderError(
       "undeliverable",
       409,
@@ -521,6 +550,7 @@ const sameMoney = (a: Money, b: Money) =>
 async function placeOrder(
   input: ChatOrderInput,
   order: z.infer<typeof placeSchema>,
+  testStore: boolean,
 ): Promise<ChatOrderResult> {
   const quote = await quoteOrder(input, order);
   if (!sameMoney(quote.total, order.expectedTotal)) {
@@ -549,7 +579,12 @@ async function placeOrder(
       shippingLine: { shippingRateHandle: quote.shippingRateHandle },
       paymentTerms: { paymentTermsTemplateId: template.id },
       note: "Placed in the Shopi Assist chat. To be paid on delivery. The shopper's details were not verified.",
-      tags: ["shopi-assist", "chat-order", "pay-on-delivery"],
+      tags: [
+        "shopi-assist",
+        "chat-order",
+        "pay-on-delivery",
+        ...(testStore ? ["shopi-assist-test"] : []),
+      ],
     },
   });
   const draftId = created.draftOrderCreate?.draftOrder?.id;
@@ -601,6 +636,7 @@ export async function handleChatOrder(
     db: overrides.db ?? prisma,
     rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
     placed: overrides.placed ?? placedOrders,
+    isTestStore: overrides.isTestStore ?? isDevelopmentStore,
     now: overrides.now ?? (() => new Date()),
   };
   const now = deps.now().getTime();
@@ -637,15 +673,17 @@ export async function handleChatOrder(
     const remembered = deps.placed.get(rememberKey);
     if (remembered) return await remembered.result;
 
+    const testStore = await deps.isTestStore(input.shop, input.admin);
+    const perVisitor = testStore ? TEST_STORE_LIMIT_FACTOR : 1;
     enforce(deps, [
       {
         key: `order:place:ip:${input.shop}:${address}`,
-        max: envNumber("CHAT_ORDERS_PER_IP_PER_HOUR", 10),
+        max: envNumber("CHAT_ORDERS_PER_IP_PER_HOUR", 10) * perVisitor,
         windowMs: HOUR_MS,
       },
       {
         key: `order:place:phone:${input.shop}:${fingerprint(order.contact.phone)}`,
-        max: envNumber("CHAT_ORDERS_PER_PHONE_PER_DAY", 3),
+        max: envNumber("CHAT_ORDERS_PER_PHONE_PER_DAY", 3) * perVisitor,
         windowMs: DAY_MS,
       },
       {
@@ -660,7 +698,7 @@ export async function handleChatOrder(
       },
     ]);
 
-    const result = placeOrder(input, order);
+    const result = placeOrder(input, order, testStore);
     deps.placed.set(rememberKey, { expiresAt: now + REMEMBER_PLACED_MS, result });
     // A failed attempt is forgotten, so the shopper can correct and resend.
     result.catch(() => deps.placed.delete(rememberKey));
@@ -671,7 +709,7 @@ export async function handleChatOrder(
     if (error instanceof OrderError) throw error;
     // Log the kind of failure only: Shopify's messages can echo the address.
     console.error(
-      `[shopi-assist] chat order failed shop=${input.shop} step=${step} error=${error instanceof Error ? error.name : "unknown"}`,
+      `[shopi-assist] chat order failed shop=${input.shop} step=${step} error=${error instanceof Error ? error.name : "unknown"}${accessHint(error)}`,
     );
     throw new OrderError(
       "order_failed",
@@ -699,6 +737,7 @@ export async function listDeliveryCountries(
     db: overrides.db ?? prisma,
     rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
     placed: overrides.placed ?? placedOrders,
+    isTestStore: overrides.isTestStore ?? isDevelopmentStore,
     now: overrides.now ?? (() => new Date()),
   };
   const settings = await getSettings(input.shop, deps.db);
@@ -728,6 +767,22 @@ export async function listDeliveryCountries(
     );
     return [];
   }
+}
+
+/**
+ * Shopify refuses draft orders until the app has been given protected
+ * customer data access, and the refusal looks like any other failure. This
+ * names it in the log, since it is the first thing to go wrong on a new app.
+ */
+function accessHint(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/not approved to access|protected-customer-data/i.test(message)) {
+    return " reason=protected_customer_data (in the Dev Dashboard: app > Settings > Access requests > Protected customer data; select customer data plus name, address, phone and email)";
+  }
+  if (/access denied|ACCESS_DENIED/i.test(message)) {
+    return " reason=access_denied (check that the app's scopes were approved on this store)";
+  }
+  return "";
 }
 
 /** Turns any thrown value into a JSON error response for the widget. */

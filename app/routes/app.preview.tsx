@@ -21,7 +21,13 @@ import { authenticate, unauthenticated } from "../shopify.server";
 function describeAction(action: ClientAction): string {
   if (action.type === "order") {
     const items = action.items.map((item) => `${item.quantity} × ${item.title}`).join(", ");
-    return `On your storefront, the widget puts this in the shopper's cart and shows an order summary with a Go to checkout button: ${items}.`;
+    return action.replace
+      ? `On your storefront, the widget empties the shopper's cart, puts in only this and shows an order summary: ${items}.`
+      : `On your storefront, the widget puts this in the shopper's cart and shows an order summary with a Go to checkout button: ${items}.`;
+  }
+  if (action.type === "clear_cart") return "On your storefront, the widget empties the shopper's cart.";
+  if (action.type === "remove_from_cart") {
+    return `On your storefront, the widget takes this out of the shopper's cart: ${action.title ?? "the item"}.`;
   }
   if (action.type === "checkout") {
     return "On your storefront, the widget shows a summary of the shopper's cart with a Go to checkout button.";

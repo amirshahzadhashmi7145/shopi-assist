@@ -20,8 +20,11 @@ import {
 import {
   BEST_SELLERS_QUERY,
   COLLECTION_BEST_SELLERS_QUERY,
+  COLLECTION_BY_PRICE_QUERY,
   COLLECTIONS_QUERY,
   PRODUCT_DETAILS_QUERY,
+  PRODUCTS_BY_PRICE_QUERY,
+  SEARCH_BY_PRICE_QUERY,
   SEARCH_PRODUCTS_QUERY,
   SHOP_POLICIES_QUERY,
   VARIANT_FOR_CART_QUERY,
@@ -317,6 +320,67 @@ const getBestSellers = defineTool({
   },
 });
 
+const getProductsByPrice = defineTool({
+  name: "get_products_by_price",
+  description:
+    "List in-stock products ordered by price. Use for every 'cheapest', 'most affordable', 'lowest price', 'most expensive' or 'top of the range' question; never work out the cheapest from products you happened to fetch another way. Optionally limited to search keywords or to one collection.",
+  audiences: ["shopper"],
+  schema: z.object({
+    order: z
+      .enum(["lowest_first", "highest_first"])
+      .default("lowest_first")
+      .describe("lowest_first for cheapest, highest_first for most expensive."),
+    limit: limitSchema,
+    query: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Keywords, when the shopper wants the cheapest of a kind, e.g. 'snowboard'."),
+    collectionHandle: handleSchema
+      .optional()
+      .describe("Limit to one collection, using its handle from list_collections."),
+  }),
+  isAvailable: (context) => Boolean(context.storefront),
+  async run({ order, limit, query, collectionHandle }, context) {
+    const reverse = order === "highest_first";
+    const variables = { first: limit, reverse, ...buyerVariables(context) };
+    const extra = {
+      rankedBy: `price, ${reverse ? "highest" : "lowest"} first`,
+      note: "In-stock products only, ordered by each product's lowest price. The first one is the answer to 'cheapest' or 'most expensive'.",
+    };
+
+    if (collectionHandle) {
+      const data = await context.storefront!<{
+        collection: {
+          title: string;
+          products: { nodes: Array<Partial<StorefrontProduct>> };
+        } | null;
+      }>(COLLECTION_BY_PRICE_QUERY, { handle: collectionHandle, ...variables });
+      if (!data.collection) {
+        throw new ToolError(`No collection with handle "${collectionHandle}".`);
+      }
+      return productListResult(data.collection.products.nodes, {
+        collection: data.collection.title,
+        ...extra,
+      });
+    }
+
+    if (query) {
+      const data = await context.storefront!<{
+        search: { nodes: Array<Partial<StorefrontProduct>> };
+      }>(SEARCH_BY_PRICE_QUERY, { query, ...variables });
+      return productListResult(data.search.nodes, { query, ...extra });
+    }
+
+    const data = await context.storefront!<{
+      products: { nodes: Array<Partial<StorefrontProduct>> };
+    }>(PRODUCTS_BY_PRICE_QUERY, variables);
+    return productListResult(data.products.nodes, extra);
+  },
+});
+
 const getProductDetails = defineTool({
   name: "get_product_details",
   description:
@@ -336,19 +400,30 @@ const getProductDetails = defineTool({
       throw new ToolError(`No product with handle "${handle}" is available in this store.`);
     }
     const details = product as StorefrontProductDetails;
+    const variants = details.allVariants.nodes;
+    // Shopify gives a product without options one variant called "Default
+    // Title". That is not a size or a choice, so it is not shown as one.
+    const hasChoices = variants.length > 1 || variants[0]?.title !== "Default Title";
 
     return {
       output: {
         ...toProductSummary(details),
         description: details.fullDescription,
         tags: details.tags.slice(0, 15),
-        options: details.options.map((option) => ({
-          name: option.name,
-          values: option.optionValues.map((value) => value.name),
-        })),
-        variants: details.allVariants.nodes.map((variant) => ({
+        ...(hasChoices
+          ? {
+              options: details.options.map((option) => ({
+                name: option.name,
+                values: option.optionValues.map((value) => value.name),
+              })),
+            }
+          : {
+              choices:
+                "None. This product comes in one version only: no sizes, colours or other options. Do not ask the shopper to pick one.",
+            }),
+        variants: variants.map((variant) => ({
           variantId: numericId(variant.id),
-          title: variant.title,
+          title: hasChoices ? variant.title : undefined,
           price: formatMoney(variant.price),
           compareAtPrice: variant.compareAtPrice
             ? formatMoney(variant.compareAtPrice)
@@ -441,7 +516,7 @@ const getStorePolicy = defineTool({
 const addToCart = defineTool({
   name: "add_to_cart",
   description:
-    "Add one product variant to the shopper's cart. Only call this when the shopper clearly asks to add an item. Needs a variantId from get_product_details.",
+    "Add one product variant to the shopper's cart, for a shopper who wants to keep shopping. Only call this when the shopper asks to add an item to the cart. When they say they want to buy or order it, start the order instead. Needs a variantId from get_product_details.",
   audiences: ["shopper"],
   schema: z.object({
     variantId: z
@@ -519,7 +594,7 @@ function sumMoney(amounts: Money[]): Money | null {
 const placeOrder = defineTool({
   name: "place_order",
   description:
-    "Start an order for the items the shopper wants to buy. Puts them in the shopper's cart and shows an order summary with a checkout button. Call it once with every item, after the shopper has chosen the exact variant and quantity of each. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details; the shopper finishes on the store's checkout page.",
+    "Start an order as soon as the shopper says they want to buy or order something. Puts the items in the shopper's cart and shows an order summary with the buttons to complete it. Call it once with every item; the quantity is 1 unless they said otherwise. Only ask first when a product has several variants and they have not said which. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details yourself.",
   audiences: ["shopper"],
   schema: z.object({
     items: z
@@ -535,6 +610,12 @@ const placeOrder = defineTool({
       .min(1)
       .max(MAX_ORDER_LINES)
       .describe("Every item in the order."),
+    onlyTheseItems: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True empties the cart first, so the order holds these items and nothing else. Use it only when the shopper says so: 'only this', 'just that', 'nothing else', 'start over'.",
+      ),
   }),
   // Building an order means putting items in the cart, so the merchant must
   // have allowed both.
@@ -542,7 +623,7 @@ const placeOrder = defineTool({
     Boolean(context.storefront) &&
     context.settings.allowCheckout &&
     context.settings.allowAddToCart,
-  async run({ items }, context) {
+  async run({ items, onlyTheseItems }, context) {
     // The same variant listed twice is one line.
     const quantities = new Map<string, number>();
     for (const item of items) {
@@ -606,9 +687,63 @@ const placeOrder = defineTool({
           lineTotal: formatMoney(totals[index]),
         })),
         itemsTotal: itemsTotal ? formatMoney(itemsTotal) : undefined,
-        note: "The chat widget is putting these items in the shopper's cart and showing an order summary with a 'Go to checkout' button. The summary lists everything in the cart, so its total can be higher than itemsTotal, and shipping, taxes and discounts are worked out at checkout. Confirm the items briefly and tell the shopper to check the summary and press the button. The order is placed only when they finish paying on the store's checkout page, so do not say it has been placed.",
+        note: onlyTheseItems
+          ? "The chat widget is emptying the shopper's cart, putting in only these items and showing an order summary with the buttons to complete the order. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed."
+          : "The chat widget is putting these items in the shopper's cart and showing an order summary with the buttons to complete the order. The summary lists everything in the cart, including anything that was already there, so its total can be higher than itemsTotal; say so if the cart held other items. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed.",
       },
-      actions: [{ type: "order" as const, items: orderItems }],
+      actions: [
+        { type: "order" as const, items: orderItems, ...(onlyTheseItems ? { replace: true } : {}) },
+      ],
+    };
+  },
+});
+
+const removeFromCart = defineTool({
+  name: "remove_from_cart",
+  description:
+    "Take one item out of the shopper's cart completely. Use when the shopper asks to remove something from their cart or order. Needs the item's variantId, which is listed with the shopper's cart.",
+  audiences: ["shopper"],
+  schema: z.object({
+    variantId: z
+      .string()
+      .trim()
+      .regex(/^\d{1,20}$/, "Use the numeric variantId listed with the shopper's cart."),
+  }),
+  isAvailable: (context) => context.settings.allowAddToCart,
+  async run({ variantId }, context) {
+    const line = context.cart?.find((entry) => entry.variantId === variantId);
+    // When the cart is known, a variant that is not in it is a mistake worth
+    // telling the model about instead of a silent no-op in the browser.
+    if (context.cart && !line) {
+      throw new ToolError(
+        "That item is not in the shopper's cart. Use a variantId from the cart you were shown.",
+      );
+    }
+    return {
+      output: {
+        status: "removing",
+        item: line?.title,
+        note: "The chat widget is taking this item out of the shopper's cart now. Confirm briefly.",
+      },
+      actions: [{ type: "remove_from_cart" as const, variantId, title: line?.title }],
+    };
+  },
+});
+
+const clearCart = defineTool({
+  name: "clear_cart",
+  description:
+    "Empty the shopper's cart. Use only when the shopper asks to clear or empty their cart or to start over.",
+  audiences: ["shopper"],
+  schema: z.object({}),
+  isAvailable: (context) => context.settings.allowAddToCart,
+  async run() {
+    return {
+      output: {
+        status: "clearing",
+        note: "The chat widget is emptying the shopper's cart now. Confirm briefly and ask what they would like instead.",
+      },
+      actions: [{ type: "clear_cart" as const }],
     };
   },
 });
@@ -907,10 +1042,13 @@ const requestReturn = defineTool({
 export const shopperTools: ToolDefinition[] = [
   searchProducts,
   getBestSellers,
+  getProductsByPrice,
   getProductDetails,
   listCollections,
   getStorePolicy,
   addToCart,
+  removeFromCart,
+  clearCart,
   placeOrder,
   startCheckout,
   getOrderStatus,

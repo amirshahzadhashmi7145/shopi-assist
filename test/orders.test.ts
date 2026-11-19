@@ -35,6 +35,7 @@ beforeEach(async () => {
     db,
     rateLimiter: new RateLimiter(),
     placed: new Map(),
+    isTestStore: async () => false,
     now: () => new Date("2026-11-19T12:00:00Z"),
   };
 });
@@ -220,6 +221,23 @@ describe("order quote", () => {
     expect(quoted.quote.total).toEqual(usd("54.6"));
   });
 
+  it("accepts delivery option handles as long as Shopify's real ones", async () => {
+    // Real handles are signed tokens; 327 characters on the dev store.
+    const handle = `eyJhbGciOiJIUzI1NiJ9.${"x".repeat(340)}`;
+    const rates = [...RATES, { handle, title: "Courier", price: usd("9.0") }];
+    const admin = adminApi({
+      ShopiAssistDraftOrderCalculate: (variables) =>
+        calculated(variables, { availableShippingRates: rates }),
+    });
+    const quoted = (await order({ step: "quote", ...details(), shippingRateHandle: handle }, { admin })
+      .result) as Extract<ChatOrderResult, { step: "quote" }>;
+
+    expect(quoted.quote.shippingRateHandle).toBe(handle);
+    expect(admin.calls[1].variables!.input).toMatchObject({
+      shippingLine: { shippingRateHandle: handle },
+    });
+  });
+
   it("leaves tax out when prices already include it", async () => {
     const admin = adminApi({
       ShopiAssistDraftOrderCalculate: (variables) => calculated(variables, { taxesIncluded: true }),
@@ -307,6 +325,27 @@ describe("order quote", () => {
     const error = await failure(order({ step: "quote", ...details() }, { admin }).result);
     expect(error.code).toBe("undeliverable");
     expect(error.message).toMatch(/can't deliver to that address/);
+  });
+
+  it("asks for the state and postal code before giving up on an address", async () => {
+    // What Shopify does for an address without them: no options and no error.
+    const admin = adminApi({
+      ShopiAssistDraftOrderCalculate: (variables) =>
+        calculated(variables, { availableShippingRates: [] }),
+    });
+    const address = { address1: "742 Evergreen Terrace", city: "Springfield", countryCode: "US" };
+
+    const neither = await failure(order({ step: "quote", ...details({ address }) }, { admin }).result);
+    expect(neither.code).toBe("invalid_order");
+    expect(neither.message).toMatch(/a bit more of your address/);
+    expect(Object.keys(neither.extra.fields!).sort()).toEqual(["province", "zip"]);
+
+    const noZip = await failure(
+      order({ step: "quote", ...details({ address: { ...address, province: "IL" } }) }, { admin }).result,
+    );
+    expect(noZip.extra.fields).toEqual({
+      zip: "Add your postal code so delivery can be worked out.",
+    });
   });
 
   it("maps Shopify's address errors back to the form", async () => {
@@ -452,6 +491,36 @@ describe("placing an order", () => {
     expect(error.code).toBe("rate_limited");
     expect(error.status).toBe(429);
     expect(error.extra.retryAfterSeconds).toBeGreaterThan(0);
+  });
+
+  it("loosens the limits and tags the order on a development store", async () => {
+    deps.isTestStore = async () => true;
+    const admin = adminApi();
+    const attempt = (index: number) =>
+      handleChatOrder(
+        {
+          shop: SHOP_A,
+          body: placeBody({ idempotencyKey: `form-key-0000000${String(index).padStart(2, "0")}0` }),
+          ip: "203.0.113.7",
+          admin,
+          storefront: storefront(),
+        },
+        deps,
+      );
+
+    // The same tester, phone and office, well past the limits of a real store.
+    for (let index = 0; index < 12; index += 1) await attempt(index);
+
+    const created = admin.calls.filter((call) => call.operation === "ShopiAssistDraftOrderCreate");
+    expect(created).toHaveLength(12);
+    expect((created[0].variables!.input as { tags: string[] }).tags).toContain("shopi-assist-test");
+  });
+
+  it("does not tag real orders as tests", async () => {
+    const { result, admin } = order(placeBody());
+    await result;
+    const created = admin.calls.find((call) => call.operation === "ShopiAssistDraftOrderCreate")!;
+    expect((created.variables!.input as { tags: string[] }).tags).not.toContain("shopi-assist-test");
   });
 
   it("requires a well-formed total and retry key", async () => {

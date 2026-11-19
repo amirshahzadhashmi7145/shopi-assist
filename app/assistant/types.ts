@@ -45,6 +45,17 @@ export interface OrderItem {
   title: string;
 }
 
+/**
+ * One line of the shopper's storefront cart, as their browser reported it
+ * with the message. Untrusted and possibly out of date: it is shown to the
+ * model as information and never used to decide what something costs.
+ */
+export interface CartLine {
+  variantId: string;
+  title: string;
+  quantity: number;
+}
+
 /** Something the server asks the storefront widget to do in the browser. */
 export type ClientAction =
   | {
@@ -61,7 +72,16 @@ export type ClientAction =
    * summary. "At least" keeps it safe to repeat: an item already in the cart
    * is topped up to the quantity asked for, never added a second time.
    */
-  | { type: "order"; items: OrderItem[] };
+  | {
+      type: "order";
+      items: OrderItem[];
+      /** Empty the cart first, so the order holds these items and nothing else. */
+      replace?: boolean;
+    }
+  /** Take every line with this variant out of the cart. */
+  | { type: "remove_from_cart"; variantId: string; title?: string }
+  /** Empty the cart. */
+  | { type: "clear_cart" };
 
 /**
  * Minimal GraphQL caller. Resolves with the `data` payload and rejects on

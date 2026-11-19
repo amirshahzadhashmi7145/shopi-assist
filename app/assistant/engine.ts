@@ -36,7 +36,7 @@ export interface AssistantTurnResult {
 const DEFAULT_MAX_STEPS = 5;
 const MAX_TOOL_CALLS_PER_STEP = 4;
 const MAX_CARDS = 6;
-const MAX_ACTIONS = 3;
+const MAX_ACTIONS = 4;
 
 export const EMPTY_REPLY_FALLBACK =
   "Sorry, I couldn't put an answer together for that. Could you rephrase it?";
@@ -147,24 +147,30 @@ const MAX_ORDER_ITEMS = 10;
 
 /**
  * Turns what the tools asked for into the short list the widget runs, in the
- * order it runs them: single cart adds first, then at most one order summary.
+ * order it runs them: empty the cart, take items out, add items, then at most
+ * one order summary.
  *
  * Several orders in one turn become one order. An order already ends with the
  * checkout button, so a separate "checkout" is dropped when there is one. The
- * summary goes last so it shows the cart after every add has landed.
+ * summary goes last so it shows the cart after every change has landed.
  */
 export function dedupeActions(actions: ClientAction[]): ClientAction[] {
-  const seenAdds = new Set<string>();
-  const adds: ClientAction[] = [];
+  const adds = new Map<string, ClientAction>();
+  const removes = new Map<string, ClientAction>();
   const orderItems = new Map<string, OrderItem>();
   let wantsCheckout = false;
+  let clear = false;
+  let replace = false;
 
   for (const action of actions) {
     if (action.type === "add_to_cart") {
-      if (seenAdds.has(action.variantId)) continue;
-      seenAdds.add(action.variantId);
-      adds.push(action);
+      if (!adds.has(action.variantId)) adds.set(action.variantId, action);
+    } else if (action.type === "remove_from_cart") {
+      if (!removes.has(action.variantId)) removes.set(action.variantId, action);
+    } else if (action.type === "clear_cart") {
+      clear = true;
     } else if (action.type === "order") {
+      replace = replace || action.replace === true;
       for (const item of action.items) {
         const known = orderItems.get(item.variantId);
         // The same item asked for twice means the larger quantity, not both.
@@ -176,10 +182,24 @@ export function dedupeActions(actions: ClientAction[]): ClientAction[] {
   }
 
   const summary: ClientAction | null = orderItems.size
-    ? { type: "order", items: [...orderItems.values()].slice(0, MAX_ORDER_ITEMS) }
+    ? {
+        type: "order",
+        items: [...orderItems.values()].slice(0, MAX_ORDER_ITEMS),
+        // Emptying the cart and then ordering is one thing: an order of only these items.
+        ...(replace || clear ? { replace: true } : {}),
+      }
     : wantsCheckout
       ? { type: "checkout" }
       : null;
 
-  return summary ? [...adds.slice(0, MAX_ACTIONS - 1), summary] : adds.slice(0, MAX_ACTIONS);
+  const emptiesCart = clear || (summary?.type === "order" && summary.replace === true);
+  const changes: ClientAction[] = [
+    ...(clear && summary?.type !== "order" ? [{ type: "clear_cart" } as const] : []),
+    // Nothing is left to take out of a cart that is being emptied.
+    ...(emptiesCart ? [] : removes.values()),
+    ...adds.values(),
+  ];
+  return summary
+    ? [...changes.slice(0, MAX_ACTIONS - 1), summary]
+    : changes.slice(0, MAX_ACTIONS);
 }

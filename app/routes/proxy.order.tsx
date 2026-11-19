@@ -20,6 +20,7 @@ import {
   errorJson,
   NO_STORE,
   readJsonBody,
+  throughProxy,
 } from "../assistant/proxy-request.server";
 import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import { authenticate } from "../shopify.server";
@@ -39,7 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
     return Response.json({ ok: true, countries }, { headers: NO_STORE });
   } catch (error) {
-    return orderErrorResponse(error);
+    return throughProxy(orderErrorResponse(error));
   }
 };
 
@@ -66,6 +67,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     return Response.json(result, { headers: NO_STORE });
   } catch (error) {
-    return orderErrorResponse(error);
+    return throughProxy(orderErrorResponse(error));
   }
 };
