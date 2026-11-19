@@ -7,7 +7,7 @@ import {
   toolsFor,
 } from "../app/assistant/tools/registry";
 import { shopifyqlRows } from "../app/assistant/tools/merchant";
-import { htmlToText, numericId } from "../app/assistant/tools/shopper";
+import { htmlToText, numericId, samePhone } from "../app/assistant/tools/shopper";
 import { RateLimiter } from "../app/assistant/rate-limit";
 import { fakeGraphql, storefrontProduct, toolContext } from "./helpers/fakes";
 
@@ -427,7 +427,7 @@ describe("get_order_status", () => {
     };
 
     const other = await run("get_order_status", { orderNumber: "1001" }, context);
-    expect(other.json.error).toMatch(/email address used at checkout is needed too/);
+    expect(other.json.error).toMatch(/email address or the phone number used on the order is needed too/);
     // Nothing was looked up, so nothing about order 1001 leaked.
     expect(admin.calls).toHaveLength(0);
 
@@ -458,6 +458,125 @@ describe("get_order_status", () => {
 
     await run("get_order_status", { orderNumber: "1001", email: "buyer@example.com" }, context);
     expect(remembered).toEqual([{ id: "gid://shopify/Order/1001", name: "#1001" }]);
+  });
+
+  it("accepts the phone number on the order as proof, for shoppers with no email", async () => {
+    const remembered: string[] = [];
+    const cod = {
+      ...order,
+      id: "gid://shopify/Order/1005",
+      name: "#1005",
+      email: null,
+      phone: null,
+      shippingAddress: { phone: "03198754964" },
+    };
+    const lookup = (phone: string) => {
+      const admin = fakeGraphql({ orders: { nodes: [cod] } });
+      const context = {
+        ...enabled(admin),
+        rememberOrder: async (found: { name: string }) => {
+          remembered.push(found.name);
+        },
+      };
+      return run("get_order_status", { orderNumber: "1005", phone }, context).then((result) => ({
+        result,
+        admin,
+      }));
+    };
+
+    // Written the local way, with spaces, or with the country code: all the same line.
+    for (const phone of ["03198754964", "0319 875-4964", "+92 319 8754964"]) {
+      const { result, admin } = await lookup(phone);
+      expect(result.json).toMatchObject({
+        order: "#1005",
+        shipments: [{ tracking: [{ number: "1Z999" }] }],
+      });
+      // Only this path reads phone numbers from Shopify.
+      expect(admin.calls[0].query).toMatch(/ShopiAssistOrderStatusWithPhone/);
+      // The phone is used for matching only and never echoed back.
+      expect(result.content).not.toContain("8754964");
+    }
+    expect(remembered).toEqual(["#1005", "#1005", "#1005"]);
+
+    const wrong = await lookup("0300 1112223");
+    expect(wrong.result.json.error).toMatch(/No order matches/);
+
+    // The last few digits are not a phone number.
+    const partial = await lookup("4964");
+    expect(partial.result.json.error).toMatch(/looks incomplete/);
+    expect(partial.admin.calls).toHaveLength(0);
+  });
+
+  it("looks up by email without ever asking Shopify for phone numbers", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [order] } });
+    await run(
+      "get_order_status",
+      { orderNumber: "1001", email: "buyer@example.com", phone: "03198754964" },
+      enabled(admin),
+    );
+    expect(admin.calls[0].query).toMatch(/query ShopiAssistOrderStatus\(/);
+    expect(admin.calls[0].query).not.toMatch(/phone/);
+  });
+
+  it("gives only the basics from the order number alone, and only when the merchant allows it", async () => {
+    const byNumber = (admin: ReturnType<typeof fakeGraphql>) => {
+      const context = enabled(admin);
+      const remembered: string[] = [];
+      return {
+        ...context,
+        settings: { ...context.settings, orderLookupByNumber: true },
+        rememberOrder: async (found: { name: string }) => {
+          remembered.push(found.name);
+        },
+        remembered,
+      };
+    };
+
+    const context = byNumber(fakeGraphql({ orders: { nodes: [order] } }));
+    const result = await run("get_order_status", { orderNumber: "1001" }, context);
+    expect(result.json).toMatchObject({
+      order: "#1001",
+      placedOn: "2026-11-10",
+      paymentStatus: "PAID",
+      fulfillmentStatus: "FULFILLED",
+      shipments: [{ status: "SUCCESS", carrier: "UPS" }],
+    });
+    // Nothing that leads to where the parcel is going, and nothing personal.
+    expect(result.content).not.toMatch(/1Z999|ups\.example|buyer@/i);
+    expect(result.json.note).toMatch(/tracking number and link are shared when/i);
+    // A number proves nothing, so the order is not treated as the shopper's from now on.
+    expect(context.remembered).toEqual([]);
+
+    // With proof, the same store gives the full answer.
+    const proved = await run(
+      "get_order_status",
+      { orderNumber: "1001", email: "buyer@example.com" },
+      byNumber(fakeGraphql({ orders: { nodes: [order] } })),
+    );
+    expect(proved.json.shipments[0].tracking[0].number).toBe("1Z999");
+
+    const missing = await run(
+      "get_order_status",
+      { orderNumber: "4242" },
+      byNumber(fakeGraphql({ orders: { nodes: [order] } })),
+    );
+    expect(missing.json.error).toMatch(/No order has that number/);
+
+    // Walking through order numbers is slowed by the same per-address limit.
+    const limited = byNumber(fakeGraphql({ orders: { nodes: [order] } }));
+    limited.rateLimiter = new RateLimiter();
+    const attempts = [];
+    for (let index = 0; index < 6; index += 1) {
+      limited.turn = { orderLookups: 0 };
+      attempts.push(await run("get_order_status", { orderNumber: String(1001 + index) }, limited));
+    }
+    expect(attempts.at(-1)!.json.error).toMatch(/Too many order lookups/);
+
+    // Without the merchant's opt-in, a number alone gets nothing.
+    const admin = fakeGraphql({ orders: { nodes: [order] } });
+    const off = await run("get_order_status", { orderNumber: "1001" }, enabled(admin));
+    expect(off.json.error).toMatch(/needed too/);
+    expect(admin.calls).toHaveLength(0);
   });
 
   it("gives the same answer for a wrong email as for a missing order", async () => {
@@ -1025,6 +1144,22 @@ describe("merchant tools", () => {
         expect(document).not.toMatch(/\b(email|phone|firstName|lastName|shippingAddress|billingAddress|customer)\b/);
       }
     });
+  });
+});
+
+describe("samePhone", () => {
+  it("matches the same line however it is written", () => {
+    expect(samePhone("03198754964", "+92 319 8754964")).toBe(true);
+    expect(samePhone("+1 (202) 555-0143", "2025550143")).toBe(true);
+    expect(samePhone("+12025550143", "+12025550143")).toBe(true);
+  });
+
+  it("does not match different lines, short tails or nothing", () => {
+    expect(samePhone("03198754964", "03198754965")).toBe(false);
+    expect(samePhone("03198754964", "4964")).toBe(false);
+    expect(samePhone("03198754964", "")).toBe(false);
+    expect(samePhone(null, undefined)).toBe(false);
+    expect(samePhone("", "")).toBe(false);
   });
 });
 

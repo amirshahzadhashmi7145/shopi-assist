@@ -47,6 +47,9 @@ On a development store the order form shows a **Fill test details** button, and 
 | Order status | "Where is my order #1002? My email is test.buyer@example.com" | Payment and delivery status |
 | Order placed in the chat | Place a pay-on-delivery order, then "give me my order details" and "where is it?" | Its items and total, then its status, with no email asked |
 | Follow-up on a looked-up order | After an order status answer, "where is it?" | Answers again without asking for the email |
+| Order status, number only | Tick "Let shoppers check status with the order number alone", then "status of order 1002" | Date, payment and delivery status, and an offer of tracking with email or phone |
+| Order status, no email | "Order 1002, my phone is +1 202 555 0143" | Full status |
+| State list in the order form | Open the order form, change the country | The state box becomes a list for countries with states |
 | Wrong email | Same order number, another email | "No order matches" |
 | Return request | Mark a dummy order fulfilled in admin first, then "I want to return order #1002", email, reason | A return request in admin |
 

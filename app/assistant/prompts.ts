@@ -33,6 +33,8 @@ export interface PromptInput {
   /** Free-text guidance the merchant wrote in the app settings. */
   merchantInstructions?: string;
   orderLookupEnabled: boolean;
+  /** The store lets shoppers see an order's basic status from its number alone. */
+  orderLookupByNumber?: boolean;
   /**
    * The shopper's cart as their browser reported it. Missing means unknown,
    * which is different from an empty array (an empty cart).
@@ -132,11 +134,17 @@ function shopperPrompt(input: PromptInput): string {
 
   const hasKnownOrders = Boolean(input.knownOrders?.length);
   const pastOrdersRule =
-    " Questions about an order that already exists (its details, its status, where it is) are about orders, not the cart: never answer them with the checkout summary.";
-  const orderRule = input.orderLookupEnabled
-    ? `- Order status: you can look up an order only when the shopper gives both the order number and the email used at checkout. Ask for whichever is missing. Never guess either one, and never share order details any other way.${
+    " Questions about an order that already exists (its details, its status, where it is) are about orders, not the cart: never answer them with the checkout summary. 'Where is it?' is a question about delivery: look the order up again and answer from its delivery status. When nothing has shipped yet there is no tracking to give, so say it has not shipped yet; do not ask for more proof.";
+  const orderRule = input.orderLookupEnabled && input.orderLookupByNumber
+    ? `- Order status: this store lets you look up an order's basic status (order date, payment status, delivery status) with the order number alone, so look it up as soon as you have the number and do not ask for an email first. The tracking number and tracking link are shared only when the shopper also gives the email address or the phone number used on the order: say so when you give the status, and ask for one of them only if they want to track the parcel. Never guess an order number, and never share order details any other way.${
         hasKnownOrders
-          ? " The exception is an order listed under 'Orders already known in this chat' at the end of these instructions: for those the order number alone is enough, so look it up straight away and do not ask for the email. When the shopper says 'my order' or 'it' and one of those is what they were just talking about, they mean that order."
+          ? " Orders listed under 'Orders already known in this chat' at the end of these instructions get the full details, tracking included, with the order number alone. When the shopper says 'my order' or 'it' and one of those is what they were just talking about, they mean that order."
+          : ""
+      }${pastOrdersRule}`
+    : input.orderLookupEnabled
+    ? `- Order status: you can look up an order only when the shopper gives the order number and proof that it is theirs: the email address or the phone number used on the order, whichever they have. Ask for what is missing, and offer the phone number when they have no email. Never guess any of these, and never share order details any other way.${
+        hasKnownOrders
+          ? " The exception is an order listed under 'Orders already known in this chat' at the end of these instructions: for those the order number alone is enough, so look it up straight away and do not ask for an email or phone number. When the shopper says 'my order' or 'it' and one of those is what they were just talking about, they mean that order."
           : ""
       }${pastOrdersRule}`
     : `- Order status: you cannot look up orders. Point the shopper to their order confirmation email or to the store's contact page. If an order was placed earlier in this chat, you can repeat what the chat already says about it.${pastOrdersRule}`;
@@ -163,7 +171,7 @@ ${orderRule}
 ${cartRule}
 ${
     abilities.returns
-      ? "- Returns: you can send the store a return request for the shopper's own order when they give the order number, the checkout email and a reason. Make clear it is a request the store will review, not an approval, and never promise a refund."
+      ? "- Returns: you can send the store a return request for the shopper's own order when they give the order number, the email address or phone number used on the order, and a reason. Make clear it is a request the store will review, not an approval, and never promise a refund."
       : "- Returns: you cannot start a return. Explain the return policy and tell the shopper to contact the store to arrange one."
   }
 - Stay on topic: this store, its products and shopping help. Politely decline anything else.

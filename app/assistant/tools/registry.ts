@@ -27,6 +27,8 @@ export interface ToolContext {
   /** What the merchant has switched on for shoppers. */
   settings: {
     orderLookupEnabled: boolean;
+    /** Basic status from the order number alone. Off unless the merchant opts in. */
+    orderLookupByNumber?: boolean;
     allowAddToCart: boolean;
     allowCheckout: boolean;
     allowReturns: boolean;

@@ -122,7 +122,8 @@ export type OrderErrorCode =
 
 /** Which form field a message belongs to. */
 export type OrderField =
-  | "name"
+  | "firstName"
+  | "lastName"
   | "phone"
   | "email"
   | "address1"
@@ -217,7 +218,9 @@ const orderSchema = z.object({
     .min(1)
     .max(MAX_LINES),
   contact: z.object({
-    name: line(80, "Keep the name under 80 characters.").min(2, "Enter your full name."),
+    // As in Shopify's checkout: a last name is needed, a first name is not.
+    firstName: line(40, "Keep the first name under 40 characters.").default(""),
+    lastName: line(40, "Keep the last name under 40 characters.").min(1, "Enter your last name."),
     phone: z
       .string()
       .trim()
@@ -271,7 +274,8 @@ const placeSchema = orderSchema.extend({
 type OrderDetails = z.infer<typeof orderSchema>;
 
 const FORM_FIELDS: readonly OrderField[] = [
-  "name",
+  "firstName",
+  "lastName",
   "phone",
   "email",
   "address1",
@@ -364,13 +368,6 @@ interface CalculatedDraftOrder {
   totalPriceSet: MoneySet;
 }
 
-/** "Ada Lovelace" is first name Ada, last name Lovelace; one word is a last name. */
-export function splitName(name: string): { firstName: string | null; lastName: string } {
-  const words = name.split(/\s+/).filter(Boolean);
-  if (words.length < 2) return { firstName: null, lastName: words[0] ?? name };
-  return { firstName: words.slice(0, -1).join(" "), lastName: words[words.length - 1] };
-}
-
 function draftOrderInput(order: OrderDetails): Record<string, unknown> {
   const { contact, address } = order;
   // People type either "ON" or "Ontario". A short code goes in the code
@@ -388,7 +385,8 @@ function draftOrderInput(order: OrderDetails): Record<string, unknown> {
       quantity: item.quantity,
     })),
     shippingAddress: {
-      ...splitName(contact.name),
+      firstName: contact.firstName || null,
+      lastName: contact.lastName,
       address1: address.address1,
       address2: address.address2 || null,
       city: address.city,
@@ -414,8 +412,8 @@ function fieldErrors(errors: UserError[]): Partial<Record<OrderField, string>> {
     countryCode: "countryCode",
     phone: "phone",
     email: "email",
-    firstName: "name",
-    lastName: "name",
+    firstName: "firstName",
+    lastName: "lastName",
   };
   for (const error of errors) {
     const field = names[error.field?.[error.field.length - 1] ?? ""];
