@@ -1,6 +1,10 @@
 # Shopi Assist app configuration.
-# `shopify app dev` fills in client_id, name and URLs when you link this project to an app.
-client_id = ""
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "98f591d628d95a9fcee2d432085e5bdc"
+name = "Shopi Assist"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = true
 
 [access_scopes]
 # Keep this list minimal. What each scope is for:
@@ -10,6 +14,10 @@ client_id = ""
 #   unauthenticated_read_product_listings  storefront widget: catalog search, best sellers, product details
 #   write_app_proxy                        lets the app register the /apps/shopi-assist storefront proxy
 #   write_returns                          shopper return requests (opt-in); the merchant approves each one
+#
+# Note: linking the project to a new app (`shopify app dev --reset`) rewrites
+# this file from the app's remote settings and can blank this line. If the
+# assistant suddenly cannot read anything, check here first.
 scopes = "read_products,read_orders,read_reports,unauthenticated_read_product_listings,write_app_proxy,write_returns"
 
 [webhooks]
@@ -18,17 +26,17 @@ api_version = "2026-10"
   # Handled by: /app/routes/webhooks.app.uninstalled.tsx
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
-  topics = ["app/uninstalled"]
+  topics = [ "app/uninstalled" ]
 
   # Handled by: /app/routes/webhooks.app.scopes_update.tsx
   [[webhooks.subscriptions]]
-  topics = ["app/scopes_update"]
   uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
 
   # Mandatory privacy webhooks. Handled by: /app/routes/webhooks.compliance.tsx
   [[webhooks.subscriptions]]
   uri = "/webhooks/compliance"
-  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
 # The storefront chat widget talks to the app through this proxy:
 #   https://{shop}/apps/shopi-assist/chat  ->  {app url}/proxy/chat
@@ -37,3 +45,10 @@ api_version = "2026-10"
 url = "/proxy"
 prefix = "apps"
 subpath = "shopi-assist"
+
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true
