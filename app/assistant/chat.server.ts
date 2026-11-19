@@ -23,12 +23,21 @@ import {
   appendExchange,
   createConversation,
   findConversation,
+  knownOrders,
   purgeAllExpiredConversations,
   recentMessages,
+  rememberOrder,
 } from "./store.server";
 import { allTools } from "./tools";
 import { toolsFor, type ToolContext, type ToolDefinition } from "./tools/registry";
-import type { Audience, CartLine, ClientAction, GraphqlFn, ProductCard } from "./types";
+import type {
+  Audience,
+  CartLine,
+  ClientAction,
+  GraphqlFn,
+  KnownOrder,
+  ProductCard,
+} from "./types";
 
 export const MAX_MESSAGE_LENGTH = 2000;
 const HISTORY_MESSAGES = 20;
@@ -276,6 +285,19 @@ export async function handleChatTurn(
     ? await recentMessages(deps.db, input.shop, conversation.id, HISTORY_MESSAGES)
     : [];
 
+  // Orders the server has already tied to this conversation. Remembering them
+  // is a convenience: if it fails, the shopper is simply asked for proof again.
+  let orders: KnownOrder[] = [];
+  if (existing && input.audience === "shopper") {
+    try {
+      orders = await knownOrders(deps.db, input.shop, conversation.id);
+    } catch (error) {
+      console.error(
+        `[shopi-assist] known orders unavailable shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
+      );
+    }
+  }
+
   // 5. Run the model with the tools this audience is allowed to use.
   const context: ToolContext = {
     shop: input.shop,
@@ -295,6 +317,20 @@ export async function handleChatTurn(
     },
     buyer: { country, language, ip: input.ip },
     cart: input.audience === "shopper" ? readCart(input.cart) : undefined,
+    knownOrders: orders,
+    rememberOrder: async (order) => {
+      if (orders.some((known) => known.id === order.id)) return;
+      const verified: KnownOrder = { ...order, source: "verified" };
+      // Known for the rest of this turn even if it cannot be saved.
+      orders.push(verified);
+      try {
+        await rememberOrder(deps.db, input.shop, conversation.id, verified);
+      } catch (error) {
+        console.error(
+          `[shopi-assist] could not remember a verified order shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
+        );
+      }
+    },
     rateLimiter: deps.rateLimiter,
     turn: { orderLookups: 0 },
     now: deps.now,
@@ -331,6 +367,7 @@ export async function handleChatTurn(
         merchantInstructions: settings.instructions,
         orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
         cart: context.cart,
+        knownOrders: orders,
         today: now,
       }),
       history: [...history, { role: "user", content: message }],

@@ -30,10 +30,12 @@ import {
   listConversations,
   purgeAllExpiredConversations,
   purgeExpiredConversations,
+  knownOrders,
   recentMessages,
+  rememberOrder,
 } from "../app/assistant/store.server";
 import { createTestDb } from "./helpers/db";
-import { fakeGraphql, scriptedProvider, text } from "./helpers/fakes";
+import { callTool, fakeGraphql, scriptedProvider, text } from "./helpers/fakes";
 
 const SHOP_A = "shop-a.myshopify.com";
 const SHOP_B = "shop-b.myshopify.com";
@@ -289,6 +291,77 @@ describe("handleChatTurn", () => {
     expect(changed.system).toContain("You cannot start a checkout");
     expect(changed.system).toContain("it is a request the store will review");
     expect(changed.system).toContain("Returns: accepted within 14 days of delivery.");
+  });
+
+  it("remembers a proved order, so follow-up questions need no email", async () => {
+    await saveSettings(SHOP_A, { orderLookupEnabled: true }, db);
+    const shopifyOrder = {
+      id: "gid://shopify/Order/1001",
+      name: "#1001",
+      email: "buyer@example.com",
+      processedAt: "2026-11-10T09:00:00Z",
+      cancelledAt: null,
+      displayFinancialStatus: "PAID",
+      displayFulfillmentStatus: "FULFILLED",
+      fulfillments: [],
+    };
+    // One answer that serves both the shop-name lookup and the order lookup.
+    const admin = () =>
+      fakeGraphql({ shop: { name: "Shop A" }, orders: { nodes: [shopifyOrder] } });
+
+    // Turn 1: number and email, checked against Shopify.
+    const first = await turn(
+      { message: "1001 buyer@example.com", admin: admin() },
+      {
+        provider: scriptedProvider([
+          callTool("get_order_status", { orderNumber: "1001", email: "buyer@example.com" }),
+          text("Order #1001 is paid and fulfilled."),
+        ]),
+        rateLimiter: new RateLimiter(),
+      },
+    );
+    expect(await knownOrders(db, SHOP_A, first.conversationId)).toEqual([
+      { id: "gid://shopify/Order/1001", name: "#1001", source: "verified" },
+    ]);
+
+    // Turn 2: "where is it?" The assistant is told the order is known and can
+    // look it up with the number alone.
+    const provider = scriptedProvider([
+      callTool("get_order_status", { orderNumber: "1001" }),
+      text("It has shipped."),
+    ]);
+    await turn(
+      { message: "where is it?", conversationId: first.conversationId, admin: admin() },
+      { provider },
+    );
+    const system = provider.requests[0].messages[0].content as string;
+    expect(system).toContain("Orders already known in this chat:\n- #1001 (already proved to be the shopper's)");
+    expect(system).toMatch(/the order number alone is enough/);
+    const toolResult = provider.requests[1].messages.at(-1)!;
+    expect(toolResult.content).toContain('"fulfillmentStatus":"FULFILLED"');
+
+    // Another visitor's chat knows nothing about it.
+    const other = scriptedProvider([text("ok")]);
+    await turn({ visitorId: "visitor-0002", admin: admin() }, { provider: other });
+    expect(other.requests[0].messages[0].content).not.toContain("#1001");
+  });
+
+  it("keeps known orders within their own shop and conversation", async () => {
+    const mine = await turn();
+    const order = { id: "gid://shopify/Order/5", name: "#1005", source: "placed" as const };
+    await rememberOrder(db, SHOP_A, mine.conversationId, order);
+    // Looking it up again later does not change how it became known.
+    await rememberOrder(db, SHOP_A, mine.conversationId, { ...order, source: "verified" });
+
+    expect(await knownOrders(db, SHOP_A, mine.conversationId)).toEqual([order]);
+    expect(await knownOrders(db, SHOP_B, mine.conversationId)).toEqual([]);
+    await expect(rememberOrder(db, SHOP_B, mine.conversationId, order)).rejects.toThrow(
+      /does not belong/,
+    );
+
+    // Deleting the conversation takes its orders with it.
+    await db.conversation.deleteMany({ where: { shop: SHOP_A } });
+    expect(await db.conversationOrder.count()).toBe(0);
   });
 
   it("passes the shopper's cart to the assistant, and only a well-formed one", async () => {

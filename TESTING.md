@@ -45,6 +45,8 @@ On a development store the order form shows a **Fill test details** button, and 
 | Pay on delivery | Press "Order here, pay on delivery", then "Fill test details" | Order number, order is unpaid in admin |
 | Missing address parts | Clear State and Postal code, press Review order | Both boxes ask to be filled in |
 | Order status | "Where is my order #1002? My email is test.buyer@example.com" | Payment and delivery status |
+| Order placed in the chat | Place a pay-on-delivery order, then "give me my order details" and "where is it?" | Its items and total, then its status, with no email asked |
+| Follow-up on a looked-up order | After an order status answer, "where is it?" | Answers again without asking for the email |
 | Wrong email | Same order number, another email | "No order matches" |
 | Return request | Mark a dummy order fulfilled in admin first, then "I want to return order #1002", email, reason | A return request in admin |
 

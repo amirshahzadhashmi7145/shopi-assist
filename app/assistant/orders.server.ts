@@ -22,6 +22,7 @@ import prisma from "../db.server";
 import { clientKey, rateLimiter as defaultRateLimiter, type RateLimiter } from "./rate-limit";
 import { getSettings } from "./settings.server";
 import { isDevelopmentStore } from "./shopify-clients.server";
+import { appendExchange, findConversation, rememberOrder } from "./store.server";
 import { fingerprint } from "./tools/shopper";
 import {
   DELIVERY_COUNTRIES_QUERY,
@@ -258,6 +259,13 @@ const placeSchema = orderSchema.extend({
   }),
   /** Chosen by the widget once per order form, so a retry cannot order twice. */
   idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/),
+  /**
+   * The chat the order form was opened from. Optional, and checked against
+   * the shop before use: it only decides which conversation is told about the
+   * order, never who may order.
+   */
+  visitorId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional(),
+  conversationId: z.string().regex(/^[a-z0-9]{8,40}$/).optional(),
 });
 
 type OrderDetails = z.infer<typeof orderSchema>;
@@ -544,14 +552,67 @@ async function quoteOrder(input: ChatOrderInput, order: OrderDetails): Promise<O
   };
 }
 
+/**
+ * Records the new order against the chat it was placed from, so the assistant
+ * knows about it: it can say what was ordered and look up its status without
+ * asking for an email the shopper may never have given. What is written holds
+ * no name, phone number or address. The order stands whether or not this
+ * works, so a failure here is logged and nothing more.
+ */
+async function tellConversation(
+  deps: ChatOrderDeps,
+  shop: string,
+  order: z.infer<typeof placeSchema>,
+  placed: PlacedOrder,
+): Promise<void> {
+  if (!order.visitorId || !order.conversationId) return;
+  try {
+    // The conversation must be this shop's and this visitor's.
+    const conversation = await findConversation(
+      deps.db,
+      { shop, audience: "shopper", visitorId: order.visitorId },
+      order.conversationId,
+    );
+    if (!conversation) return;
+
+    const { quote, response } = placed;
+    await rememberOrder(deps.db, shop, conversation.id, {
+      id: placed.orderId,
+      name: response.order.name,
+      source: "placed",
+    });
+    const items = quote.lines.map((line) => `${line.quantity} x ${line.title}`).join(", ");
+    const delivery = quote.shippingRates.find((rate) => rate.handle === quote.shippingRateHandle);
+    await appendExchange(
+      deps.db,
+      shop,
+      conversation.id,
+      "(I placed an order using the order form in this chat.)",
+      `Order ${response.order.name} is placed, to be paid on delivery. Items: ${items}. Delivery: ${delivery?.title ?? "standard"}. Total: ${quote.total.amount} ${quote.total.currencyCode}.`,
+      { now: deps.now() },
+    );
+  } catch (error) {
+    console.error(
+      `[shopi-assist] could not tell the conversation about a placed order shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+  }
+}
+
 const sameMoney = (a: Money, b: Money) =>
   a.currencyCode === b.currencyCode && Number(a.amount) === Number(b.amount);
+
+/** A placed order, with what the conversation is told about it. */
+interface PlacedOrder {
+  response: Extract<ChatOrderResult, { step: "place" }>;
+  orderId: string;
+  quote: OrderQuote;
+}
 
 async function placeOrder(
   input: ChatOrderInput,
   order: z.infer<typeof placeSchema>,
   testStore: boolean,
-): Promise<ChatOrderResult> {
+): Promise<PlacedOrder> {
   const quote = await quoteOrder(input, order);
   if (!sameMoney(quote.total, order.expectedTotal)) {
     throw new OrderError(
@@ -612,7 +673,11 @@ async function placeOrder(
         `[shopi-assist] chat order for ${input.shop} was recorded as paid; check the payment terms setup`,
       );
     }
-    return { ok: true, step: "place", order: { name: placed.name, total: quote.total } };
+    return {
+      response: { ok: true, step: "place", order: { name: placed.name, total: quote.total } },
+      orderId: placed.id,
+      quote,
+    };
   } catch (error) {
     // Do not leave a half-made draft behind in the merchant's admin.
     await input
@@ -698,13 +763,15 @@ export async function handleChatOrder(
       },
     ]);
 
-    const result = placeOrder(input, order, testStore);
+    const placing = placeOrder(input, order, testStore);
+    const result = placing.then((placed) => placed.response);
     deps.placed.set(rememberKey, { expiresAt: now + REMEMBER_PLACED_MS, result });
     // A failed attempt is forgotten, so the shopper can correct and resend.
     result.catch(() => deps.placed.delete(rememberKey));
-    const placed = await result;
+    const placed = await placing;
     console.info(`[shopi-assist] chat order placed shop=${input.shop}`);
-    return placed;
+    await tellConversation(deps, input.shop, order, placed);
+    return placed.response;
   } catch (error) {
     if (error instanceof OrderError) throw error;
     // Log the kind of failure only: Shopify's messages can echo the address.
