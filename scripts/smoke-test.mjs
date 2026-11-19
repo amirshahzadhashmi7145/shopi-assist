@@ -175,8 +175,8 @@ try {
 
   const orderOff = await post(signedQuery(proxyParams(SHOP)), orderBody, "order");
   check(
-    "signed order request while chat orders are off -> 403 disabled",
-    orderOff.status === 403 && orderOff.json?.error?.code === "disabled",
+    "signed order request while chat orders are off -> refused as disabled, readable through the proxy",
+    orderOff.status === 200 && orderOff.json?.ok === false && orderOff.json?.error?.code === "disabled" && orderOff.json?.error?.status === 403,
     `(got ${orderOff.status} ${JSON.stringify(orderOff.json)})`,
   );
 
@@ -220,7 +220,11 @@ try {
   );
 
   const bad = await post(signedQuery(proxyParams(SHOP)), { message: "", visitorId: "smoke-visitor-0001" });
-  check("empty message -> 400 invalid_request", bad.status === 400 && bad.json?.error?.code === "invalid_request");
+  check(
+    "empty message -> invalid_request, readable through the proxy",
+    bad.status === 200 && bad.json?.error?.code === "invalid_request" && bad.json?.error?.status === 400,
+    `(got ${bad.status} ${JSON.stringify(bad.json)})`,
+  );
 
   if (failures && process.env.SMOKE_VERBOSE) console.log(`\n--- server log ---\n${serverLog}`);
 } catch (error) {

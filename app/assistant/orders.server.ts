@@ -671,7 +671,7 @@ export async function handleChatOrder(
     if (error instanceof OrderError) throw error;
     // Log the kind of failure only: Shopify's messages can echo the address.
     console.error(
-      `[shopi-assist] chat order failed shop=${input.shop} step=${step} error=${error instanceof Error ? error.name : "unknown"}`,
+      `[shopi-assist] chat order failed shop=${input.shop} step=${step} error=${error instanceof Error ? error.name : "unknown"}${accessHint(error)}`,
     );
     throw new OrderError(
       "order_failed",
@@ -728,6 +728,22 @@ export async function listDeliveryCountries(
     );
     return [];
   }
+}
+
+/**
+ * Shopify refuses draft orders until the app has been given protected
+ * customer data access, and the refusal looks like any other failure. This
+ * names it in the log, since it is the first thing to go wrong on a new app.
+ */
+function accessHint(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/not approved to access|protected-customer-data/i.test(message)) {
+    return " reason=protected_customer_data (in the Dev Dashboard: app > Settings > Access requests > Protected customer data; select customer data plus name, address, phone and email)";
+  }
+  if (/access denied|ACCESS_DENIED/i.test(message)) {
+    return " reason=access_denied (check that the app's scopes were approved on this store)";
+  }
+  return "";
 }
 
 /** Turns any thrown value into a JSON error response for the widget. */

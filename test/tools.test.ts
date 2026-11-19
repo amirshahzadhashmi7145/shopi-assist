@@ -155,6 +155,56 @@ describe("shopper tools", () => {
     expect(result.cards[0].compareAtPrice).toEqual({ amount: "30.0", currencyCode: "USD" });
   });
 
+  it("get_product_details does not present a product without options as having sizes", async () => {
+    const details = (variants: Array<Record<string, unknown>>, options: unknown[]) =>
+      fakeGraphql({
+        product: {
+          ...storefrontProduct(),
+          fullDescription: "A mug.",
+          tags: [],
+          options,
+          allVariants: { nodes: variants },
+        },
+      });
+    const variant = (id: string, title: string) => ({
+      id: `gid://shopify/ProductVariant/${id}`,
+      title,
+      availableForSale: true,
+      price: { amount: "18.0", currencyCode: "USD" },
+      compareAtPrice: null,
+      selectedOptions: [],
+    });
+
+    const single = await run(
+      "get_product_details",
+      { handle: "trail-mug" },
+      toolContext({
+        storefront: details(
+          [variant("101", "Default Title")],
+          [{ name: "Title", optionValues: [{ name: "Default Title" }] }],
+        ),
+      }),
+    );
+    expect(single.json.options).toBeUndefined();
+    expect(single.json.choices).toMatch(/one version only/);
+    expect(single.json.variants).toEqual([{ variantId: "101", price: "18.0 USD", inStock: true }]);
+    expect(single.content).not.toContain("Default Title");
+
+    const sized = await run(
+      "get_product_details",
+      { handle: "trail-mug" },
+      toolContext({
+        storefront: details(
+          [variant("101", "Small"), variant("102", "Large")],
+          [{ name: "Size", optionValues: [{ name: "Small" }, { name: "Large" }] }],
+        ),
+      }),
+    );
+    expect(sized.json.choices).toBeUndefined();
+    expect(sized.json.options).toEqual([{ name: "Size", values: ["Small", "Large"] }]);
+    expect(sized.json.variants.map((entry: { title: string }) => entry.title)).toEqual(["Small", "Large"]);
+  });
+
   it("add_to_cart verifies the variant before telling the widget to add it", async () => {
     const storefront = fakeGraphql({
       node: {

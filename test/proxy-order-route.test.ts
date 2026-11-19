@@ -111,23 +111,37 @@ describe("POST /proxy/order", () => {
         fields: { phone: "Enter a phone number with 7 to 15 digits." },
       }),
     );
+    // Sent as a 200 so that Shopify's proxy lets the body through.
     const invalid = await run(post({ step: "quote" }));
-    expect(invalid.status).toBe(422);
-    expect((await invalid.json()).error.fields).toEqual({
-      phone: "Enter a phone number with 7 to 15 digits.",
+    expect(invalid.status).toBe(200);
+    expect(await invalid.json()).toEqual({
+      ok: false,
+      error: {
+        code: "invalid_order",
+        message: "Please check the highlighted details.",
+        fields: { phone: "Enter a phone number with 7 to 15 digits." },
+        status: 422,
+      },
     });
 
     handleChatOrder.mockRejectedValueOnce(
       new OrderError("rate_limited", 429, "Too many orders.", { retryAfterSeconds: 90 }),
     );
     const limited = await run(post({ step: "place" }));
-    expect(limited.status).toBe(429);
-    expect(limited.headers.get("Retry-After")).toBe("90");
+    expect(limited.status).toBe(200);
+    expect((await limited.json()).error).toMatchObject({ code: "rate_limited", status: 429 });
+
+    const quote = { total: { amount: "54.6", currencyCode: "USD" } };
+    handleChatOrder.mockRejectedValueOnce(
+      new OrderError("quote_changed", 409, "The total has changed.", { quote: quote as never }),
+    );
+    const changed = await (await run(post({ step: "place" }))).json();
+    expect(changed).toMatchObject({ ok: false, error: { code: "quote_changed" }, quote });
 
     handleChatOrder.mockRejectedValueOnce(new Error("12 Analytical Way"));
-    const crashed = await run(post({ step: "place" }));
-    expect(crashed.status).toBe(500);
-    expect(JSON.stringify(await crashed.json())).not.toContain("Analytical");
+    const crashed = await (await run(post({ step: "place" }))).json();
+    expect(crashed.error.status).toBe(500);
+    expect(JSON.stringify(crashed)).not.toContain("Analytical");
   });
 });
 
@@ -145,7 +159,10 @@ describe("GET /proxy/order", () => {
       new OrderError("disabled", 403, "Ordering in the chat is not available for this store."),
     );
     const response = await get();
-    expect(response.status).toBe(403);
-    expect((await response.json()).error.code).toBe("disabled");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: "disabled", status: 403 },
+    });
   });
 });

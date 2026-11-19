@@ -336,19 +336,30 @@ const getProductDetails = defineTool({
       throw new ToolError(`No product with handle "${handle}" is available in this store.`);
     }
     const details = product as StorefrontProductDetails;
+    const variants = details.allVariants.nodes;
+    // Shopify gives a product without options one variant called "Default
+    // Title". That is not a size or a choice, so it is not shown as one.
+    const hasChoices = variants.length > 1 || variants[0]?.title !== "Default Title";
 
     return {
       output: {
         ...toProductSummary(details),
         description: details.fullDescription,
         tags: details.tags.slice(0, 15),
-        options: details.options.map((option) => ({
-          name: option.name,
-          values: option.optionValues.map((value) => value.name),
-        })),
-        variants: details.allVariants.nodes.map((variant) => ({
+        ...(hasChoices
+          ? {
+              options: details.options.map((option) => ({
+                name: option.name,
+                values: option.optionValues.map((value) => value.name),
+              })),
+            }
+          : {
+              choices:
+                "None. This product comes in one version only: no sizes, colours or other options. Do not ask the shopper to pick one.",
+            }),
+        variants: variants.map((variant) => ({
           variantId: numericId(variant.id),
-          title: variant.title,
+          title: hasChoices ? variant.title : undefined,
           price: formatMoney(variant.price),
           compareAtPrice: variant.compareAtPrice
             ? formatMoney(variant.compareAtPrice)
@@ -441,7 +452,7 @@ const getStorePolicy = defineTool({
 const addToCart = defineTool({
   name: "add_to_cart",
   description:
-    "Add one product variant to the shopper's cart. Only call this when the shopper clearly asks to add an item. Needs a variantId from get_product_details.",
+    "Add one product variant to the shopper's cart, for a shopper who wants to keep shopping. Only call this when the shopper asks to add an item to the cart. When they say they want to buy or order it, start the order instead. Needs a variantId from get_product_details.",
   audiences: ["shopper"],
   schema: z.object({
     variantId: z
@@ -519,7 +530,7 @@ function sumMoney(amounts: Money[]): Money | null {
 const placeOrder = defineTool({
   name: "place_order",
   description:
-    "Start an order for the items the shopper wants to buy. Puts them in the shopper's cart and shows an order summary with a checkout button. Call it once with every item, after the shopper has chosen the exact variant and quantity of each. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details; the shopper finishes on the store's checkout page.",
+    "Start an order as soon as the shopper says they want to buy or order something. Puts the items in the shopper's cart and shows an order summary with the buttons to complete it. Call it once with every item; the quantity is 1 unless they said otherwise. Only ask first when a product has several variants and they have not said which. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details yourself.",
   audiences: ["shopper"],
   schema: z.object({
     items: z

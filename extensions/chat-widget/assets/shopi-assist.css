@@ -497,6 +497,26 @@ a.sa-card-title:hover {
   font-variant-numeric: tabular-nums;
 }
 
+.sa-order-remove {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--sa-ink-soft);
+  font-size: 12.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sa-order-remove:hover {
+  color: var(--sa-danger);
+}
+
+.sa-order-remove:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .sa-order-total {
   display: flex;
   justify-content: space-between;

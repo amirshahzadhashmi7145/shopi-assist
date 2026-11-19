@@ -16,6 +16,7 @@ import {
   errorJson,
   NO_STORE,
   readJsonBody,
+  throughProxy,
 } from "../assistant/proxy-request.server";
 import { getSettings } from "../assistant/settings.server";
 import { toGraphqlFn } from "../assistant/shopify-clients.server";
@@ -84,6 +85,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     return Response.json(result, { headers: NO_STORE });
   } catch (error) {
-    return chatErrorResponse(error);
+    return throughProxy(chatErrorResponse(error));
   }
 };

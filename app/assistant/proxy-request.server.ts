@@ -84,6 +84,28 @@ export async function readJsonBody(
 }
 
 /**
+ * Makes an error response readable by the widget.
+ *
+ * Shopify's app proxy does not pass an error response through as it is: seen
+ * on a real store, a 502 with a JSON body reached the browser as something
+ * the widget could not parse, so the shopper was told the store could not be
+ * reached. Errors that carry a message for the shopper therefore travel as
+ * HTTP 200 with `ok: false` and the real status inside the body.
+ */
+export async function throughProxy(response: Response): Promise<Response> {
+  if (response.ok) return response;
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as { error?: Record<string, unknown> } | null;
+  if (!body?.error) return response;
+  return Response.json(
+    { ...body, ok: false, error: { ...body.error, status: response.status } },
+    { status: 200, headers: NO_STORE },
+  );
+}
+
+/**
  * The visitor's address as Shopify's proxy reports it. Used only as one of
  * several rate-limit keys, never for access decisions.
  */

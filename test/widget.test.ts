@@ -507,6 +507,80 @@ describe("chat widget", () => {
     expect(nextPage.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
   });
 
+  it("lets the shopper remove a line from the summary", async () => {
+    const lines = [
+      { ...cartLine(101, 1, "Trail Mug", 1800), key: "101:abc" },
+      { ...cartLine(103, 1, "Camp Blanket", 8950), key: "103:def" },
+    ];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url !== "/cart/change.js") return reply("Here.", { actions: [{ type: "checkout" }] });
+      const change = JSON.parse(init!.body as string);
+      const index = lines.findIndex((line) => line.key === change.id);
+      if (index >= 0 && change.quantity === 0) lines.splice(index, 1);
+      return jsonResponse(cartJson(...lines));
+    });
+    cartMock.mockImplementation(() => jsonResponse(cartJson(...lines)));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("checkout");
+    await flush();
+
+    const remove = widget.all(".sa-order-remove");
+    expect(remove.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Remove Trail Mug",
+      "Remove Camp Blanket",
+    ]);
+    remove[1].click();
+    await flush();
+
+    const change = fetchMock.mock.calls.find((call) => call[0] === "/cart/change.js")!;
+    expect(JSON.parse((change[1] as RequestInit).body as string)).toEqual({ id: "103:def", quantity: 0 });
+    expect(widget.all(".sa-order")).toHaveLength(1);
+    expect(widget.all(".sa-order-item").map((item) => item.textContent)).toEqual(["Trail Mug"]);
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$18.00");
+
+    // Removing the last line leaves no summary, only a note.
+    widget.$<HTMLButtonElement>(".sa-order-remove").click();
+    await flush();
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+      "Your cart is empty. Tell me what you'd like to order.",
+    );
+  });
+
+  it("shows the app's message when an order step is refused, even as a 200", async () => {
+    configMock.mockImplementation(() => appConfig({ chatOrders: true }));
+    liveCart({ 101: ["Trail Mug", 1800] }, () => reply("Here.", { actions: [{ type: "checkout" }] }), {
+      101: 1,
+    });
+    // How errors arrive through Shopify's proxy: HTTP 200, ok false.
+    orderMock.mockImplementation((_url: string, init?: RequestInit) =>
+      init?.method === "POST"
+        ? jsonResponse({
+            ok: false,
+            error: { code: "order_failed", status: 502, message: "We couldn't place this order right now." },
+          })
+        : jsonResponse({ ok: true, countries: [{ code: "US", name: "United States" }] }),
+    );
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("checkout");
+    await flush();
+    widget.$<HTMLButtonElement>(".sa-order-here").click();
+    await flush();
+    widget
+      .$<HTMLFormElement>(".sa-order-form")
+      .dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    await flush();
+
+    expect(widget.$(".sa-order-status-error").textContent).toBe(
+      "We couldn't place this order right now.",
+    );
+    // One country to deliver to: the choice is hidden.
+    expect(widget.$('.sa-order-form [name="countryCode"]').parentElement!.hidden).toBe(true);
+  });
+
   it("says so when there is nothing in the cart to check out", async () => {
     fetchMock.mockImplementation(() => reply("Sure.", { actions: [{ type: "checkout" }] }));
     cartMock.mockImplementation(() => jsonResponse(cartJson()));

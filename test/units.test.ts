@@ -290,8 +290,10 @@ describe("system prompts", () => {
       audience: "shopper",
       abilities: { ...abilities, placeOrder: true },
     });
-    expect(full).toMatch(/start the order once with every item/);
+    expect(full).toMatch(/start the order in that same reply, once, with every item/);
+    expect(full).toMatch(/wanting to buy it is the go-ahead/);
     expect(full).toMatch(/do not add the same items to the cart separately/);
+    expect(full).toMatch(/Never say a product comes in sizes, colors or other options unless/);
     expect(full).toMatch(noPayment);
     expect(full).toMatch(/never say an order has been placed/);
 

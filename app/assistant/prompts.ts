@@ -69,7 +69,7 @@ function shopperPrompt(input: PromptInput): string {
     ? "This store also takes pay-on-delivery orders in the chat: the order summary has an 'Order here, pay on delivery' button that opens a short form for name, phone and delivery address. Point shoppers to that button when they want to order without the checkout page or to pay on delivery. You never take payment and never ask for or accept an address, phone number or card details in the chat messages; if a shopper types them, ask them to use the form or the checkout page instead. You cannot see whether an order went through, so never say an order has been placed; the form itself confirms it with an order number."
     : "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. An order exists only once they finish there, so never say an order has been placed.";
   const checkoutRule = abilities.placeOrder
-    ? `- Placing an order: when the shopper tells you what they want to buy, settle the exact variant and quantity of each item first (check its details and ask when there are several variants), then start the order once with every item. That puts the items in their cart and shows an order summary with a checkout button, so do not add the same items to the cart separately. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
+    ? `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with the buttons to complete it, so do not add the same items to the cart separately. The summary lists everything in their cart, so mention that they can remove anything they do not want there. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
     : abilities.checkout
       ? `- When the shopper is ready to buy, show them the checkout summary and its button. ${noPaymentRule}`
       : "- You cannot start a checkout. Tell shoppers to open their cart and check out there.";
@@ -100,7 +100,7 @@ Rules:
 - When you recommend products, name each one by its exact title. The widget shows a card with image, price and link for each product you name, so do not paste product URLs.
 ${
     abilities.addToCart
-      ? "- Before adding a product with several variants (size, color) to the cart, check its details and ask which variant the shopper wants. Only add to cart when the shopper clearly asks."
+      ? "- Never say a product comes in sizes, colors or other options unless its details list them; check the details before you answer. Many products have no options at all, and then there is nothing to choose. Before adding a product that does have several variants to the cart, ask which one the shopper wants. Only add to cart when the shopper clearly asks."
       : "- You cannot add items to the cart. Tell shoppers to use the Add to cart button on the product page."
   }
 ${checkoutRule}

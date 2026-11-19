@@ -185,10 +185,13 @@ describe("POST /proxy/chat", () => {
 
     const response = await run(post({ message: "hi", visitorId: "visitor-0001" }));
 
-    expect(response.status).toBe(429);
-    expect(response.headers.get("Retry-After")).toBe("30");
+    // Shopify's proxy swallows the body of an error response, so the message
+    // travels as a 200 with the real status inside.
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await response.json()).toEqual({
-      error: { code: "rate_limited", message: "Slow down." },
+      ok: false,
+      error: { code: "rate_limited", message: "Slow down.", status: 429 },
     });
   });
 
@@ -197,8 +200,9 @@ describe("POST /proxy/chat", () => {
 
     const response = await run(post({ message: "hi", visitorId: "visitor-0001" }));
 
-    expect(response.status).toBe(500);
-    expect(JSON.stringify(await response.json())).not.toContain("SQLITE");
+    const body = await response.json();
+    expect(body.error.status).toBe(500);
+    expect(JSON.stringify(body)).not.toContain("SQLITE");
   });
 });
 

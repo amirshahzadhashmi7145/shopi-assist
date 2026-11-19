@@ -166,6 +166,8 @@
         title: String(line.title || line.product_title || "Item").slice(0, 120),
         quantity: Math.max(1, parseInt(line.quantity, 10) || 1),
         total: fromCents(amount),
+        // Identifies the cart line, so it can be removed from the summary.
+        key: typeof line.key === "string" ? line.key.slice(0, 200) : "",
       };
     });
     return {
@@ -702,6 +704,16 @@
       item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " \u00d7"));
       item.appendChild(el("span", "sa-order-item", line.title));
       item.appendChild(el("span", "sa-order-amount", money(line.total)));
+      if (line.key) {
+        var remove = el("button", "sa-order-remove", "Remove");
+        remove.type = "button";
+        remove.setAttribute("aria-label", "Remove " + line.title);
+        remove.addEventListener("click", function () {
+          remove.disabled = true;
+          self.removeFromCart(line.key);
+        });
+        item.appendChild(remove);
+      }
       list.appendChild(item);
     });
     box.appendChild(list);
@@ -1073,14 +1085,6 @@
         });
         return;
       }
-      if (!cart.items.length) {
-        self.pushEntry({
-          role: "notice",
-          text: "Your cart is empty. Tell me what you'd like to order.",
-        });
-        return;
-      }
-
       // One summary at a time: an older one would show a cart that has changed.
       // An open order form was started from that older cart, so it goes too.
       self.closeOrderForm();
@@ -1089,8 +1093,42 @@
       });
       var stale = self.messagesEl.querySelectorAll(".sa-order");
       for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
+
+      if (!cart.items.length) {
+        self.pushEntry({
+          role: "notice",
+          text: "Your cart is empty. Tell me what you'd like to order.",
+        });
+        return;
+      }
       self.pushEntry(orderSummary(cart));
     });
+  };
+
+  /** Takes one line out of the storefront cart, then shows the summary again. */
+  Widget.prototype.removeFromCart = function (key) {
+    var self = this;
+    return window
+      .fetch(this.config.cartUrl + "/change.js", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ id: key, quantity: 0 }),
+      })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (cart) {
+        if (cart) {
+          document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
+        }
+      })
+      .catch(function () {
+        // The summary below is read from the cart again, so it shows the truth.
+      })
+      .then(function () {
+        return self.showOrderSummary();
+      });
   };
 
   /** Adds one variant to the storefront cart. */

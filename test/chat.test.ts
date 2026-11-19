@@ -262,7 +262,7 @@ describe("handleChatTurn", () => {
     expect(byDefault.tools).toEqual(
       expect.arrayContaining(["add_to_cart", "place_order", "start_checkout"]),
     );
-    expect(byDefault.system).toContain("start the order once with every item");
+    expect(byDefault.system).toContain("start the order in that same reply");
     expect(byDefault.system).toContain("never say an order has been placed");
     expect(byDefault.tools).not.toContain("request_return");
     expect(byDefault.tools).not.toContain("get_order_status");

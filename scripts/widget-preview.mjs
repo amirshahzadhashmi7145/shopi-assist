@@ -93,6 +93,7 @@ function cartJson() {
     const price = Math.round(Number(product.price) * 100);
     return {
       variant_id: Number(variantId),
+      key: `${variantId}:preview`,
       quantity,
       title: product.title,
       price,
@@ -290,6 +291,16 @@ const server = createServer(async (request, response) => {
       for await (const chunk of request) raw += chunk;
       const [status, payload] = previewOrder(JSON.parse(raw || "{}"));
       return send(status, "application/json", JSON.stringify(payload));
+    }
+
+    if (request.method === "POST" && url.pathname === "/cart/change.js") {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      const change = JSON.parse(raw || "{}");
+      const variantId = String(change.id).split(":")[0];
+      if (Number(change.quantity) > 0) cartLines.set(variantId, Number(change.quantity));
+      else cartLines.delete(variantId);
+      return send(200, "application/json", JSON.stringify(cartJson()));
     }
 
     if (request.method === "POST" && url.pathname === "/cart/clear.js") {
