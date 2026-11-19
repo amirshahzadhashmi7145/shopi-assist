@@ -6,7 +6,9 @@
  *   npm run widget:preview     then open http://localhost:4010
  *
  * Query options:  ?accent=%23B4532A  ?position=left  ?demo=1 (opens the chat
- * and asks a question automatically; used for screenshots).
+ * and asks a question automatically; used for screenshots). With a demo
+ * question that shows an order summary, &form=details, &form=review or
+ * &form=placed also walks through the pay-on-delivery form.
  *
  * Nothing here ships to Shopify; only extensions/chat-widget is deployed.
  */
@@ -50,6 +52,24 @@ function cannedReply(message) {
       cards: [],
     };
   }
+  if (/order|buy/i.test(message)) {
+    return {
+      reply: `Here's your order: 2 of the **${PRODUCTS[0].title}** and the **${PRODUCTS[2].title}**. Check the summary below and go to checkout when you're ready.`,
+      cards: [],
+      actions: [
+        {
+          type: "order",
+          items: [
+            { variantId: "101", quantity: 2, title: PRODUCTS[0].title },
+            { variantId: "103", quantity: 1, title: PRODUCTS[2].title },
+          ],
+        },
+      ],
+    };
+  }
+  if (/checkout|pay/i.test(message)) {
+    return { reply: "Here's what is in your cart.", cards: [], actions: [{ type: "checkout" }] };
+  }
   if (/add/i.test(message)) {
     return {
       reply: `Done, I've added the **${PRODUCTS[0].title}** to your cart.`,
@@ -59,9 +79,69 @@ function cannedReply(message) {
   }
   if (/error/i.test(message)) return null;
   return {
-    reply: "This is the preview server, so answers are canned. Try asking for best sellers, the return policy, or to add something to the cart.",
+    reply: "This is the preview server, so answers are canned. Try asking for best sellers, the return policy, to add something to the cart, or to place an order.",
     cards: [],
   };
+}
+
+/** A stand-in for the storefront cart, shaped like Shopify's /cart.js. */
+const cartLines = new Map();
+
+function cartJson() {
+  const items = [...cartLines].map(([variantId, quantity]) => {
+    const product = PRODUCTS.find((candidate) => candidate.variantId === variantId);
+    const price = Math.round(Number(product.price) * 100);
+    return {
+      variant_id: Number(variantId),
+      quantity,
+      title: product.title,
+      price,
+      final_line_price: price * quantity,
+    };
+  });
+  const total = items.reduce((sum, item) => sum + item.final_line_price, 0);
+  return {
+    currency: "USD",
+    item_count: items.reduce((sum, item) => sum + item.quantity, 0),
+    items,
+    items_subtotal_price: total,
+    total_price: total,
+  };
+}
+
+const money = (cents) => ({ amount: (cents / 100).toFixed(2), currencyCode: "USD" });
+const PREVIEW_RATES = [
+  { handle: "standard", title: "Standard (3 to 5 days)", cents: 500 },
+  { handle: "express", title: "Express (next day)", cents: 1500 },
+];
+
+/** A stand-in for the app's order endpoint: prices the cart, then "places" it. */
+function previewOrder(body) {
+  const fields = {};
+  if (!/^\+?\d{7,15}$/.test(String(body.contact?.phone || "").replace(/[\s().-]/g, ""))) {
+    fields.phone = "Enter a phone number with 7 to 15 digits.";
+  }
+  if (String(body.contact?.name || "").trim().length < 2) fields.name = "Enter your full name.";
+  if (String(body.address?.address1 || "").trim().length < 3) fields.address1 = "Enter your street address.";
+  if (!String(body.address?.city || "").trim()) fields.city = "Enter your city.";
+  if (Object.keys(fields).length) {
+    return [422, { error: { code: "invalid_order", message: "Please check the highlighted details.", fields } }];
+  }
+
+  const cart = cartJson();
+  const rate = PREVIEW_RATES.find((candidate) => candidate.handle === body.shippingRateHandle) ?? PREVIEW_RATES[0];
+  const tax = Math.round(cart.total_price * 0.08);
+  const quote = {
+    lines: cart.items.map((item) => ({ title: item.title, quantity: item.quantity, total: money(item.final_line_price) })),
+    subtotal: money(cart.total_price),
+    shipping: money(rate.cents),
+    tax: money(tax),
+    total: money(cart.total_price + rate.cents + tax),
+    shippingRates: PREVIEW_RATES.map((entry) => ({ handle: entry.handle, title: entry.title, price: money(entry.cents) })),
+    shippingRateHandle: rate.handle,
+  };
+  if (body.step === "quote") return [200, { ok: true, step: "quote", quote }];
+  return [200, { ok: true, step: "place", order: { name: "#1042", total: quote.total } }];
 }
 
 const productImage = (hue) =>
@@ -73,6 +153,7 @@ function page(url) {
     : "#1F3D2F";
   const position = url.searchParams.get("position") === "left" ? "left" : "right";
   const demo = url.searchParams.get("demo");
+  const form = url.searchParams.get("form");
 
   return `<!doctype html>
 <html lang="en">
@@ -105,7 +186,7 @@ function page(url) {
   <div class="grid">
     ${PRODUCTS.map((product) => `<div class="tile"><img src="/img/${product.handle}.svg" alt=""><div>${product.title}<br>$${Number(product.price).toFixed(2)}</div></div>`).join("")}
   </div>
-  <p class="note">Preview only. Try: "What are your best sellers?", "What's your return policy?", "Add the mug to my cart", or "error" to see the failure state.</p>
+  <p class="note">Preview only. Try: "What are your best sellers?", "What's your return policy?", "Add the mug to my cart", "I want to order two mugs and a blanket", "Checkout", or "error" to see the failure state.</p>
 </main>
 
 <div
@@ -139,6 +220,23 @@ ${
           : `var input = root.querySelector(".sa-input");
       input.value = ${JSON.stringify(demo === "1" ? "What are your best sellers?" : demo)};
       root.querySelector(".sa-form").dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));`
+      }
+      ${
+        form
+          ? `var submitOrder = function () {
+        root.querySelector(".sa-order-form").dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+      };
+      setTimeout(function () { root.querySelector(".sa-order-here").click(); }, 1500);
+      setTimeout(function () {
+        var values = { name: "Ada Lovelace", phone: "+1 613 555 0111", address1: "12 Analytical Way", city: "Ottawa", province: "ON", zip: "K1A 0B1" };
+        if (${JSON.stringify(form)} === "details") values.phone = "12";
+        Object.keys(values).forEach(function (name) {
+          root.querySelector('.sa-order-form [name="' + name + '"]').value = values[name];
+        });
+        submitOrder();
+      }, 2200);
+      ${form === "placed" ? "setTimeout(submitOrder, 3000);" : ""}`
+          : ""
       }
     }, 300);
   });
@@ -175,8 +273,47 @@ const server = createServer(async (request, response) => {
       }));
     }
 
+    if (request.method === "GET" && url.pathname === "/apps/shopi-assist/chat") {
+      return send(200, "application/json", JSON.stringify({
+        ok: true, enabled: true, ready: true, title: "", greeting: "", chatOrders: true,
+      }));
+    }
+
+    if (url.pathname === "/apps/shopi-assist/order") {
+      if (request.method === "GET") {
+        return send(200, "application/json", JSON.stringify({
+          ok: true,
+          countries: [{ code: "CA", name: "Canada" }, { code: "US", name: "United States" }],
+        }));
+      }
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      const [status, payload] = previewOrder(JSON.parse(raw || "{}"));
+      return send(status, "application/json", JSON.stringify(payload));
+    }
+
+    if (request.method === "POST" && url.pathname === "/cart/clear.js") {
+      cartLines.clear();
+      return send(200, "application/json", JSON.stringify(cartJson()));
+    }
+
     if (request.method === "POST" && url.pathname === "/cart/add.js") {
-      return send(200, "application/json", JSON.stringify({ items: [] }));
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      for (const item of JSON.parse(raw || "{}").items ?? []) {
+        const variantId = String(item.id);
+        if (!PRODUCTS.some((product) => product.variantId === variantId)) {
+          return send(422, "application/json", JSON.stringify({
+            status: 422, message: "Cart Error", description: "Cannot find variant",
+          }));
+        }
+        cartLines.set(variantId, (cartLines.get(variantId) ?? 0) + Number(item.quantity || 1));
+      }
+      return send(200, "application/json", JSON.stringify({ items: cartJson().items }));
+    }
+
+    if (request.method === "GET" && url.pathname === "/cart.js") {
+      return send(200, "application/json", JSON.stringify(cartJson()));
     }
 
     if (url.pathname.startsWith("/assets/")) {

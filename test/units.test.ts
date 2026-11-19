@@ -281,6 +281,55 @@ describe("system prompts", () => {
     expect(prompt.match(/r{100,}/g)![0]).toHaveLength(1500);
   });
 
+  it("explains ordering in chat only when the assistant can do it", () => {
+    const abilities = { addToCart: true, checkout: true, returns: false };
+    const noPayment = /never ask for an address, phone number or card details in chat/;
+
+    const full = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...abilities, placeOrder: true },
+    });
+    expect(full).toMatch(/start the order once with every item/);
+    expect(full).toMatch(/do not add the same items to the cart separately/);
+    expect(full).toMatch(noPayment);
+    expect(full).toMatch(/never say an order has been placed/);
+
+    // Checkout on, cart off: the assistant can only show what is in the cart.
+    const checkoutOnly = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...abilities, addToCart: false },
+    });
+    expect(checkoutOnly).not.toMatch(/start the order/);
+    expect(checkoutOnly).toMatch(/show them the checkout summary/);
+    expect(checkoutOnly).toMatch(noPayment);
+
+    const none = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...abilities, checkout: false },
+    });
+    expect(none).toMatch(/You cannot start a checkout/);
+    expect(none).not.toMatch(/start the order/);
+  });
+
+  it("points shoppers to the order form, and never collects their details itself", () => {
+    const abilities = { addToCart: true, checkout: true, returns: false, placeOrder: true };
+
+    const withForm = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...abilities, chatOrders: true },
+    });
+    expect(withForm).toMatch(/'Order here, pay on delivery' button/);
+    expect(withForm).toMatch(/never ask for or accept an address, phone number or card details/);
+    expect(withForm).toMatch(/never say an order has been placed/);
+
+    const without = buildSystemPrompt({ ...input, audience: "shopper", abilities });
+    expect(without).not.toMatch(/pay on delivery/);
+  });
+
   it("keeps owner notes out of the merchant assistant's prompt", () => {
     const prompt = buildSystemPrompt({
       ...input,

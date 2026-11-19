@@ -291,6 +291,9 @@ export async function handleChatTurn(
         abilities: {
           addToCart: tools.some((tool) => tool.name === "add_to_cart"),
           checkout: tools.some((tool) => tool.name === "start_checkout"),
+          placeOrder: tools.some((tool) => tool.name === "place_order"),
+          chatOrders:
+            settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
           returns: tools.some((tool) => tool.name === "request_return"),
         },
         quickPolicies: describeQuickPolicies(settings),

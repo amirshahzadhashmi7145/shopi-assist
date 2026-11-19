@@ -12,14 +12,17 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 - Product search, product details and variants, collections.
 - Shipping, refund, privacy and terms answers read from the store's published policies.
 - "Add the small one to my cart" adds to the real storefront cart.
-- "I want to buy it" shows a Go to checkout button. Payment always happens on the store's normal Shopify checkout; the assistant never places an order or takes payment itself.
+- "I want to order two mugs and the blanket" puts those items in the cart and shows an order summary in the chat: each line, the subtotal and a Go to checkout button. Items already in the cart are topped up to the quantity asked for, so repeating an order never doubles it.
+- "I want to buy it" or "checkout" shows the same summary for what is already in the cart, or says the cart is empty.
+- Normally, delivery details and payment happen on the store's Shopify checkout. The assistant never asks for an address or card in the chat messages.
+- **Pay-on-delivery orders in the chat** (off by default). The order summary gets an "Order here, pay on delivery" button. The shopper fills in a short form (name, phone, address), sees delivery options, tax and the total, and presses Place order. The order appears in the Shopify admin as unpaid, tagged `shopi-assist`, and the chat shows the order number.
 - Order status by order number plus checkout email (off by default; the merchant opts in).
 - Return requests by order number, checkout email and a reason (off by default). This creates a return request in the Shopify admin that the merchant approves or declines. Nothing is refunded automatically.
 
 **For the merchant (inside Shopify admin)**
 
 - A **setup tour** that opens the first time the app is opened after install. It is built around ticking boxes and picking from lists, not writing:
-  1. *What it can do:* add to cart, checkout, order status, return requests.
+  1. *What it can do:* add to cart, place an order, pay-on-delivery orders in the chat, order status, return requests. Ordering in chat needs both "add to cart" and "place an order" ticked; with only "place an order", the assistant shows the summary of the existing cart.
   2. *Your policies:* return window, who pays return shipping, how fast orders ship, delivery time, where you ship.
   3. *Name and tone.*
   4. *Go live.*
@@ -78,9 +81,11 @@ App server  /proxy/chat
 
 - **Two audiences, decided by the server.** A request through the app proxy is always a `shopper`; a request through the authenticated admin is always a `merchant`. Each tool declares which audience may use it, and a tool call for the wrong audience is refused. Nothing the browser sends can change the audience or the shop.
 - **Shoppers only see public data.** Catalog tools use the Storefront API, which returns only products the store has published. Sales figures, inventory counts and other customers' data are not reachable from the widget.
+- **Ordering in chat changes only the shopper's own cart**, in their own browser, through the storefront's cart endpoints. The server checks that each item is a published, in-stock variant and returns its id; it creates no order, draft order or checkout. No address, phone number or payment detail passes through the chat.
+- **Pay-on-delivery orders are the one place an anonymous visitor makes the app create an order**, so they are opt-in and kept away from the model. The form posts straight to its own signed endpoint (`/proxy/order`); it is not a tool the LLM can call, so a prompt injection cannot place an order, and names, phone numbers and addresses never reach the LLM provider, the stored transcript, the logs or the browser's storage. Prices come from Shopify, never from the browser. Items are first checked against the Storefront API, so unpublished products cannot be ordered. The shopper must confirm the exact total; if it changed, nothing is placed. Orders are limited per visitor address, per phone number and per shop, a retried request returns the same order instead of a second one, and an order is never completed without "due on fulfillment" payment terms (without them Shopify would record it as paid).
 - **Return requests** are opt-in and use the same proof and throttles as order lookup, plus one request per order per day. They are the only thing a shopper's chat can write to the store, and what they write is a request awaiting the merchant's decision. The assistant never guesses which item to return.
 - **Order lookup** is opt-in, needs both order number and checkout email to match exactly, returns only status and tracking, and gives the same answer for "wrong email" and "no such order". Guessing is throttled four ways: per chat turn, per visitor address, per email address and per shop.
-- **No Admin API for shoppers.** A shopper's chat turn is not handed an Admin API client at all unless the merchant has turned order lookup on.
+- **No Admin API for shoppers.** A shopper's chat turn is not handed an Admin API client at all unless the merchant has turned order lookup or return requests on.
 - **Tenant isolation.** Every database query filters by the authenticated shop. A conversation id from one shop (or one visitor) cannot be continued or read by another.
 - **No HTML from the model.** The widget renders replies with DOM text nodes and a tiny Markdown subset; only `http(s)` and same-site links become links.
 - **Abuse and spend limits.** Per-address limits (per minute and per hour, IPv6 grouped by /64), per-shop limits (per hour and per day), a daily token ceiling across all shops, a 50-second deadline per turn, a message length cap, and bounded tool steps and output tokens. A blocked address does not use up the shop's shared budget.
@@ -131,6 +136,10 @@ npm run graphql-codegen     # validates every GraphQL query against Shopify's Ad
 | `CHAT_LIMIT_PER_SHOP_PER_HOUR` | `600` | Storefront ceiling per shop, all visitors together |
 | `CHAT_LIMIT_PER_SHOP_PER_DAY` | `3000` | Storefront daily ceiling per shop |
 | `CHAT_LIMIT_MERCHANT_PER_MINUTE` | `30` | Admin assistant limit per shop |
+| `CHAT_ORDERS_PER_IP_PER_HOUR` | `10` | Pay-on-delivery orders per visitor address |
+| `CHAT_ORDERS_PER_PHONE_PER_DAY` | `3` | Pay-on-delivery orders per phone number |
+| `CHAT_ORDERS_PER_SHOP_PER_HOUR` | `60` | Pay-on-delivery orders per shop, all visitors together |
+| `CHAT_ORDERS_PER_SHOP_PER_DAY` | `300` | Daily ceiling of pay-on-delivery orders per shop |
 | `LLM_DAILY_TOKEN_BUDGET` | `2000000` | Token ceiling per UTC day across **all** shops. Chat stops when it is reached. Size it to your budget |
 
 What the merchant sets, and where:
@@ -152,6 +161,8 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 | `read_reports` | Merchant assistant: sales analytics through ShopifyQL |
 | `write_app_proxy` | Registering the `/apps/shopi-assist` storefront proxy |
 | `write_returns` | Shopper return requests (opt-in). Creates a request the merchant must approve |
+| `write_draft_orders` | Pay-on-delivery orders from the chat form (opt-in): prices the order, creates it and completes it |
+| `write_payment_terms` | Marks those orders "due on fulfillment" so they are unpaid rather than paid |
 
 `read_orders` and `read_reports` involve **protected customer data**. On a development store you can use them after selecting the data in your app's Dev Dashboard (Settings → Access requests); for a public app Shopify must approve the request. If analytics access is missing, the merchant assistant falls back to totalling recent orders and says the figures are approximate.
 
@@ -159,8 +170,8 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 
 Verified locally:
 
-- 142 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
-- All 15 GraphQL queries validate against Shopify's published 2026-10 Admin and Storefront schemas.
+- 197 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, pay-on-delivery orders (pricing, placing, limits, retries), retention and redaction, the proxy routes, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, order summary, order form, errors, persistence).
+- All 24 GraphQL queries and mutations validate against Shopify's published 2026-10 Admin and Storefront schemas.
 - The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and stale ones (`npm run smoke`). Shopify's signature covers the query string and a timestamp with a 90-second window; it does not stop the same request being re-sent inside that window, which is one reason the limits above exist.
 - An independent security review of the code; its findings are fixed or listed below.
 - `shopify theme check` and `shopify app security check` report no findings.
@@ -180,7 +191,8 @@ Two things only showed up on the real store and are now fixed and tested:
 Not yet verified:
 
 - Real answers from GPT-4o, including how well it picks tools. Everything so far used the mock model.
-- The other shopper tools on a real store: search, product details, collections, policies, add to cart from chat, the checkout button, order status.
+- The other shopper tools on a real store: search, product details, collections, policies, add to cart from chat, ordering in chat and the order summary, order status. The order summary reads the theme's `/cart.js`; so far it has only run against the preview server's stand-in cart (`npm run widget:preview`).
+- **Pay-on-delivery orders on a real store.** Every query validates against Shopify's schema and the logic is tested with fake responses, but no real order has been placed yet. To check on the dev store: that the order comes out unpaid (payment pending) and not paid; that a province typed as a name ("Ontario") is accepted; that delivery rates and tax match the checkout; that the two new scopes are enough (the app must be reinstalled or the new scopes approved first); and that the country list loads.
 - **Return requests on a real store.** The queries validate against Shopify's schema and the logic is tested with fake responses, but no real return request has been created yet. It needs a fulfilled order on the dev store.
 - The merchant assistant on a real store, including ShopifyQL responses (row format and access).
 - The admin pages inside the real Shopify admin: the setup tour, the shopper preview chat, Settings and the widget-status check. They type-check against Shopify's Polaris types and build, but have not been clicked through in a browser.
@@ -196,13 +208,16 @@ Not yet verified:
 - **Access tokens** are stored unencrypted in the database, as in Shopify's template. Use a database with encryption at rest.
 - **Shared devices.** The widget keeps the conversation in the browser's local storage for up to a day so it survives page changes.
 - **Customer data requests.** The `customers/data_request` webhook logs the shop, customer id and number of linked transcripts; the export itself is manual. Guest conversations are not linked to a customer, which is why email addresses are masked rather than stored.
-- **Protected customer data** approval is needed for orders and analytics on live stores.
+- **Protected customer data** approval is needed for orders and analytics on live stores. Pay-on-delivery orders also write the shopper's name, phone, email and address, so they need those fields approved too.
+- **Fake orders.** Pay-on-delivery orders come from anonymous visitors and commit stock. The limits slow abuse down but cannot tell a real buyer from a fake one, so confirm these orders (for example by phone) before shipping, and leave the feature off if you do not offer cash on delivery.
 - **Hosting.** `shopify app deploy` publishes configuration and the widget extension; the app server needs its own host.
 
 ## Not built yet
 
 - Merchant write actions (create discounts, edit products, adjust inventory, refunds). The tool registry is designed for them, but each should run only after the merchant confirms it in the UI.
 - Order cancellation and address changes for shoppers.
+- For pay-on-delivery orders: discount codes, subscriptions and customised items (those carts are sent to the checkout), attaching the order to a logged-in customer, and telling the assistant an order was placed so it can refer to it later.
+- Online payment inside the chat. Shopify does not let an app take card payments outside its checkout.
 - Streaming replies.
 - Billing.
 - Translations of the widget's own labels.

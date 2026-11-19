@@ -10,7 +10,7 @@
 import { z } from "zod";
 
 import { clientKey } from "../rate-limit";
-import type { Money, ProductCard } from "../types";
+import type { Money, OrderItem, ProductCard } from "../types";
 import {
   defineTool,
   ToolError,
@@ -25,6 +25,7 @@ import {
   SEARCH_PRODUCTS_QUERY,
   SHOP_POLICIES_QUERY,
   VARIANT_FOR_CART_QUERY,
+  VARIANTS_FOR_ORDER_QUERY,
 } from "./storefront-queries";
 
 // ---------------------------------------------------------------------------
@@ -489,18 +490,141 @@ const addToCart = defineTool({
   },
 });
 
+const MAX_ORDER_LINES = 10;
+const MAX_LINE_QUANTITY = 10;
+
+/** Digits after the decimal point, so sums keep the currency's own precision. */
+function decimalPlaces(amount: string): number {
+  return (amount.split(".")[1] ?? "").length;
+}
+
+/** "18.0 USD" times 3 is "54.0 USD". */
+function lineTotal(price: Money, quantity: number): Money {
+  return {
+    amount: (Number(price.amount) * quantity).toFixed(decimalPlaces(price.amount)),
+    currencyCode: price.currencyCode,
+  };
+}
+
+/** The total of several amounts, or null when they are not all in one currency. */
+function sumMoney(amounts: Money[]): Money | null {
+  if (!amounts.length) return null;
+  const currencyCode = amounts[0].currencyCode;
+  if (amounts.some((money) => money.currencyCode !== currencyCode)) return null;
+  const places = Math.max(...amounts.map((money) => decimalPlaces(money.amount)));
+  const total = amounts.reduce((sum, money) => sum + Number(money.amount), 0);
+  return { amount: total.toFixed(places), currencyCode };
+}
+
+const placeOrder = defineTool({
+  name: "place_order",
+  description:
+    "Start an order for the items the shopper wants to buy. Puts them in the shopper's cart and shows an order summary with a checkout button. Call it once with every item, after the shopper has chosen the exact variant and quantity of each. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details; the shopper finishes on the store's checkout page.",
+  audiences: ["shopper"],
+  schema: z.object({
+    items: z
+      .array(
+        z.object({
+          variantId: z
+            .string()
+            .trim()
+            .regex(/^\d{1,20}$/, "Use the numeric variantId from get_product_details."),
+          quantity: z.number().int().min(1).max(MAX_LINE_QUANTITY).default(1),
+        }),
+      )
+      .min(1)
+      .max(MAX_ORDER_LINES)
+      .describe("Every item in the order."),
+  }),
+  // Building an order means putting items in the cart, so the merchant must
+  // have allowed both.
+  isAvailable: (context) =>
+    Boolean(context.storefront) &&
+    context.settings.allowCheckout &&
+    context.settings.allowAddToCart,
+  async run({ items }, context) {
+    // The same variant listed twice is one line.
+    const quantities = new Map<string, number>();
+    for (const item of items) {
+      quantities.set(
+        item.variantId,
+        Math.min(MAX_LINE_QUANTITY, (quantities.get(item.variantId) ?? 0) + item.quantity),
+      );
+    }
+    const variantIds = [...quantities.keys()];
+
+    const data = await context.storefront!<{
+      nodes: Array<{
+        id?: string;
+        title?: string;
+        availableForSale?: boolean;
+        price?: Money;
+        product?: { title: string };
+      } | null>;
+    }>(VARIANTS_FOR_ORDER_QUERY, {
+      ids: variantIds.map((id) => `gid://shopify/ProductVariant/${id}`),
+      country: context.buyer.country ?? null,
+    });
+
+    // One bad line stops the whole order, so the shopper never gets a summary
+    // that quietly leaves out something they asked for.
+    const lines = variantIds.map((variantId, index) => {
+      const variant = data.nodes?.[index];
+      // The Storefront API resolves only variants of published products.
+      if (!variant?.id || !variant.product || !variant.price) {
+        throw new ToolError(
+          `Variant ${variantId} does not exist. Look each item up with get_product_details first.`,
+        );
+      }
+      const title =
+        variant.title && variant.title !== "Default Title"
+          ? `${variant.product.title} (${variant.title})`
+          : variant.product.title;
+      if (!variant.availableForSale) {
+        throw new ToolError(
+          `"${title}" is out of stock, so nothing was added. Tell the shopper and ask what they want instead.`,
+        );
+      }
+      return { variantId, quantity: quantities.get(variantId)!, title, price: variant.price };
+    });
+
+    const totals = lines.map((line) => lineTotal(line.price, line.quantity));
+    const itemsTotal = sumMoney(totals);
+    const orderItems: OrderItem[] = lines.map(({ variantId, quantity, title }) => ({
+      variantId,
+      quantity,
+      title,
+    }));
+
+    return {
+      output: {
+        status: "summary_shown",
+        items: lines.map((line, index) => ({
+          item: line.title,
+          quantity: line.quantity,
+          unitPrice: formatMoney(line.price),
+          lineTotal: formatMoney(totals[index]),
+        })),
+        itemsTotal: itemsTotal ? formatMoney(itemsTotal) : undefined,
+        note: "The chat widget is putting these items in the shopper's cart and showing an order summary with a 'Go to checkout' button. The summary lists everything in the cart, so its total can be higher than itemsTotal, and shipping, taxes and discounts are worked out at checkout. Confirm the items briefly and tell the shopper to check the summary and press the button. The order is placed only when they finish paying on the store's checkout page, so do not say it has been placed.",
+      },
+      actions: [{ type: "order" as const, items: orderItems }],
+    };
+  },
+});
+
 const startCheckout = defineTool({
   name: "start_checkout",
   description:
-    "Show the shopper a button that takes them to the store's secure checkout with what is in their cart. Use when they say they want to buy, pay, order or check out. You cannot take payment or place the order yourself.",
+    "Show the shopper a summary of what is already in their cart with a button to the store's secure checkout. Use when they want to buy, pay or check out what is in the cart. You cannot take payment or place the order yourself.",
   audiences: ["shopper"],
   schema: z.object({}),
   isAvailable: (context) => context.settings.allowCheckout,
   async run() {
     return {
       output: {
-        status: "button_shown",
-        note: "A 'Go to checkout' button is now shown in the chat. Tell the shopper to press it; they review the cart and pay on the store's checkout page.",
+        status: "summary_shown",
+        note: "The chat now shows what is in the shopper's cart with a 'Go to checkout' button, or tells them the cart is empty. Tell the shopper to check it and press the button; they pay on the store's checkout page. Do not say an order has been placed.",
       },
       actions: [{ type: "checkout" as const }],
     };
@@ -523,7 +647,7 @@ const ORDER_NOT_FOUND =
   "No order matches that order number and email. Ask the shopper to double-check both, or to contact the store.";
 
 /** Short non-reversible key, so email addresses are not held in the limiter. */
-function fingerprint(value: string): string {
+export function fingerprint(value: string): string {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
@@ -787,6 +911,7 @@ export const shopperTools: ToolDefinition[] = [
   listCollections,
   getStorePolicy,
   addToCart,
+  placeOrder,
   startCheckout,
   getOrderStatus,
   requestReturn,

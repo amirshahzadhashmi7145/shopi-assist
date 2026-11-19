@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { EMPTY_REPLY_FALLBACK, runAssistantTurn, selectCards } from "../app/assistant/engine";
+import {
+  dedupeActions,
+  EMPTY_REPLY_FALLBACK,
+  runAssistantTurn,
+  selectCards,
+} from "../app/assistant/engine";
 import { defineTool, toolsFor } from "../app/assistant/tools/registry";
 import type { ProductCard } from "../app/assistant/types";
 import { callTool, scriptedProvider, text, toolContext } from "./helpers/fakes";
@@ -187,6 +192,41 @@ describe("runAssistantTurn", () => {
       history: [{ role: "user", content: "x" }],
     });
     expect(result.usage).toEqual({ inputTokens: 250, outputTokens: 30 });
+  });
+});
+
+describe("dedupeActions", () => {
+  const add = (variantId: string) => ({ type: "add_to_cart" as const, variantId, quantity: 1 });
+  const order = (...items: Array<[string, number]>) => ({
+    type: "order" as const,
+    items: items.map(([variantId, quantity]) => ({ variantId, quantity, title: `Item ${variantId}` })),
+  });
+
+  it("merges several orders into one and keeps the larger quantity", () => {
+    expect(dedupeActions([order(["1", 1], ["2", 2]), order(["1", 3], ["3", 1])])).toEqual([
+      order(["1", 3], ["2", 2], ["3", 1]),
+    ]);
+  });
+
+  it("drops a separate checkout when an order already shows the summary", () => {
+    expect(dedupeActions([{ type: "checkout" }, order(["1", 1]), { type: "checkout" }])).toEqual([
+      order(["1", 1]),
+    ]);
+    expect(dedupeActions([{ type: "checkout" }, { type: "checkout" }])).toEqual([
+      { type: "checkout" },
+    ]);
+  });
+
+  it("runs cart adds first and always keeps room for the summary", () => {
+    const actions = dedupeActions([
+      order(["9", 1]),
+      add("1"),
+      add("1"),
+      add("2"),
+      add("3"),
+    ]);
+    expect(actions).toEqual([add("1"), add("2"), order(["9", 1])]);
+    expect(dedupeActions([add("1"), add("2"), add("3"), add("4")])).toHaveLength(3);
   });
 });
 

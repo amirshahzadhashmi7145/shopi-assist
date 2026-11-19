@@ -13,6 +13,8 @@ export type ChatActionData =
       conversationId: string;
       /** Products the storefront widget would show as cards under the reply. */
       cards?: Array<{ title: string; price: string }>;
+      /** What else the storefront widget would do after this reply, in words. */
+      widgetNotes?: string[];
     }
   | { ok: false; turnId: number; error: string };
 
@@ -21,6 +23,7 @@ interface ChatEntry {
   role: "user" | "assistant" | "error";
   text: string;
   cards?: Array<{ title: string; price: string }>;
+  widgetNotes?: string[];
 }
 
 interface AssistantChatProps {
@@ -76,7 +79,13 @@ export function AssistantChat({
     if (response) {
       entries.push(
         response.ok
-          ? { id: active.id + 0.5, role: "assistant", text: response.reply, cards: response.cards }
+          ? {
+              id: active.id + 0.5,
+              role: "assistant",
+              text: response.reply,
+              cards: response.cards,
+              widgetNotes: response.widgetNotes,
+            }
           : { id: active.id + 0.5, role: "error", text: response.error },
       );
     }
@@ -173,6 +182,11 @@ export function AssistantChat({
                         {entry.cards.map((card) => `${card.title} (${card.price})`).join(", ")}
                       </s-text>
                     )}
+                    {entry.widgetNotes?.map((note) => (
+                      <s-text key={note} color="subdued">
+                        {note}
+                      </s-text>
+                    ))}
                   </s-stack>
                 </s-box>
               ),

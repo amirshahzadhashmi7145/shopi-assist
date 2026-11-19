@@ -37,6 +37,14 @@ export interface ProductCard {
   variantId: string | null;
 }
 
+/** One line of an order the shopper asked for in chat. */
+export interface OrderItem {
+  /** Numeric variant id, as used by the storefront /cart/add.js endpoint. */
+  variantId: string;
+  quantity: number;
+  title: string;
+}
+
 /** Something the server asks the storefront widget to do in the browser. */
 export type ClientAction =
   | {
@@ -46,8 +54,14 @@ export type ClientAction =
       quantity: number;
       title?: string;
     }
-  /** Show a button that takes the shopper to the store's checkout. */
-  | { type: "checkout" };
+  /** Show the shopper's cart as an order summary with a checkout button. */
+  | { type: "checkout" }
+  /**
+   * Make sure the cart holds at least these items, then show the same order
+   * summary. "At least" keeps it safe to repeat: an item already in the cart
+   * is topped up to the quantity asked for, never added a second time.
+   */
+  | { type: "order"; items: OrderItem[] };
 
 /**
  * Minimal GraphQL caller. Resolves with the `data` payload and rejects on

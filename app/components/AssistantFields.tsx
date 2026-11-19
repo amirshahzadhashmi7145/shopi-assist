@@ -18,7 +18,13 @@ const errorProp = (message: string | undefined) => (message ? { error: message }
 
 /** Which settings each group edits. The server reads exactly these. */
 export const FIELD_GROUPS = {
-  abilities: ["allowAddToCart", "allowCheckout", "orderLookupEnabled", "allowReturns"],
+  abilities: [
+    "allowAddToCart",
+    "allowCheckout",
+    "allowChatOrders",
+    "orderLookupEnabled",
+    "allowReturns",
+  ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
   personality: ["assistantName", "greeting", "tone"],
   // Optional free text, shown only on the Settings page.
@@ -48,8 +54,14 @@ export function AbilityFields({ settings }: FieldGroupProps) {
       <s-checkbox
         name="allowCheckout"
         label="Help shoppers place an order"
-        details="When a shopper is ready to buy, the assistant shows a Go to checkout button. Payment always happens on your normal Shopify checkout."
+        details="A shopper says what they want to buy. The assistant puts it in their cart and shows an order summary with a Go to checkout button. Delivery details and payment always happen on your normal Shopify checkout. With 'Add items to the cart' off, it only shows the summary of what is already in the cart."
         {...checked(settings.allowCheckout)}
+      />
+      <s-checkbox
+        name="allowChatOrders"
+        label="Take pay-on-delivery orders in the chat"
+        details="The order summary gets an 'Order here, pay on delivery' button. The shopper fills in a short form (name, phone, delivery address) and the order appears in your Shopify admin as unpaid, tagged shopi-assist. Tick this only if you offer cash on delivery, and check these orders before you ship them. Needs 'Help shoppers place an order'."
+        {...checked(settings.allowChatOrders)}
       />
       <s-checkbox
         name="orderLookupEnabled"
