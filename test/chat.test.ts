@@ -5,6 +5,7 @@ import {
   ChatError,
   handleChatTurn,
   maskForStorage,
+  readCart,
   type ChatTurnInput,
 } from "../app/assistant/chat.server";
 import { DailyBudget, RateLimiter } from "../app/assistant/rate-limit";
@@ -288,6 +289,56 @@ describe("handleChatTurn", () => {
     expect(changed.system).toContain("You cannot start a checkout");
     expect(changed.system).toContain("it is a request the store will review");
     expect(changed.system).toContain("Returns: accepted within 14 days of delivery.");
+  });
+
+  it("passes the shopper's cart to the assistant, and only a well-formed one", async () => {
+    const system = async (overrides: Partial<ChatTurnInput>) => {
+      const provider = scriptedProvider([text("ok")]);
+      await turn(overrides, { provider });
+      return {
+        prompt: provider.requests[0].messages[0].content as string,
+        tools: provider.requests[0].tools.map((tool) => tool.name),
+      };
+    };
+
+    const seen = await system({ cart: [{ variantId: "101", title: "Trail Mug", quantity: 2 }] });
+    expect(seen.prompt).toContain("- 2 x Trail Mug [variantId 101]");
+    expect(seen.tools).toEqual(expect.arrayContaining(["remove_from_cart", "clear_cart"]));
+
+    expect((await system({})).prompt).toMatch(/you cannot see what is in it/);
+    expect((await system({ cart: "2 x free stuff" })).prompt).toMatch(/you cannot see what is in it/);
+
+    // Staff in the admin have no storefront cart, whatever the request says.
+    const merchant = await system({
+      audience: "merchant",
+      admin: fakeGraphql({ shop: { name: "Shop A" } }),
+      cart: [{ variantId: "101", title: "Trail Mug", quantity: 2 }],
+    });
+    expect(merchant.prompt).not.toContain("Trail Mug");
+  });
+
+  it("reads a cart strictly", () => {
+    expect(readCart([{ variantId: "101", title: "Mug", quantity: 2 }])).toEqual([
+      { variantId: "101", title: "Mug", quantity: 2 },
+    ]);
+    expect(readCart([])).toEqual([]);
+    expect(readCart([{ variantId: "101", title: "x".repeat(500), quantity: 1 }])![0].title).toHaveLength(120);
+    expect(readCart(Array.from({ length: 50 }, () => ({ variantId: "1", title: "a", quantity: 1 })))).toHaveLength(20);
+
+    for (const bad of [
+      undefined,
+      null,
+      "cart",
+      {},
+      [null],
+      [{ variantId: 101, title: "Mug", quantity: 1 }],
+      [{ variantId: "101; DROP", title: "Mug", quantity: 1 }],
+      [{ variantId: "101", title: "Mug", quantity: 0 }],
+      [{ variantId: "101", title: "Mug", quantity: 1.5 }],
+      [{ variantId: "101", quantity: 1 }],
+    ]) {
+      expect(readCart(bad)).toBeUndefined();
+    }
   });
 
   it("removes one-click add from product cards when add to cart is off", async () => {

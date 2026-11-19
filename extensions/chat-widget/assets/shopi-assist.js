@@ -158,6 +158,29 @@
     return order;
   }
 
+  /** The cart in the few words the assistant needs: what, and how many. */
+  function cartSnapshot(cart) {
+    var byVariant = {};
+    var lines = [];
+    cart.items.forEach(function (line) {
+      var id = String(line.variant_id);
+      var quantity = parseInt(line.quantity, 10) || 0;
+      if (!/^\d{1,20}$/.test(id) || quantity < 1) return;
+      if (byVariant[id]) {
+        byVariant[id].quantity += quantity;
+        return;
+      }
+      if (lines.length >= 20) return;
+      byVariant[id] = {
+        variantId: id,
+        title: String(line.title || line.product_title || "Item").slice(0, 120),
+        quantity: quantity,
+      };
+      lines.push(byVariant[id]);
+    });
+    return lines;
+  }
+
   /** What the order summary shows, taken from the storefront cart as it is now. */
   function orderSummary(cart) {
     var lines = cart.items.slice(0, MAX_SUMMARY_LINES).map(function (line) {
@@ -892,19 +915,25 @@
       if (controller) controller.abort();
     }, REQUEST_TIMEOUT_MS);
 
-    return window
-      .fetch(this.config.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        credentials: "same-origin",
-        signal: controller ? controller.signal : undefined,
-        body: JSON.stringify({
+    // The assistant is told what is in the cart, so it can answer questions
+    // about it and warn when an order will include items already there.
+    return this.fetchCart()
+      .then(function (cart) {
+        var payload = {
           message: text,
-          visitorId: this.state.visitorId,
-          conversationId: this.state.conversationId,
-          country: this.config.country,
-          language: (this.config.locale || "").slice(0, 2),
-        }),
+          visitorId: self.state.visitorId,
+          conversationId: self.state.conversationId,
+          country: self.config.country,
+          language: (self.config.locale || "").slice(0, 2),
+        };
+        if (cart) payload.cart = cartSnapshot(cart);
+        return window.fetch(self.config.endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          credentials: "same-origin",
+          signal: controller ? controller.signal : undefined,
+          body: JSON.stringify(payload),
+        });
       })
       .then(function (response) {
         return response
@@ -1007,12 +1036,51 @@
     if (action.type === "order") {
       var items = cleanOrderItems(action.items);
       if (!items.length) return Promise.resolve();
-      return this.ensureInCart(items).then(function (result) {
+      // "Only these items": empty the cart first, then put in exactly these.
+      var filled =
+        action.replace === true
+          ? this.clearCart().then(function (cleared) {
+              if (!cleared) return { ok: false, message: "Your cart couldn't be updated. Please try again." };
+              return self.addItems(
+                items.map(function (item) {
+                  return { id: Number(item.variantId), quantity: item.quantity };
+                }),
+              );
+            })
+          : this.ensureInCart(items);
+      return filled.then(function (result) {
         if (!result.ok) {
           self.pushEntry({ role: "notice", tone: "error", text: result.message });
           return null;
         }
         return self.showOrderSummary();
+      });
+    }
+
+    if (action.type === "clear_cart") {
+      return this.clearCart().then(function (cleared) {
+        self.pushEntry(
+          cleared
+            ? { role: "notice", text: "Your cart is empty now." }
+            : { role: "notice", tone: "error", text: "Your cart couldn't be emptied. Please try again." },
+        );
+        if (cleared) self.dropOrderSummary();
+      });
+    }
+
+    if (action.type === "remove_from_cart") {
+      if (!/^\d+$/.test(String(action.variantId))) return Promise.resolve();
+      return this.removeVariant(String(action.variantId)).then(function (removed) {
+        self.pushEntry(
+          removed
+            ? { role: "notice", text: "Removed from your cart." }
+            : { role: "notice", tone: "error", text: "That item isn't in your cart." },
+        );
+        // A summary on screen would now be wrong: show the cart as it is.
+        if (removed && self.messagesEl.querySelector(".sa-order:not(.sa-order-form)")) {
+          return self.showOrderSummary();
+        }
+        return null;
       });
     }
 
@@ -1089,13 +1157,7 @@
         return;
       }
       // One summary at a time: an older one would show a cart that has changed.
-      // An open order form was started from that older cart, so it goes too.
-      self.closeOrderForm();
-      self.state.messages = self.state.messages.filter(function (message) {
-        return message.role !== "order";
-      });
-      var stale = self.messagesEl.querySelectorAll(".sa-order");
-      for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
+      self.dropOrderSummary();
 
       if (!cart.items.length) {
         self.pushEntry({
@@ -1108,9 +1170,22 @@
     });
   };
 
-  /** Takes one line out of the storefront cart, then shows the summary again. */
-  Widget.prototype.removeFromCart = function (key) {
-    var self = this;
+  /**
+   * Takes the order summary, and any order form opened from it, off the
+   * screen and out of the saved chat. Both describe a cart that has changed.
+   */
+  Widget.prototype.dropOrderSummary = function () {
+    this.closeOrderForm();
+    this.state.messages = this.state.messages.filter(function (message) {
+      return message.role !== "order";
+    });
+    this.saveState();
+    var stale = this.messagesEl.querySelectorAll(".sa-order");
+    for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
+  };
+
+  /** Sets one cart line's quantity to zero. Resolves true when Shopify agreed. */
+  Widget.prototype.changeCartLine = function (key) {
     return window
       .fetch(this.config.cartUrl + "/change.js", {
         method: "POST",
@@ -1125,13 +1200,42 @@
         if (cart) {
           document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
         }
+        return Boolean(cart);
       })
       .catch(function () {
-        // The summary below is read from the cart again, so it shows the truth.
-      })
-      .then(function () {
-        return self.showOrderSummary();
+        return false;
       });
+  };
+
+  /** Takes one line out of the storefront cart, then shows the summary again. */
+  Widget.prototype.removeFromCart = function (key) {
+    var self = this;
+    // The summary is read from the cart again, so it shows the truth either way.
+    return this.changeCartLine(key).then(function () {
+      return self.showOrderSummary();
+    });
+  };
+
+  /** Takes every line with this variant out of the cart. Resolves false when there is none. */
+  Widget.prototype.removeVariant = function (variantId) {
+    var self = this;
+    return this.fetchCart().then(function (cart) {
+      var keys = (cart ? cart.items : [])
+        .filter(function (line) {
+          return String(line.variant_id) === variantId && typeof line.key === "string";
+        })
+        .map(function (line) {
+          return line.key;
+        });
+      // One after another: each change gives the remaining lines new positions.
+      return keys.reduce(function (chain, key) {
+        return chain.then(function (removed) {
+          return self.changeCartLine(key).then(function (ok) {
+            return removed || ok;
+          });
+        });
+      }, Promise.resolve(false));
+    });
   };
 
   /** Adds one variant to the storefront cart. */
@@ -1657,7 +1761,7 @@
     });
   };
 
-  /** Empties the storefront cart once its contents have been ordered. */
+  /** Empties the storefront cart. Resolves true when Shopify agreed. */
   Widget.prototype.clearCart = function () {
     return window
       .fetch(this.config.cartUrl + "/clear.js", {
@@ -1673,9 +1777,10 @@
         if (cart) {
           document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
         }
+        return Boolean(cart);
       })
       .catch(function () {
-        // The order stands; the shopper can empty the cart themselves.
+        return false;
       });
   };
 

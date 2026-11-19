@@ -73,6 +73,12 @@ describe("POST /proxy/chat", () => {
     expect(handleChatTurn).not.toHaveBeenCalled();
   });
 
+  it("passes the shopper's cart along as untrusted information", async () => {
+    const cart = [{ variantId: "101", title: "Trail Mug", quantity: 2 }];
+    await run(post({ message: "hi", visitorId: "visitor-0001", cart }));
+    expect(handleChatTurn.mock.calls[0][0].cart).toEqual(cart);
+  });
+
   it("takes the shop and audience from the signed request, never from the body", async () => {
     await run(
       post({

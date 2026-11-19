@@ -35,7 +35,11 @@ On a development store the order form shows a **Fill test details** button, and 
 | Find products | "What are your best sellers?" | Product cards |
 | Add to cart | "Add the first one to my cart" | "Added to your cart" |
 | Place an order | "I want to buy the [product name]" | Order summary, no extra questions |
-| Remove an item | Press Remove on a summary line | Summary updates |
+| What's in the cart | "What's in my cart?" | The real cart contents |
+| Order with old items in the cart | Add two products, then "I want to buy [a third]" | The bot says the other items are in the order too |
+| Only what I asked for | "Only the [product name]" | Cart is emptied, summary shows that one item |
+| Remove an item | "Remove the [product name]", or press Remove on a summary line | Summary updates |
+| Empty the cart | "Clear the cart" | "Your cart is empty now." |
 | Checkout | "Checkout" | Summary of the cart |
 | Pay on delivery | Press "Order here, pay on delivery", then "Fill test details" | Order number, order is unpaid in admin |
 | Missing address parts | Clear State and Postal code, press Review order | Both boxes ask to be filled in |
@@ -44,6 +48,10 @@ On a development store the order form shows a **Fill test details** button, and 
 | Return request | Mark a dummy order fulfilled in admin first, then "I want to return order #1002", email, reason | A return request in admin |
 
 Order status and return requests must be ticked in the app's setup first.
+
+## If the chat looks out of date
+
+The browser keeps an old copy of the widget. Hard refresh the storefront page (Ctrl+Shift+R, or Cmd+Shift+R on a Mac). If the order summary has no Remove buttons, you are on an old copy.
 
 ## Without a store
 

@@ -28,7 +28,7 @@ import {
 } from "./store.server";
 import { allTools } from "./tools";
 import { toolsFor, type ToolContext, type ToolDefinition } from "./tools/registry";
-import type { Audience, ClientAction, GraphqlFn, ProductCard } from "./types";
+import type { Audience, CartLine, ClientAction, GraphqlFn, ProductCard } from "./types";
 
 export const MAX_MESSAGE_LENGTH = 2000;
 const HISTORY_MESSAGES = 20;
@@ -69,6 +69,8 @@ export interface ChatTurnInput {
   ip?: string;
   country?: unknown;
   language?: unknown;
+  /** The storefront cart as the widget read it. Untrusted; see `readCart`. */
+  cart?: unknown;
   admin?: GraphqlFn;
   storefront?: GraphqlFn;
   /**
@@ -111,6 +113,28 @@ const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
  */
 export function maskForStorage(text: string): string {
   return text.replace(EMAIL_PATTERN, "[email removed]");
+}
+
+const MAX_CART_LINES = 20;
+
+/**
+ * The shopper's cart as their browser reported it, or undefined when it was
+ * not sent or is not in the expected shape. It comes from the request body,
+ * so it is only ever shown to the model as information about the shopper's
+ * own cart: nothing is priced, ordered or authorised from it.
+ */
+export function readCart(value: unknown): CartLine[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const lines: CartLine[] = [];
+  for (const entry of value.slice(0, MAX_CART_LINES)) {
+    if (!entry || typeof entry !== "object") return undefined;
+    const { variantId, title, quantity } = entry as Record<string, unknown>;
+    if (typeof variantId !== "string" || !/^\d{1,20}$/.test(variantId)) return undefined;
+    if (typeof title !== "string" || typeof quantity !== "number") return undefined;
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) return undefined;
+    lines.push({ variantId, title: title.slice(0, 120), quantity });
+  }
+  return lines;
 }
 
 const MINUTE_MS = 60_000;
@@ -270,6 +294,7 @@ export async function handleChatTurn(
       allowReturns: settings.allowReturns,
     },
     buyer: { country, language, ip: input.ip },
+    cart: input.audience === "shopper" ? readCart(input.cart) : undefined,
     rateLimiter: deps.rateLimiter,
     turn: { orderLookups: 0 },
     now: deps.now,
@@ -305,6 +330,7 @@ export async function handleChatTurn(
         },
         merchantInstructions: settings.instructions,
         orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
+        cart: context.cart,
         today: now,
       }),
       history: [...history, { role: "user", content: message }],

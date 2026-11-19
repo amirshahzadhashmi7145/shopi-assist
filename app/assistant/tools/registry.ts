@@ -4,6 +4,7 @@ import type { LlmToolCall, LlmToolSpec } from "../llm/provider";
 import type { RateLimiter } from "../rate-limit";
 import type {
   Audience,
+  CartLine,
   ClientAction,
   GraphqlFn,
   ProductCard,
@@ -37,6 +38,11 @@ export interface ToolContext {
     /** Client IP as reported by Shopify's proxy; used only for throttling. */
     ip?: string;
   };
+  /**
+   * The shopper's cart as their browser reported it with this message.
+   * Missing when it could not be read (and always in the admin preview).
+   */
+  cart?: CartLine[];
   rateLimiter: RateLimiter;
   /** Counters that live for one chat turn, shared by every tool call in it. */
   turn: {

@@ -546,6 +546,12 @@ const placeOrder = defineTool({
       .min(1)
       .max(MAX_ORDER_LINES)
       .describe("Every item in the order."),
+    onlyTheseItems: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True empties the cart first, so the order holds these items and nothing else. Use it only when the shopper says so: 'only this', 'just that', 'nothing else', 'start over'.",
+      ),
   }),
   // Building an order means putting items in the cart, so the merchant must
   // have allowed both.
@@ -553,7 +559,7 @@ const placeOrder = defineTool({
     Boolean(context.storefront) &&
     context.settings.allowCheckout &&
     context.settings.allowAddToCart,
-  async run({ items }, context) {
+  async run({ items, onlyTheseItems }, context) {
     // The same variant listed twice is one line.
     const quantities = new Map<string, number>();
     for (const item of items) {
@@ -617,9 +623,63 @@ const placeOrder = defineTool({
           lineTotal: formatMoney(totals[index]),
         })),
         itemsTotal: itemsTotal ? formatMoney(itemsTotal) : undefined,
-        note: "The chat widget is putting these items in the shopper's cart and showing an order summary with a 'Go to checkout' button. The summary lists everything in the cart, so its total can be higher than itemsTotal, and shipping, taxes and discounts are worked out at checkout. Confirm the items briefly and tell the shopper to check the summary and press the button. The order is placed only when they finish paying on the store's checkout page, so do not say it has been placed.",
+        note: onlyTheseItems
+          ? "The chat widget is emptying the shopper's cart, putting in only these items and showing an order summary with the buttons to complete the order. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed."
+          : "The chat widget is putting these items in the shopper's cart and showing an order summary with the buttons to complete the order. The summary lists everything in the cart, including anything that was already there, so its total can be higher than itemsTotal; say so if the cart held other items. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed.",
       },
-      actions: [{ type: "order" as const, items: orderItems }],
+      actions: [
+        { type: "order" as const, items: orderItems, ...(onlyTheseItems ? { replace: true } : {}) },
+      ],
+    };
+  },
+});
+
+const removeFromCart = defineTool({
+  name: "remove_from_cart",
+  description:
+    "Take one item out of the shopper's cart completely. Use when the shopper asks to remove something from their cart or order. Needs the item's variantId, which is listed with the shopper's cart.",
+  audiences: ["shopper"],
+  schema: z.object({
+    variantId: z
+      .string()
+      .trim()
+      .regex(/^\d{1,20}$/, "Use the numeric variantId listed with the shopper's cart."),
+  }),
+  isAvailable: (context) => context.settings.allowAddToCart,
+  async run({ variantId }, context) {
+    const line = context.cart?.find((entry) => entry.variantId === variantId);
+    // When the cart is known, a variant that is not in it is a mistake worth
+    // telling the model about instead of a silent no-op in the browser.
+    if (context.cart && !line) {
+      throw new ToolError(
+        "That item is not in the shopper's cart. Use a variantId from the cart you were shown.",
+      );
+    }
+    return {
+      output: {
+        status: "removing",
+        item: line?.title,
+        note: "The chat widget is taking this item out of the shopper's cart now. Confirm briefly.",
+      },
+      actions: [{ type: "remove_from_cart" as const, variantId, title: line?.title }],
+    };
+  },
+});
+
+const clearCart = defineTool({
+  name: "clear_cart",
+  description:
+    "Empty the shopper's cart. Use only when the shopper asks to clear or empty their cart or to start over.",
+  audiences: ["shopper"],
+  schema: z.object({}),
+  isAvailable: (context) => context.settings.allowAddToCart,
+  async run() {
+    return {
+      output: {
+        status: "clearing",
+        note: "The chat widget is emptying the shopper's cart now. Confirm briefly and ask what they would like instead.",
+      },
+      actions: [{ type: "clear_cart" as const }],
     };
   },
 });
@@ -922,6 +982,8 @@ export const shopperTools: ToolDefinition[] = [
   listCollections,
   getStorePolicy,
   addToCart,
+  removeFromCart,
+  clearCart,
   placeOrder,
   startCheckout,
   getOrderStatus,

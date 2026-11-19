@@ -225,8 +225,31 @@ describe("dedupeActions", () => {
       add("2"),
       add("3"),
     ]);
-    expect(actions).toEqual([add("1"), add("2"), order(["9", 1])]);
-    expect(dedupeActions([add("1"), add("2"), add("3"), add("4")])).toHaveLength(3);
+    expect(actions).toEqual([add("1"), add("2"), add("3"), order(["9", 1])]);
+    expect(dedupeActions([add("1"), add("2"), add("3"), add("4"), add("5")])).toHaveLength(4);
+  });
+
+  it("empties and removes before adding, and folds a clear into the order that follows", () => {
+    const remove = (variantId: string) => ({ type: "remove_from_cart" as const, variantId });
+
+    expect(dedupeActions([add("1"), remove("2"), remove("2"), { type: "checkout" }])).toEqual([
+      remove("2"),
+      add("1"),
+      { type: "checkout" },
+    ]);
+
+    // "Clear my cart and order the mug" is an order of only the mug.
+    expect(dedupeActions([{ type: "clear_cart" }, remove("2"), order(["1", 1])])).toEqual([
+      { ...order(["1", 1]), replace: true },
+    ]);
+    expect(
+      dedupeActions([order(["1", 1]), { ...order(["2", 1]), replace: true }]),
+    ).toEqual([{ ...order(["1", 1], ["2", 1]), replace: true }]);
+
+    // Emptying the cart leaves nothing to remove.
+    expect(dedupeActions([remove("2"), { type: "clear_cart" }, { type: "clear_cart" }])).toEqual([
+      { type: "clear_cart" },
+    ]);
   });
 });
 

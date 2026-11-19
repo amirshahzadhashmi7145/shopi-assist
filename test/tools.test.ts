@@ -519,7 +519,8 @@ describe("place_order", () => {
     ]);
     expect(result.json.itemsTotal).toBe("143.50 USD");
     // The model is told the order is not placed yet.
-    expect(result.json.note).toMatch(/placed only when they finish paying/);
+    expect(result.json.note).toMatch(/not placed until they complete it/);
+    expect(result.json.note).toMatch(/lists everything in the cart/);
   });
 
   it("starts nothing when one item is made up or sold out", async () => {
@@ -571,6 +572,83 @@ describe("place_order", () => {
   it("is never offered to the merchant assistant", () => {
     const context = toolContext({ audience: "merchant", admin: fakeGraphql({}) });
     expect(toolsFor(allTools, context).map((tool) => tool.name)).not.toContain("place_order");
+  });
+});
+
+describe("changing the cart", () => {
+  const cart = [
+    { variantId: "101", title: "Trail Mug", quantity: 2 },
+    { variantId: "103", title: "Camp Blanket", quantity: 1 },
+  ];
+
+  it("place_order can make the order hold only the named items", async () => {
+    const storefront = fakeGraphql({
+      nodes: [
+        {
+          id: "gid://shopify/ProductVariant/103",
+          title: "Default Title",
+          availableForSale: true,
+          price: { amount: "89.50", currencyCode: "USD" },
+          product: { title: "Camp Blanket" },
+        },
+      ],
+    });
+    const result = await run(
+      "place_order",
+      { items: [{ variantId: "103" }], onlyTheseItems: true },
+      toolContext({ storefront, cart }),
+    );
+
+    expect(result.actions).toEqual([
+      {
+        type: "order",
+        replace: true,
+        items: [{ variantId: "103", quantity: 1, title: "Camp Blanket" }],
+      },
+    ]);
+    expect(result.json.note).toMatch(/emptying the shopper's cart, putting in only these items/);
+  });
+
+  it("remove_from_cart takes out an item that is in the cart", async () => {
+    const result = await run("remove_from_cart", { variantId: "103" }, toolContext({ cart }));
+    expect(result.actions).toEqual([
+      { type: "remove_from_cart", variantId: "103", title: "Camp Blanket" },
+    ]);
+
+    const missing = await run("remove_from_cart", { variantId: "999" }, toolContext({ cart }));
+    expect(missing.json.error).toMatch(/not in the shopper's cart/);
+    expect(missing.actions).toEqual([]);
+
+    // With no view of the cart, the widget is left to find out.
+    const blind = await run("remove_from_cart", { variantId: "999" }, toolContext());
+    expect(blind.actions).toEqual([{ type: "remove_from_cart", variantId: "999", title: undefined }]);
+
+    const malformed = await run("remove_from_cart", { variantId: "1 OR 1=1" }, toolContext({ cart }));
+    expect(malformed.json.error).toMatch(/Invalid arguments/);
+  });
+
+  it("clear_cart empties the cart", async () => {
+    const result = await run("clear_cart", {}, toolContext({ cart }));
+    expect(result.actions).toEqual([{ type: "clear_cart" }]);
+  });
+
+  it("is off when the merchant does not let the assistant touch the cart", async () => {
+    const context = toolContext({
+      cart,
+      settings: { ...SHOPPER_DEFAULTS, allowAddToCart: false },
+    });
+    expect((await run("clear_cart", {}, context)).json.error).toMatch(/Unknown tool/);
+    expect((await run("remove_from_cart", { variantId: "103" }, context)).json.error).toMatch(
+      /Unknown tool/,
+    );
+  });
+
+  it("is never offered to the merchant assistant", () => {
+    const names = toolsFor(allTools, toolContext({ audience: "merchant", admin: fakeGraphql({}) })).map(
+      (tool) => tool.name,
+    );
+    expect(names).not.toContain("clear_cart");
+    expect(names).not.toContain("remove_from_cart");
   });
 });
 

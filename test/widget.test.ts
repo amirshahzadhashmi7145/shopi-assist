@@ -507,6 +507,131 @@ describe("chat widget", () => {
     expect(nextPage.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
   });
 
+  it("tells the assistant what is in the cart with each message", async () => {
+    cartMock.mockImplementation(() =>
+      jsonResponse(
+        cartJson(
+          cartLine(101, 2, "Trail Mug", 1800),
+          cartLine(103, 1, "Camp Blanket - Large", 8950),
+          // The same variant on a second line (say, with a gift note) counts once.
+          cartLine(101, 1, "Trail Mug", 1800),
+        ),
+      ),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("what's in my cart?");
+    await flush();
+
+    expect(lastBody(fetchMock).cart).toEqual([
+      { variantId: "101", title: "Trail Mug", quantity: 3 },
+      { variantId: "103", title: "Camp Blanket - Large", quantity: 1 },
+    ]);
+
+    // An empty cart is said to be empty; an unreadable one is left out.
+    cartMock.mockImplementation(() => jsonResponse(cartJson()));
+    widget.send("and now?");
+    await flush();
+    expect(lastBody(fetchMock).cart).toEqual([]);
+
+    cartMock.mockImplementation(() => jsonResponse({ error: "nope" }, 500));
+    widget.send("and now?");
+    await flush();
+    expect(lastBody(fetchMock)).not.toHaveProperty("cart");
+    expect(widget.bubbles().at(-1)).toBe("Hello!");
+  });
+
+  it("orders only the named items when asked to, emptying the cart first", async () => {
+    const calls: string[] = [];
+    const quantities = new Map<number, number>([[101, 2], [103, 1]]);
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/cart/clear.js") {
+        calls.push("clear");
+        quantities.clear();
+        return jsonResponse(cartJson());
+      }
+      if (url === "/cart/add.js") {
+        const items = JSON.parse(init!.body as string).items as Array<{ id: number; quantity: number }>;
+        calls.push(`add ${items.map((item) => `${item.id}x${item.quantity}`).join(",")}`);
+        for (const item of items) quantities.set(item.id, item.quantity);
+        return jsonResponse({ items: [] });
+      }
+      return reply("Only the blanket, then.", {
+        actions: [{ type: "order", replace: true, items: [{ variantId: "103", quantity: 1 }] }],
+      });
+    });
+    cartMock.mockImplementation(() =>
+      jsonResponse(
+        cartJson(
+          ...[...quantities].map(([id, quantity]) =>
+            cartLine(id, quantity, id === 101 ? "Trail Mug" : "Camp Blanket", id === 101 ? 1800 : 8950),
+          ),
+        ),
+      ),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("only the blanket");
+    await flush();
+    await flush();
+
+    expect(calls).toEqual(["clear", "add 103x1"]);
+    expect(widget.all(".sa-order-line").map((line) => line.textContent)).toEqual([
+      "1 \u00d7Camp Blanket$89.50",
+    ]);
+  });
+
+  it("empties the cart or takes one item out when the assistant asks", async () => {
+    const lines = [
+      { ...cartLine(101, 1, "Trail Mug", 1800), key: "101:abc" },
+      { ...cartLine(103, 1, "Camp Blanket", 8950), key: "103:def" },
+    ];
+    let actions: unknown[] = [{ type: "checkout" }];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/cart/change.js") {
+        const change = JSON.parse(init!.body as string);
+        const index = lines.findIndex((line) => line.key === change.id);
+        if (index >= 0) lines.splice(index, 1);
+        return jsonResponse(cartJson(...lines));
+      }
+      if (url === "/cart/clear.js") {
+        lines.length = 0;
+        return jsonResponse(cartJson());
+      }
+      return reply("Done.", { actions });
+    });
+    cartMock.mockImplementation(() => jsonResponse(cartJson(...lines)));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("checkout");
+    await flush();
+    expect(widget.all(".sa-order-item")).toHaveLength(2);
+
+    // Removing an item updates the summary that is on screen.
+    actions = [
+      { type: "remove_from_cart", variantId: "103" },
+      { type: "remove_from_cart", variantId: "1 OR 1=1" },
+    ];
+    widget.send("remove the blanket");
+    await flush();
+    await flush();
+    expect(widget.all(".sa-notice").at(-1)!.textContent).toBe("Removed from your cart.");
+    expect(widget.all(".sa-order-item").map((item) => item.textContent)).toEqual(["Trail Mug"]);
+
+    actions = [{ type: "remove_from_cart", variantId: "999" }];
+    widget.send("remove the kettle");
+    await flush();
+    expect(widget.all(".sa-notice").at(-1)!.textContent).toBe("That item isn't in your cart.");
+
+    // Emptying the cart takes the summary away with it.
+    actions = [{ type: "clear_cart" }];
+    widget.send("clear the cart");
+    await flush();
+    expect(widget.all(".sa-notice").at(-1)!.textContent).toBe("Your cart is empty now.");
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    expect(lines).toHaveLength(0);
+  });
+
   it("lets the shopper remove a line from the summary", async () => {
     const lines = [
       { ...cartLine(101, 1, "Trail Mug", 1800), key: "101:abc" },
@@ -988,6 +1113,7 @@ describe("chat widget", () => {
     widget.launcher.click();
     widget.send("first");
     widget.send("second");
+    await flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(widget.root.querySelector(".sa-typing")).not.toBeNull();
