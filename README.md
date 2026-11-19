@@ -166,13 +166,18 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 
 `read_orders` and `read_reports` involve **protected customer data**. On a development store you can use them after selecting the data in your app's Dev Dashboard (Settings → Access requests); for a public app Shopify must approve the request. If analytics access is missing, the merchant assistant falls back to totalling recent orders and says the figures are approximate.
 
+## Testing with dummy data
+
+`TESTING.md` has dummy customers, things to say to the bot and what to expect. `npm run seed:test-orders` creates unpaid dummy orders on a development store (and only there). On a development store the order form also shows a "Fill test details" button and the order limits are much looser; Shopify, not the browser, says whether a store is a development store.
+
 ## What has and hasn't been verified
 
 Verified locally:
 
-- 200 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, pay-on-delivery orders (pricing, placing, limits, retries), retention and redaction, the proxy routes, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, order summary, order form, errors, persistence).
-- All 24 GraphQL queries and mutations validate against Shopify's published 2026-10 Admin and Storefront schemas.
+- 208 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, pay-on-delivery orders (pricing, placing, limits, retries), retention and redaction, the proxy routes, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, order summary, order form, errors, persistence).
+- All 25 GraphQL queries and mutations validate against Shopify's published 2026-10 Admin and Storefront schemas.
 - The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and stale ones (`npm run smoke`). Shopify's signature covers the query string and a timestamp with a 90-second window; it does not stop the same request being re-sent inside that window, which is one reason the limits above exist.
+- **Pay-on-delivery orders on a development store, end to end.** Through the app's own order endpoint: the country list loads; a made-up item is refused; an address without state and postal code is asked to add them; delivery options and totals come back and change with the option picked; a wrong total is refused; the order is created **unpaid** (payment pending, "due on fulfillment") with its tags; and the same request sent twice returns the same order. A state typed as a name ("Illinois", "California") is accepted. Not yet clicked through in a browser on the storefront, and tax was 0 on this store, so tax has not been compared with the checkout.
 - An independent security review of the code; its findings are fixed or listed below.
 - `shopify theme check` and `shopify app security check` report no findings.
 - The widget was rendered in headless Chrome at desktop and mobile sizes.
@@ -192,7 +197,6 @@ Not yet verified:
 
 - Real answers from GPT-4o, including how well it picks tools. Everything so far used the mock model.
 - The other shopper tools on a real store: search, product details, collections, policies, add to cart from chat, ordering in chat and the order summary, order status. The order summary reads the theme's `/cart.js`; so far it has only run against the preview server's stand-in cart (`npm run widget:preview`).
-- **Pay-on-delivery orders on a real store, past the first step.** Checked on the dev store so far: the form opens, the country list loads, the two new scopes are granted, the "due on fulfillment" payment terms exist, and a made-up item is refused. Not yet checked, because Shopify refuses draft orders until the app has protected customer data access (see "Before going live"): that the order comes out unpaid (payment pending) and not paid; that a province typed as a name ("Ontario") is accepted; and that delivery rates and tax match the checkout.
 - **Return requests on a real store.** The queries validate against Shopify's schema and the logic is tested with fake responses, but no real return request has been created yet. It needs a fulfilled order on the dev store.
 - The merchant assistant on a real store, including ShopifyQL responses (row format and access).
 - The admin pages inside the real Shopify admin: the setup tour, the shopper preview chat, Settings and the widget-status check. They type-check against Shopify's Polaris types and build, but have not been clicked through in a browser.

@@ -6,7 +6,7 @@ import { createOpenAiProvider, toOpenAiMessages } from "../app/assistant/llm/ope
 import { buildSystemPrompt } from "../app/assistant/prompts";
 import { clientKey, DailyBudget, RateLimiter } from "../app/assistant/rate-limit";
 import { parseInline, parseRichText, safeHref } from "../app/assistant/rich-text";
-import { toGraphqlFn } from "../app/assistant/shopify-clients.server";
+import { isDevelopmentStore, toGraphqlFn } from "../app/assistant/shopify-clients.server";
 
 describe("RateLimiter", () => {
   it("allows up to the maximum per window, then blocks until the window resets", () => {
@@ -345,6 +345,39 @@ describe("system prompts", () => {
 
   it("tells the merchant assistant it is read-only", () => {
     expect(buildSystemPrompt({ ...input, audience: "merchant" })).toMatch(/read-only/);
+  });
+});
+
+describe("isDevelopmentStore", () => {
+  const plan = (partnerDevelopment: unknown) => {
+    let calls = 0;
+    const admin = (async () => {
+      calls += 1;
+      if (partnerDevelopment instanceof Error) throw partnerDevelopment;
+      return { shop: { plan: { partnerDevelopment } } };
+    }) as Parameters<typeof isDevelopmentStore>[1];
+    return { admin, calls: () => calls };
+  };
+
+  it("believes only a clear yes from Shopify, and asks once an hour", async () => {
+    const dev = plan(true);
+    expect(await isDevelopmentStore("dev-1.myshopify.com", dev.admin, 0)).toBe(true);
+    expect(await isDevelopmentStore("dev-1.myshopify.com", dev.admin, 1000)).toBe(true);
+    expect(dev.calls()).toBe(1);
+
+    expect(await isDevelopmentStore("live-1.myshopify.com", plan(false).admin, 0)).toBe(false);
+    expect(await isDevelopmentStore("odd-1.myshopify.com", plan("yes").admin, 0)).toBe(false);
+    expect(await isDevelopmentStore("none-1.myshopify.com", undefined, 0)).toBe(false);
+  });
+
+  it("treats a store it cannot ask about as a real one", async () => {
+    const broken = plan(new Error("offline"));
+    expect(await isDevelopmentStore("down-1.myshopify.com", broken.admin, 0)).toBe(false);
+    // Not asked again straight away, but asked again later.
+    await isDevelopmentStore("down-1.myshopify.com", broken.admin, 60_000);
+    expect(broken.calls()).toBe(1);
+    await isDevelopmentStore("down-1.myshopify.com", broken.admin, 6 * 60_000);
+    expect(broken.calls()).toBe(2);
   });
 });
 

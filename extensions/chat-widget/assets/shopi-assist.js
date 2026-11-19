@@ -279,6 +279,8 @@
     this.chatOrders = false;
     // The open order form, if any. Its contents are never stored.
     this.orderForm = null;
+    // True on a development store: the order form offers to fill in test details.
+    this.testMode = false;
     this.pending = false;
     this.lastFailedMessage = null;
     // False only while the stylesheet is still loading.
@@ -477,6 +479,7 @@
     if (this.pausedByShop) return;
 
     var changed = false;
+    this.testMode = remote.testMode === true;
     var chatOrders = remote.chatOrders === true;
     if (chatOrders !== this.chatOrders) {
       this.chatOrders = chatOrders;
@@ -1185,6 +1188,18 @@
   ];
   var USE_CHECKOUT = " Please use the checkout instead.";
 
+  // Made-up people at real, well-known addresses, offered only on development
+  // stores. The phone numbers are from ranges reserved for fiction.
+  var TEST_DETAILS = {
+    US: { address1: "742 Evergreen Terrace", city: "Springfield", province: "IL", zip: "62704", phone: "+1 202 555 0143" },
+    CA: { address1: "151 O'Connor Street", city: "Ottawa", province: "ON", zip: "K2P 2L8", phone: "+1 613 555 0143" },
+    GB: { address1: "221B Baker Street", city: "London", province: "", zip: "NW1 6XE", phone: "+44 20 7946 0143" },
+    AU: { address1: "42 Wallaby Way", city: "Sydney", province: "NSW", zip: "2000", phone: "+61 2 5550 0143" },
+    PK: { address1: "12 Mall Road", city: "Lahore", province: "Punjab", zip: "54000", phone: "+92 300 5550143" },
+    IN: { address1: "12 MG Road", city: "Bengaluru", province: "KA", zip: "560001", phone: "+91 80 5550 0143" },
+    AE: { address1: "12 Sheikh Zayed Road", city: "Dubai", province: "DU", zip: "", phone: "+971 4 555 0143" },
+  };
+
   /** Sends one step of an order to the app. Never rejects. */
   Widget.prototype.postOrder = function (payload) {
     return window
@@ -1305,6 +1320,36 @@
     form.textContent = "";
     state.inputs = {};
     form.appendChild(el("h3", "sa-order-title", "Delivery details"));
+
+    if (this.testMode && state.countries.length) {
+      var fillTest = el("button", "sa-order-test", "Fill test details");
+      fillTest.type = "button";
+      fillTest.title = "Shown on development stores only";
+      fillTest.addEventListener("click", function () {
+        var country = state.inputs.countryCode.value;
+        var sample = TEST_DETAILS[country] || {
+          address1: "1 Test Street",
+          city: "Test City",
+          province: "",
+          zip: "",
+          phone: "+1 202 555 0143",
+        };
+        var values = {
+          name: "Test Buyer",
+          email: "test.buyer@example.com",
+          phone: sample.phone,
+          address1: sample.address1,
+          address2: "",
+          city: sample.city,
+          province: sample.province,
+          zip: sample.zip,
+        };
+        Object.keys(values).forEach(function (name) {
+          state.inputs[name].value = values[name];
+        });
+      });
+      form.appendChild(fillTest);
+    }
 
     if (!state.countries.length) {
       form.appendChild(

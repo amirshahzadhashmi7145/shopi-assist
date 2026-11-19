@@ -19,7 +19,7 @@ import {
   throughProxy,
 } from "../assistant/proxy-request.server";
 import { getSettings } from "../assistant/settings.server";
-import { toGraphqlFn } from "../assistant/shopify-clients.server";
+import { isDevelopmentStore, toGraphqlFn } from "../assistant/shopify-clients.server";
 import { authenticate } from "../shopify.server";
 
 /**
@@ -28,11 +28,12 @@ import { authenticate } from "../shopify.server";
  * paused chat tells the widget to hide itself.
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.public.appProxy(request);
+  const { session, admin } = await authenticate.public.appProxy(request);
   if (!session) {
     return errorJson("not_installed", "Chat is not available for this store.", 404);
   }
   const settings = await getSettings(session.shop);
+  const chatOrders = settings.allowChatOrders && settings.allowCheckout;
   return Response.json(
     {
       ok: true,
@@ -41,7 +42,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       title: settings.assistantName,
       greeting: settings.greeting,
       // Whether the order summary offers "Order here, pay on delivery".
-      chatOrders: settings.allowChatOrders && settings.allowCheckout,
+      chatOrders,
+      // On a development store the order form offers to fill in test details.
+      testMode:
+        chatOrders && admin
+          ? await isDevelopmentStore(session.shop, toGraphqlFn(admin, "Admin"))
+          : false,
     },
     { headers: NO_STORE },
   );

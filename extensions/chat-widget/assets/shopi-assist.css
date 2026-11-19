@@ -560,6 +560,21 @@ a.sa-card-title:hover {
   margin: 0;
 }
 
+.sa-order-test {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border: 1px dashed var(--sa-ink-soft);
+  border-radius: 999px;
+  background: none;
+  color: var(--sa-ink-soft);
+  font-size: 12.5px;
+}
+
+.sa-order-test:hover {
+  color: var(--sa-ink);
+  border-color: var(--sa-ink);
+}
+
 .sa-field {
   display: flex;
   flex-direction: column;

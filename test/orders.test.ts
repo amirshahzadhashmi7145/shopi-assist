@@ -35,6 +35,7 @@ beforeEach(async () => {
     db,
     rateLimiter: new RateLimiter(),
     placed: new Map(),
+    isTestStore: async () => false,
     now: () => new Date("2026-11-19T12:00:00Z"),
   };
 });
@@ -490,6 +491,36 @@ describe("placing an order", () => {
     expect(error.code).toBe("rate_limited");
     expect(error.status).toBe(429);
     expect(error.extra.retryAfterSeconds).toBeGreaterThan(0);
+  });
+
+  it("loosens the limits and tags the order on a development store", async () => {
+    deps.isTestStore = async () => true;
+    const admin = adminApi();
+    const attempt = (index: number) =>
+      handleChatOrder(
+        {
+          shop: SHOP_A,
+          body: placeBody({ idempotencyKey: `form-key-0000000${String(index).padStart(2, "0")}0` }),
+          ip: "203.0.113.7",
+          admin,
+          storefront: storefront(),
+        },
+        deps,
+      );
+
+    // The same tester, phone and office, well past the limits of a real store.
+    for (let index = 0; index < 12; index += 1) await attempt(index);
+
+    const created = admin.calls.filter((call) => call.operation === "ShopiAssistDraftOrderCreate");
+    expect(created).toHaveLength(12);
+    expect((created[0].variables!.input as { tags: string[] }).tags).toContain("shopi-assist-test");
+  });
+
+  it("does not tag real orders as tests", async () => {
+    const { result, admin } = order(placeBody());
+    await result;
+    const created = admin.calls.find((call) => call.operation === "ShopiAssistDraftOrderCreate")!;
+    expect((created.variables!.input as { tags: string[] }).tags).not.toContain("shopi-assist-test");
   });
 
   it("requires a well-formed total and retry key", async () => {

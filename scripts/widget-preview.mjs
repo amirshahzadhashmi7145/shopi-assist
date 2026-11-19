@@ -276,7 +276,7 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/apps/shopi-assist/chat") {
       return send(200, "application/json", JSON.stringify({
-        ok: true, enabled: true, ready: true, title: "", greeting: "", chatOrders: true,
+        ok: true, enabled: true, ready: true, title: "", greeting: "", chatOrders: true, testMode: true,
       }));
     }
 

@@ -74,3 +74,38 @@ export async function getShopName(
   shopNames.set(shop, { name, expiresAt: now + SHOP_NAME_TTL_MS });
   return name;
 }
+
+const STORE_KIND_TTL_MS = 60 * 60 * 1000;
+const STORE_KIND_RETRY_MS = 5 * 60 * 1000;
+const developmentStores = new Map<string, { value: boolean; expiresAt: number }>();
+
+/**
+ * Whether the shop is a Partner development store, which exists only for
+ * testing. Asked of Shopify, never of the browser, and cached for an hour.
+ * Test conveniences (a "fill test details" button, looser order limits) are
+ * switched on by this alone, so they can never appear on a real store.
+ * Anything short of a clear "yes" from Shopify counts as "no".
+ */
+export async function isDevelopmentStore(
+  shop: string,
+  admin: GraphqlFn | undefined,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const cached = developmentStores.get(shop);
+  if (cached && cached.expiresAt > now) return cached.value;
+  if (!admin) return false;
+
+  try {
+    const data = await admin<{ shop: { plan: { partnerDevelopment: boolean } | null } | null }>(
+      `#graphql
+        query ShopiAssistShopPlan { shop { plan { partnerDevelopment } } }`,
+    );
+    const value = data.shop?.plan?.partnerDevelopment === true;
+    developmentStores.set(shop, { value, expiresAt: now + STORE_KIND_TTL_MS });
+    return value;
+  } catch {
+    // Do not ask again on every page view while Shopify cannot be reached.
+    developmentStores.set(shop, { value: false, expiresAt: now + STORE_KIND_RETRY_MS });
+    return false;
+  }
+}

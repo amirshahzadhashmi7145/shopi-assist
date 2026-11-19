@@ -21,6 +21,7 @@ import { z } from "zod";
 import prisma from "../db.server";
 import { clientKey, rateLimiter as defaultRateLimiter, type RateLimiter } from "./rate-limit";
 import { getSettings } from "./settings.server";
+import { isDevelopmentStore } from "./shopify-clients.server";
 import { fingerprint } from "./tools/shopper";
 import {
   DELIVERY_COUNTRIES_QUERY,
@@ -184,8 +185,16 @@ export interface ChatOrderDeps {
   rateLimiter: RateLimiter;
   /** Keyed by shop and the widget's idempotency key. */
   placed: Map<string, Remembered>;
+  /** Whether the shop exists only for testing. Asked of Shopify. */
+  isTestStore: (shop: string, admin: GraphqlFn) => Promise<boolean>;
   now: () => Date;
 }
+
+/**
+ * How much looser the order limits are on a development store, where a team
+ * places the same test order from one office and one phone number all day.
+ */
+const TEST_STORE_LIMIT_FACTOR = 50;
 
 // ---------------------------------------------------------------------------
 // Input
@@ -541,6 +550,7 @@ const sameMoney = (a: Money, b: Money) =>
 async function placeOrder(
   input: ChatOrderInput,
   order: z.infer<typeof placeSchema>,
+  testStore: boolean,
 ): Promise<ChatOrderResult> {
   const quote = await quoteOrder(input, order);
   if (!sameMoney(quote.total, order.expectedTotal)) {
@@ -569,7 +579,12 @@ async function placeOrder(
       shippingLine: { shippingRateHandle: quote.shippingRateHandle },
       paymentTerms: { paymentTermsTemplateId: template.id },
       note: "Placed in the Shopi Assist chat. To be paid on delivery. The shopper's details were not verified.",
-      tags: ["shopi-assist", "chat-order", "pay-on-delivery"],
+      tags: [
+        "shopi-assist",
+        "chat-order",
+        "pay-on-delivery",
+        ...(testStore ? ["shopi-assist-test"] : []),
+      ],
     },
   });
   const draftId = created.draftOrderCreate?.draftOrder?.id;
@@ -621,6 +636,7 @@ export async function handleChatOrder(
     db: overrides.db ?? prisma,
     rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
     placed: overrides.placed ?? placedOrders,
+    isTestStore: overrides.isTestStore ?? isDevelopmentStore,
     now: overrides.now ?? (() => new Date()),
   };
   const now = deps.now().getTime();
@@ -657,15 +673,17 @@ export async function handleChatOrder(
     const remembered = deps.placed.get(rememberKey);
     if (remembered) return await remembered.result;
 
+    const testStore = await deps.isTestStore(input.shop, input.admin);
+    const perVisitor = testStore ? TEST_STORE_LIMIT_FACTOR : 1;
     enforce(deps, [
       {
         key: `order:place:ip:${input.shop}:${address}`,
-        max: envNumber("CHAT_ORDERS_PER_IP_PER_HOUR", 10),
+        max: envNumber("CHAT_ORDERS_PER_IP_PER_HOUR", 10) * perVisitor,
         windowMs: HOUR_MS,
       },
       {
         key: `order:place:phone:${input.shop}:${fingerprint(order.contact.phone)}`,
-        max: envNumber("CHAT_ORDERS_PER_PHONE_PER_DAY", 3),
+        max: envNumber("CHAT_ORDERS_PER_PHONE_PER_DAY", 3) * perVisitor,
         windowMs: DAY_MS,
       },
       {
@@ -680,7 +698,7 @@ export async function handleChatOrder(
       },
     ]);
 
-    const result = placeOrder(input, order);
+    const result = placeOrder(input, order, testStore);
     deps.placed.set(rememberKey, { expiresAt: now + REMEMBER_PLACED_MS, result });
     // A failed attempt is forgotten, so the shopper can correct and resend.
     result.catch(() => deps.placed.delete(rememberKey));
@@ -719,6 +737,7 @@ export async function listDeliveryCountries(
     db: overrides.db ?? prisma,
     rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
     placed: overrides.placed ?? placedOrders,
+    isTestStore: overrides.isTestStore ?? isDevelopmentStore,
     now: overrides.now ?? (() => new Date()),
   };
   const settings = await getSettings(input.shop, deps.db);

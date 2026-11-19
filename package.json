@@ -22,6 +22,7 @@
     "test:watch": "vitest",
     "smoke": "node scripts/smoke-test.mjs",
     "widget:preview": "node scripts/widget-preview.mjs",
+    "seed:test-orders": "node scripts/seed-test-orders.mjs",
     "pretest": "prisma generate"
   },
   "type": "module",

@@ -644,8 +644,11 @@ describe("chat widget", () => {
         .map((call) => JSON.parse((call[1] as RequestInit).body as string));
 
     /** A store that takes chat orders, with two mugs in the cart and the summary on screen. */
-    async function openForm(respond: (body: Record<string, unknown>) => Promise<Response>) {
-      configMock.mockImplementation(() => appConfig({ chatOrders: true }));
+    async function openForm(
+      respond: (body: Record<string, unknown>) => Promise<Response>,
+      config: Record<string, unknown> = {},
+    ) {
+      configMock.mockImplementation(() => appConfig({ chatOrders: true, ...config }));
       const cart = liveCart(
         { 101: ["Trail Mug", 1800] },
         () => reply("Here's your cart.", { actions: [{ type: "checkout" }] }),
@@ -882,6 +885,30 @@ describe("chat widget", () => {
         "This order can't be placed here. Please use the checkout instead.",
       );
       expect(orderPosts()).toHaveLength(0);
+    });
+
+    it("offers to fill in test details on a development store only", async () => {
+      const real = await openForm(() => jsonResponse({ ok: true }));
+      expect(real.widget.root.querySelector(".sa-order-test")).toBeNull();
+
+      window.sessionStorage.clear();
+      window.localStorage.clear();
+      const { widget, field } = await openForm(() => jsonResponse({ ok: true }), { testMode: true });
+      const fill = widget.$<HTMLButtonElement>(".sa-order-test");
+      expect(fill.textContent).toBe("Fill test details");
+
+      fill.click();
+      expect(field("name").value).toBe("Test Buyer");
+      expect(field("email").value).toBe("test.buyer@example.com");
+      expect(field("address1").value).toBe("742 Evergreen Terrace");
+      expect(field("province").value).toBe("IL");
+      expect(field("zip").value).toBe("62704");
+
+      // The details follow the country chosen.
+      field("countryCode").value = "CA";
+      fill.click();
+      expect(field("city").value).toBe("Ottawa");
+      expect(field("zip").value).toBe("K2P 2L8");
     });
 
     it("closes from Cancel and opens only one form at a time", async () => {
