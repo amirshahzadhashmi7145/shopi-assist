@@ -8,8 +8,12 @@ export interface PromptInput {
   /** What the assistant calls itself. Optional. */
   assistantName?: string;
   tone?: PromptTone;
-  /** What the merchant switched on. Missing means the default (on, on, off). */
-  abilities?: { addToCart: boolean; checkout: boolean; returns: boolean };
+  /**
+   * What the merchant switched on. Missing means the default: cart, checkout
+   * and ordering in chat on, returns off. `placeOrder` needs both cart and
+   * checkout, and counts as off when it is left out.
+   */
+  abilities?: { addToCart: boolean; checkout: boolean; returns: boolean; placeOrder?: boolean };
   /** Plain sentences built from the merchant's dropdown picks. */
   quickPolicies?: string;
   /** Written by the merchant in setup. Every field is optional. */
@@ -48,7 +52,19 @@ function shopperPrompt(input: PromptInput): string {
   const name = (input.assistantName ?? "").trim().slice(0, 40);
   const knowledge = input.knowledge ?? {};
 
-  const abilities = input.abilities ?? { addToCart: true, checkout: true, returns: false };
+  const abilities = input.abilities ?? {
+    addToCart: true,
+    checkout: true,
+    returns: false,
+    placeOrder: true,
+  };
+  const noPaymentRule =
+    "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. An order exists only once they finish there, so never say an order has been placed.";
+  const checkoutRule = abilities.placeOrder
+    ? `- Placing an order: when the shopper tells you what they want to buy, settle the exact variant and quantity of each item first (check its details and ask when there are several variants), then start the order once with every item. That puts the items in their cart and shows an order summary with a checkout button, so do not add the same items to the cart separately. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
+    : abilities.checkout
+      ? `- When the shopper is ready to buy, show them the checkout summary and its button. ${noPaymentRule}`
+      : "- You cannot start a checkout. Tell shoppers to open their cart and check out there.";
 
   const ownerNotes =
     ownerBlock("Store policies chosen by the owner", input.quickPolicies, 1000) +
@@ -79,11 +95,7 @@ ${
       ? "- Before adding a product with several variants (size, color) to the cart, check its details and ask which variant the shopper wants. Only add to cart when the shopper clearly asks."
       : "- You cannot add items to the cart. Tell shoppers to use the Add to cart button on the product page."
   }
-${
-    abilities.checkout
-      ? "- When the shopper is ready to buy, show them the checkout button. You never take payment or place an order yourself; they pay on the store's checkout page."
-      : "- You cannot start a checkout. Tell shoppers to open their cart and check out there."
-  }
+${checkoutRule}
 ${orderRule}
 ${
     abilities.returns

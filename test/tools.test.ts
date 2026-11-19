@@ -414,11 +414,122 @@ describe("get_order_status", () => {
   });
 });
 
+describe("place_order", () => {
+  const variant = (id: string, overrides: Record<string, unknown> = {}) => ({
+    id: `gid://shopify/ProductVariant/${id}`,
+    title: "Default Title",
+    availableForSale: true,
+    price: { amount: "18.0", currencyCode: "USD" },
+    product: { title: "Trail Mug" },
+    ...overrides,
+  });
+
+  it("checks every item, prices the order and hands the widget one order", async () => {
+    const storefront = fakeGraphql({
+      nodes: [
+        variant("101"),
+        variant("202", {
+          title: "Large",
+          price: { amount: "89.50", currencyCode: "USD" },
+          product: { title: "Camp Blanket" },
+        }),
+      ],
+    });
+
+    const result = await run(
+      "place_order",
+      {
+        items: [
+          { variantId: "101", quantity: 2 },
+          { variantId: "202" },
+          // The same variant again is the same line, not a third one.
+          { variantId: "101", quantity: 1 },
+        ],
+      },
+      toolContext({ storefront, buyer: { country: "CA" } }),
+    );
+
+    expect(storefront.calls).toHaveLength(1);
+    expect(storefront.calls[0].variables).toEqual({
+      ids: ["gid://shopify/ProductVariant/101", "gid://shopify/ProductVariant/202"],
+      country: "CA",
+    });
+    expect(result.actions).toEqual([
+      {
+        type: "order",
+        items: [
+          { variantId: "101", quantity: 3, title: "Trail Mug" },
+          { variantId: "202", quantity: 1, title: "Camp Blanket (Large)" },
+        ],
+      },
+    ]);
+    expect(result.json.items).toEqual([
+      { item: "Trail Mug", quantity: 3, unitPrice: "18.0 USD", lineTotal: "54.0 USD" },
+      { item: "Camp Blanket (Large)", quantity: 1, unitPrice: "89.50 USD", lineTotal: "89.50 USD" },
+    ]);
+    expect(result.json.itemsTotal).toBe("143.50 USD");
+    // The model is told the order is not placed yet.
+    expect(result.json.note).toMatch(/placed only when they finish paying/);
+  });
+
+  it("starts nothing when one item is made up or sold out", async () => {
+    const madeUp = await run(
+      "place_order",
+      { items: [{ variantId: "101" }, { variantId: "999" }] },
+      toolContext({ storefront: fakeGraphql({ nodes: [variant("101"), null] }) }),
+    );
+    expect(madeUp.json.error).toMatch(/Variant 999 does not exist/);
+    expect(madeUp.actions).toEqual([]);
+
+    const soldOut = await run(
+      "place_order",
+      { items: [{ variantId: "101" }] },
+      toolContext({
+        storefront: fakeGraphql({ nodes: [variant("101", { availableForSale: false })] }),
+      }),
+    );
+    expect(soldOut.json.error).toMatch(/"Trail Mug" is out of stock/);
+    expect(soldOut.actions).toEqual([]);
+  });
+
+  it("rejects malformed orders before calling Shopify", async () => {
+    const storefront = fakeGraphql({ nodes: [] });
+    const context = toolContext({ storefront });
+
+    for (const args of [
+      { items: [] },
+      { items: [{ variantId: "101; DROP" }] },
+      { items: [{ variantId: "101", quantity: 500 }] },
+      { items: Array.from({ length: 11 }, (_, index) => ({ variantId: String(index + 1) })) },
+    ]) {
+      expect((await run("place_order", args, context)).json.error).toMatch(/Invalid arguments/);
+    }
+    expect(storefront.calls).toHaveLength(0);
+  });
+
+  it("needs both checkout and add to cart switched on", async () => {
+    for (const off of [{ allowCheckout: false }, { allowAddToCart: false }]) {
+      const context = toolContext({
+        storefront: fakeGraphql({ nodes: [variant("101")] }),
+        settings: { ...SHOPPER_DEFAULTS, ...off },
+      });
+      const result = await run("place_order", { items: [{ variantId: "101" }] }, context);
+      expect(result.json.error).toMatch(/Unknown tool/);
+    }
+  });
+
+  it("is never offered to the merchant assistant", () => {
+    const context = toolContext({ audience: "merchant", admin: fakeGraphql({}) });
+    expect(toolsFor(allTools, context).map((tool) => tool.name)).not.toContain("place_order");
+  });
+});
+
 describe("start_checkout", () => {
-  it("shows a checkout button and never claims to place the order", async () => {
+  it("shows the cart summary and never claims to place the order", async () => {
     const result = await run("start_checkout", {}, toolContext({ storefront: fakeGraphql({}) }));
     expect(result.actions).toEqual([{ type: "checkout" }]);
     expect(result.json.note).toMatch(/pay on the store's checkout page/);
+    expect(result.json.note).toMatch(/Do not say an order has been placed/);
   });
 
   it("is unavailable when the merchant switched it off, as is add to cart", async () => {

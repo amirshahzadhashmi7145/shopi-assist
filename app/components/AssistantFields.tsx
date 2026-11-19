@@ -48,7 +48,7 @@ export function AbilityFields({ settings }: FieldGroupProps) {
       <s-checkbox
         name="allowCheckout"
         label="Help shoppers place an order"
-        details="When a shopper is ready to buy, the assistant shows a Go to checkout button. Payment always happens on your normal Shopify checkout."
+        details="A shopper says what they want to buy. The assistant puts it in their cart and shows an order summary with a Go to checkout button. Delivery details and payment always happen on your normal Shopify checkout. With 'Add items to the cart' off, it only shows the summary of what is already in the cart."
         {...checked(settings.allowCheckout)}
       />
       <s-checkbox

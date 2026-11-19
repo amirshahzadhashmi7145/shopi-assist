@@ -15,6 +15,9 @@
   var IDLE_RESET_MS = 24 * 60 * 60 * 1000;
   var REQUEST_TIMEOUT_MS = 60000;
   var MAX_MESSAGE_LENGTH = 2000;
+  var MAX_ORDER_ITEMS = 10;
+  var MAX_ITEM_QUANTITY = 10;
+  var MAX_SUMMARY_LINES = 12;
 
   // Icons are built with DOM calls (never innerHTML), like everything else here.
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -128,6 +131,50 @@
     } catch (error) {
       return money.amount + " " + (money.currencyCode || "");
     }
+  }
+
+  /** Shopify's cart reports money in hundredths of the cart currency. */
+  function fromCents(value) {
+    var cents = Number(value);
+    return value === null || value === undefined || !isFinite(cents) ? null : cents / 100;
+  }
+
+  /** Keeps only well-formed order lines, one per variant, within the limits. */
+  function cleanOrderItems(items) {
+    var byVariant = {};
+    var order = [];
+    (Array.isArray(items) ? items : []).forEach(function (item) {
+      var id = item ? String(item.variantId) : "";
+      if (!/^\d{1,20}$/.test(id)) return;
+      var quantity = Math.max(1, Math.min(MAX_ITEM_QUANTITY, parseInt(item.quantity, 10) || 1));
+      if (byVariant[id]) {
+        byVariant[id].quantity = Math.max(byVariant[id].quantity, quantity);
+        return;
+      }
+      if (order.length >= MAX_ORDER_ITEMS) return;
+      byVariant[id] = { variantId: id, quantity: quantity };
+      order.push(byVariant[id]);
+    });
+    return order;
+  }
+
+  /** What the order summary shows, taken from the storefront cart as it is now. */
+  function orderSummary(cart) {
+    var lines = cart.items.slice(0, MAX_SUMMARY_LINES).map(function (line) {
+      var amount = line.final_line_price !== undefined ? line.final_line_price : line.line_price;
+      return {
+        title: String(line.title || line.product_title || "Item").slice(0, 120),
+        quantity: Math.max(1, parseInt(line.quantity, 10) || 1),
+        total: fromCents(amount),
+      };
+    });
+    return {
+      role: "order",
+      currency: typeof cart.currency === "string" ? cart.currency : "",
+      lines: lines,
+      more: Math.max(0, cart.items.length - lines.length),
+      subtotal: fromCents(cart.total_price),
+    };
   }
 
   var INLINE_PATTERN =
@@ -590,6 +637,7 @@
     if (message.role === "notice") {
       return this.appendNotice(message.text, message.tone, message.link);
     }
+    if (message.role === "order") return this.appendOrder(message);
     var row = this.appendBubble(message.role === "user" ? "user" : "assistant", message.text);
     if (message.cards && message.cards.length) this.appendCards(message.cards);
     return row;
@@ -606,6 +654,62 @@
     }
     this.messagesEl.appendChild(notice);
     return notice;
+  };
+
+  /**
+   * The order summary: what is in the cart, the subtotal and a link to the
+   * store's own checkout. The widget never takes payment or delivery details.
+   */
+  Widget.prototype.appendOrder = function (entry) {
+    var self = this;
+    var lines = (Array.isArray(entry.lines) ? entry.lines : []).filter(function (line) {
+      return line && typeof line.title === "string";
+    });
+    if (!lines.length) return null;
+
+    var money = function (amount) {
+      return typeof amount === "number"
+        ? formatMoney({ amount: amount, currencyCode: entry.currency }, self.config.locale)
+        : "";
+    };
+
+    var box = el("section", "sa-order");
+    box.setAttribute("aria-label", "Order summary");
+    box.appendChild(el("h3", "sa-order-title", "Your order"));
+
+    var list = el("ul", "sa-order-lines");
+    lines.forEach(function (line) {
+      var item = el("li", "sa-order-line");
+      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " \u00d7"));
+      item.appendChild(el("span", "sa-order-item", line.title));
+      item.appendChild(el("span", "sa-order-amount", money(line.total)));
+      list.appendChild(item);
+    });
+    box.appendChild(list);
+    if (entry.more > 0) {
+      box.appendChild(el("p", "sa-order-note", "Plus " + parseInt(entry.more, 10) + " more in your cart."));
+    }
+
+    var total = el("p", "sa-order-total");
+    total.appendChild(el("span", null, "Subtotal"));
+    total.appendChild(el("strong", null, money(entry.subtotal)));
+    box.appendChild(total);
+    box.appendChild(el("p", "sa-order-note", "Shipping and taxes are added at checkout."));
+
+    var actions = el("div", "sa-order-actions");
+    var pay = el("a", "sa-card-button sa-card-button-primary sa-order-checkout", "Go to checkout");
+    pay.href = this.config.checkoutUrl;
+    actions.appendChild(pay);
+    var cartHref = safeHref(this.config.cartUrl);
+    if (cartHref) {
+      var edit = el("a", "sa-card-button", "Edit cart");
+      edit.href = cartHref;
+      actions.appendChild(edit);
+    }
+    box.appendChild(actions);
+
+    this.messagesEl.appendChild(box);
+    return box;
   };
 
   Widget.prototype.appendCards = function (cards) {
@@ -791,9 +895,9 @@
         self.saveState();
         self.scrollToMessage(self.renderMessage(entry));
 
-        (Array.isArray(body.actions) ? body.actions : []).forEach(function (action) {
-          self.runAction(action);
-        });
+        // A failed action reports itself in the chat. It must never look like
+        // the reply failed, so nothing here reaches the handler below.
+        self.runActions(Array.isArray(body.actions) ? body.actions : []).catch(function () {});
       })
       .catch(function () {
         window.clearTimeout(timer);
@@ -831,48 +935,147 @@
 
   // ------------------------------------------------------------------ cart
 
+  /**
+   * Runs the assistant's actions one after another, so the order summary
+   * reads the cart only after every item before it has been added.
+   */
+  Widget.prototype.runActions = function (actions) {
+    var self = this;
+    return actions.reduce(function (chain, action) {
+      return chain.then(function () {
+        return self.runAction(action);
+      });
+    }, Promise.resolve());
+  };
+
+  /** Stores a non-chat entry (notice or order summary) and shows it. */
+  Widget.prototype.pushEntry = function (entry) {
+    this.state.messages.push(entry);
+    this.saveState();
+    this.renderMessage(entry);
+    this.scrollToEnd();
+  };
+
   Widget.prototype.runAction = function (action) {
     var self = this;
-    if (action && action.type === "checkout") {
-      // A plain link to the store's own checkout. The widget never handles payment.
-      var entry = {
-        role: "notice",
-        text: "Ready when you are.",
-        link: { label: "Go to checkout", href: this.config.checkoutUrl },
-      };
-      this.state.messages.push(entry);
-      this.saveState();
-      this.renderMessage(entry);
-      this.scrollToEnd();
-      return;
-    }
-    if (!action || action.type !== "add_to_cart") return;
-    if (!/^\d+$/.test(String(action.variantId))) return;
-    var quantity = Math.max(1, Math.min(10, parseInt(action.quantity, 10) || 1));
+    if (!action) return Promise.resolve();
+    if (action.type === "checkout") return this.showOrderSummary();
 
-    this.addToCart(action.variantId, quantity).then(function (result) {
-      var entry = result.ok
-        ? {
-            role: "notice",
-            text: "Added to your cart.",
-            link: { label: "View cart", href: self.config.cartUrl },
-          }
-        : { role: "notice", tone: "error", text: result.message };
-      self.state.messages.push(entry);
-      self.saveState();
-      self.renderMessage(entry);
-      self.scrollToEnd();
+    if (action.type === "order") {
+      var items = cleanOrderItems(action.items);
+      if (!items.length) return Promise.resolve();
+      return this.ensureInCart(items).then(function (result) {
+        if (!result.ok) {
+          self.pushEntry({ role: "notice", tone: "error", text: result.message });
+          return null;
+        }
+        return self.showOrderSummary();
+      });
+    }
+
+    if (action.type !== "add_to_cart") return Promise.resolve();
+    if (!/^\d+$/.test(String(action.variantId))) return Promise.resolve();
+    var quantity = Math.max(1, Math.min(MAX_ITEM_QUANTITY, parseInt(action.quantity, 10) || 1));
+
+    return this.addToCart(action.variantId, quantity).then(function (result) {
+      self.pushEntry(
+        result.ok
+          ? {
+              role: "notice",
+              text: "Added to your cart.",
+              link: { label: "View cart", href: self.config.cartUrl },
+            }
+          : { role: "notice", tone: "error", text: result.message },
+      );
     });
   };
 
-  /** Adds a variant to the storefront cart through Shopify's Ajax Cart API. */
+  /** Reads the storefront cart. Resolves with null when it cannot be read. */
+  Widget.prototype.fetchCart = function () {
+    return window
+      .fetch(this.config.cartUrl + ".js", {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        credentials: "same-origin",
+      })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (cart) {
+        return cart && Array.isArray(cart.items) ? cart : null;
+      })
+      .catch(function () {
+        return null;
+      });
+  };
+
+  /**
+   * Makes sure the cart holds at least the quantity asked for of each item.
+   * Only what is missing is added, so an order that is repeated, or that
+   * names something the shopper already added, never doubles up.
+   */
+  Widget.prototype.ensureInCart = function (items) {
+    var self = this;
+    return this.fetchCart().then(function (cart) {
+      var inCart = {};
+      (cart ? cart.items : []).forEach(function (line) {
+        var id = String(line.variant_id);
+        inCart[id] = (inCart[id] || 0) + (parseInt(line.quantity, 10) || 0);
+      });
+
+      var missing = [];
+      items.forEach(function (item) {
+        var needed = item.quantity - (inCart[item.variantId] || 0);
+        if (needed > 0) missing.push({ id: Number(item.variantId), quantity: needed });
+      });
+      return missing.length ? self.addItems(missing) : { ok: true };
+    });
+  };
+
+  /** Shows what is in the cart with a checkout button, or says it is empty. */
+  Widget.prototype.showOrderSummary = function () {
+    var self = this;
+    return this.fetchCart().then(function (cart) {
+      if (!cart) {
+        // The cart could not be read. The checkout link itself still works.
+        self.pushEntry({
+          role: "notice",
+          text: "Ready when you are.",
+          link: { label: "Go to checkout", href: self.config.checkoutUrl },
+        });
+        return;
+      }
+      if (!cart.items.length) {
+        self.pushEntry({
+          role: "notice",
+          text: "Your cart is empty. Tell me what you'd like to order.",
+        });
+        return;
+      }
+
+      // One summary at a time: an older one would show a cart that has changed.
+      self.state.messages = self.state.messages.filter(function (message) {
+        return message.role !== "order";
+      });
+      var stale = self.messagesEl.querySelectorAll(".sa-order");
+      for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
+      self.pushEntry(orderSummary(cart));
+    });
+  };
+
+  /** Adds one variant to the storefront cart. */
   Widget.prototype.addToCart = function (variantId, quantity) {
+    return this.addItems([{ id: Number(variantId), quantity: quantity }]);
+  };
+
+  /** Adds items to the storefront cart through Shopify's Ajax Cart API. */
+  Widget.prototype.addItems = function (items) {
     return window
       .fetch(this.config.cartAddUrl + ".js", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ items: [{ id: Number(variantId), quantity: quantity }] }),
+        body: JSON.stringify({ items: items }),
       })
       .then(function (response) {
         return response

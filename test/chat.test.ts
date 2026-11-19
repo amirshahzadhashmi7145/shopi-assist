@@ -259,7 +259,11 @@ describe("handleChatTurn", () => {
 
     // Defaults: cart and checkout on, order status and returns off.
     const byDefault = await names();
-    expect(byDefault.tools).toEqual(expect.arrayContaining(["add_to_cart", "start_checkout"]));
+    expect(byDefault.tools).toEqual(
+      expect.arrayContaining(["add_to_cart", "place_order", "start_checkout"]),
+    );
+    expect(byDefault.system).toContain("start the order once with every item");
+    expect(byDefault.system).toContain("never say an order has been placed");
     expect(byDefault.tools).not.toContain("request_return");
     expect(byDefault.tools).not.toContain("get_order_status");
     expect(byDefault.system).toContain("you cannot start a return");
@@ -272,6 +276,7 @@ describe("handleChatTurn", () => {
     const changed = await names();
     expect(changed.tools).not.toContain("add_to_cart");
     expect(changed.tools).not.toContain("start_checkout");
+    expect(changed.tools).not.toContain("place_order");
     expect(changed.tools).toContain("request_return");
     expect(changed.system).toContain("You cannot add items to the cart");
     expect(changed.system).toContain("You cannot start a checkout");

@@ -50,6 +50,24 @@ function cannedReply(message) {
       cards: [],
     };
   }
+  if (/order|buy/i.test(message)) {
+    return {
+      reply: `Here's your order: 2 of the **${PRODUCTS[0].title}** and the **${PRODUCTS[2].title}**. Check the summary below and go to checkout when you're ready.`,
+      cards: [],
+      actions: [
+        {
+          type: "order",
+          items: [
+            { variantId: "101", quantity: 2, title: PRODUCTS[0].title },
+            { variantId: "103", quantity: 1, title: PRODUCTS[2].title },
+          ],
+        },
+      ],
+    };
+  }
+  if (/checkout|pay/i.test(message)) {
+    return { reply: "Here's what is in your cart.", cards: [], actions: [{ type: "checkout" }] };
+  }
   if (/add/i.test(message)) {
     return {
       reply: `Done, I've added the **${PRODUCTS[0].title}** to your cart.`,
@@ -59,8 +77,33 @@ function cannedReply(message) {
   }
   if (/error/i.test(message)) return null;
   return {
-    reply: "This is the preview server, so answers are canned. Try asking for best sellers, the return policy, or to add something to the cart.",
+    reply: "This is the preview server, so answers are canned. Try asking for best sellers, the return policy, to add something to the cart, or to place an order.",
     cards: [],
+  };
+}
+
+/** A stand-in for the storefront cart, shaped like Shopify's /cart.js. */
+const cartLines = new Map();
+
+function cartJson() {
+  const items = [...cartLines].map(([variantId, quantity]) => {
+    const product = PRODUCTS.find((candidate) => candidate.variantId === variantId);
+    const price = Math.round(Number(product.price) * 100);
+    return {
+      variant_id: Number(variantId),
+      quantity,
+      title: product.title,
+      price,
+      final_line_price: price * quantity,
+    };
+  });
+  const total = items.reduce((sum, item) => sum + item.final_line_price, 0);
+  return {
+    currency: "USD",
+    item_count: items.reduce((sum, item) => sum + item.quantity, 0),
+    items,
+    items_subtotal_price: total,
+    total_price: total,
   };
 }
 
@@ -105,7 +148,7 @@ function page(url) {
   <div class="grid">
     ${PRODUCTS.map((product) => `<div class="tile"><img src="/img/${product.handle}.svg" alt=""><div>${product.title}<br>$${Number(product.price).toFixed(2)}</div></div>`).join("")}
   </div>
-  <p class="note">Preview only. Try: "What are your best sellers?", "What's your return policy?", "Add the mug to my cart", or "error" to see the failure state.</p>
+  <p class="note">Preview only. Try: "What are your best sellers?", "What's your return policy?", "Add the mug to my cart", "I want to order two mugs and a blanket", "Checkout", or "error" to see the failure state.</p>
 </main>
 
 <div
@@ -176,7 +219,22 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/cart/add.js") {
-      return send(200, "application/json", JSON.stringify({ items: [] }));
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      for (const item of JSON.parse(raw || "{}").items ?? []) {
+        const variantId = String(item.id);
+        if (!PRODUCTS.some((product) => product.variantId === variantId)) {
+          return send(422, "application/json", JSON.stringify({
+            status: 422, message: "Cart Error", description: "Cannot find variant",
+          }));
+        }
+        cartLines.set(variantId, (cartLines.get(variantId) ?? 0) + Number(item.quantity || 1));
+      }
+      return send(200, "application/json", JSON.stringify({ items: cartJson().items }));
+    }
+
+    if (request.method === "GET" && url.pathname === "/cart.js") {
+      return send(200, "application/json", JSON.stringify(cartJson()));
     }
 
     if (url.pathname.startsWith("/assets/")) {

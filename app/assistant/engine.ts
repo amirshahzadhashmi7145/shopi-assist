@@ -9,7 +9,7 @@ import {
   type ToolContext,
   type ToolDefinition,
 } from "./tools/registry";
-import type { ClientAction, ProductCard, StoredMessage } from "./types";
+import type { ClientAction, OrderItem, ProductCard, StoredMessage } from "./types";
 
 export interface AssistantTurnInput {
   provider: LlmProvider;
@@ -111,7 +111,7 @@ export async function runAssistantTurn(
   return {
     reply,
     cards: selectCards(reply, seenCards),
-    actions: dedupeActions(actions).slice(0, MAX_ACTIONS),
+    actions: dedupeActions(actions),
     toolsUsed,
     steps,
     usage,
@@ -143,12 +143,43 @@ export function selectCards(reply: string, cards: ProductCard[]): ProductCard[] 
   return selected;
 }
 
-function dedupeActions(actions: ClientAction[]): ClientAction[] {
-  const seen = new Set<string>();
-  return actions.filter((action) => {
-    const key = action.type === "add_to_cart" ? `add_to_cart:${action.variantId}` : action.type;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+const MAX_ORDER_ITEMS = 10;
+
+/**
+ * Turns what the tools asked for into the short list the widget runs, in the
+ * order it runs them: single cart adds first, then at most one order summary.
+ *
+ * Several orders in one turn become one order. An order already ends with the
+ * checkout button, so a separate "checkout" is dropped when there is one. The
+ * summary goes last so it shows the cart after every add has landed.
+ */
+export function dedupeActions(actions: ClientAction[]): ClientAction[] {
+  const seenAdds = new Set<string>();
+  const adds: ClientAction[] = [];
+  const orderItems = new Map<string, OrderItem>();
+  let wantsCheckout = false;
+
+  for (const action of actions) {
+    if (action.type === "add_to_cart") {
+      if (seenAdds.has(action.variantId)) continue;
+      seenAdds.add(action.variantId);
+      adds.push(action);
+    } else if (action.type === "order") {
+      for (const item of action.items) {
+        const known = orderItems.get(item.variantId);
+        // The same item asked for twice means the larger quantity, not both.
+        if (!known || item.quantity > known.quantity) orderItems.set(item.variantId, item);
+      }
+    } else {
+      wantsCheckout = true;
+    }
+  }
+
+  const summary: ClientAction | null = orderItems.size
+    ? { type: "order", items: [...orderItems.values()].slice(0, MAX_ORDER_ITEMS) }
+    : wantsCheckout
+      ? { type: "checkout" }
+      : null;
+
+  return summary ? [...adds.slice(0, MAX_ACTIONS - 1), summary] : adds.slice(0, MAX_ACTIONS);
 }
