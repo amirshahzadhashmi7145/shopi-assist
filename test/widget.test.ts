@@ -724,8 +724,8 @@ describe("chat widget", () => {
         "Address",
         "Apartment, suite (optional)",
         "City",
-        "State / province (optional)",
-        "Postal code (optional)",
+        "State / province",
+        "Postal code",
         "Country",
       ]);
       expect(field("countryCode").value).toBe("US");

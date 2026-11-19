@@ -233,8 +233,12 @@ const orderSchema = z.object({
       .regex(/^[A-Za-z]{2}$/, "Choose a country.")
       .transform((value) => value.toUpperCase()),
   }),
-  /** The delivery option the shopper picked. Missing means the cheapest. */
-  shippingRateHandle: z.string().max(300).optional(),
+  /**
+   * The delivery option the shopper picked. Missing means the cheapest.
+   * Shopify's handles are signed tokens of 300-odd characters that grow with
+   * the option's name, so the limit is generous. An unknown handle is ignored.
+   */
+  shippingRateHandle: z.string().max(2000).optional(),
 });
 
 const placeSchema = orderSchema.extend({
@@ -480,6 +484,22 @@ async function quoteOrder(input: ChatOrderInput, order: OrderDetails): Promise<O
   }
   const rates = unshipped.availableShippingRates;
   if (!rates.length) {
+    // Seen on a real store: Shopify returns no delivery options, and no error,
+    // for an address without a state or postal code. Ask for what is missing
+    // before telling the shopper the address cannot be delivered to.
+    const fields: Partial<Record<OrderField, string>> = {};
+    if (!order.address.zip) fields.zip = "Add your postal code so delivery can be worked out.";
+    if (!order.address.province) {
+      fields.province = "Add your state or province so delivery can be worked out.";
+    }
+    if (Object.keys(fields).length) {
+      throw new OrderError(
+        "invalid_order",
+        422,
+        "We need a bit more of your address to work out delivery.",
+        { fields },
+      );
+    }
     throw new OrderError(
       "undeliverable",
       409,

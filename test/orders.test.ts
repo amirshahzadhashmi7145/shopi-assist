@@ -220,6 +220,23 @@ describe("order quote", () => {
     expect(quoted.quote.total).toEqual(usd("54.6"));
   });
 
+  it("accepts delivery option handles as long as Shopify's real ones", async () => {
+    // Real handles are signed tokens; 327 characters on the dev store.
+    const handle = `eyJhbGciOiJIUzI1NiJ9.${"x".repeat(340)}`;
+    const rates = [...RATES, { handle, title: "Courier", price: usd("9.0") }];
+    const admin = adminApi({
+      ShopiAssistDraftOrderCalculate: (variables) =>
+        calculated(variables, { availableShippingRates: rates }),
+    });
+    const quoted = (await order({ step: "quote", ...details(), shippingRateHandle: handle }, { admin })
+      .result) as Extract<ChatOrderResult, { step: "quote" }>;
+
+    expect(quoted.quote.shippingRateHandle).toBe(handle);
+    expect(admin.calls[1].variables!.input).toMatchObject({
+      shippingLine: { shippingRateHandle: handle },
+    });
+  });
+
   it("leaves tax out when prices already include it", async () => {
     const admin = adminApi({
       ShopiAssistDraftOrderCalculate: (variables) => calculated(variables, { taxesIncluded: true }),
@@ -307,6 +324,27 @@ describe("order quote", () => {
     const error = await failure(order({ step: "quote", ...details() }, { admin }).result);
     expect(error.code).toBe("undeliverable");
     expect(error.message).toMatch(/can't deliver to that address/);
+  });
+
+  it("asks for the state and postal code before giving up on an address", async () => {
+    // What Shopify does for an address without them: no options and no error.
+    const admin = adminApi({
+      ShopiAssistDraftOrderCalculate: (variables) =>
+        calculated(variables, { availableShippingRates: [] }),
+    });
+    const address = { address1: "742 Evergreen Terrace", city: "Springfield", countryCode: "US" };
+
+    const neither = await failure(order({ step: "quote", ...details({ address }) }, { admin }).result);
+    expect(neither.code).toBe("invalid_order");
+    expect(neither.message).toMatch(/a bit more of your address/);
+    expect(Object.keys(neither.extra.fields!).sort()).toEqual(["province", "zip"]);
+
+    const noZip = await failure(
+      order({ step: "quote", ...details({ address: { ...address, province: "IL" } }) }, { admin }).result,
+    );
+    expect(noZip.extra.fields).toEqual({
+      zip: "Add your postal code so delivery can be worked out.",
+    });
   });
 
   it("maps Shopify's address errors back to the form", async () => {

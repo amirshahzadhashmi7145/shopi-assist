@@ -1179,8 +1179,9 @@
     { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
     { name: "address2", label: "Apartment, suite (optional)", autocomplete: "address-line2" },
     { name: "city", label: "City", autocomplete: "address-level2", required: true },
-    { name: "province", label: "State / province (optional)", autocomplete: "address-level1" },
-    { name: "zip", label: "Postal code (optional)", autocomplete: "postal-code" },
+    // Needed in some countries and not in others; the store says when it is.
+    { name: "province", label: "State / province", autocomplete: "address-level1" },
+    { name: "zip", label: "Postal code", autocomplete: "postal-code" },
   ];
   var USE_CHECKOUT = " Please use the checkout instead.";
 
