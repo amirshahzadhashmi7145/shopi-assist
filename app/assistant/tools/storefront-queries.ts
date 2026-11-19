@@ -80,6 +80,65 @@ export const COLLECTION_BEST_SELLERS_QUERY = `#graphql
   ${PRODUCT_CARD_FRAGMENT}
 `;
 
+/** In-stock products ordered by price. `reverse` puts the dearest first. */
+export const PRODUCTS_BY_PRICE_QUERY = `#graphql
+  query ShopiAssistProductsByPrice(
+    $first: Int!
+    $reverse: Boolean!
+    $country: CountryCode
+    $language: LanguageCode
+  ) @inContext(country: $country, language: $language) {
+    products(first: $first, sortKey: PRICE, reverse: $reverse, query: "available_for_sale:true") {
+      nodes { ...ShopiAssistProductCard }
+    }
+  }
+  ${PRODUCT_CARD_FRAGMENT}
+`;
+
+export const COLLECTION_BY_PRICE_QUERY = `#graphql
+  query ShopiAssistCollectionByPrice(
+    $handle: String!
+    $first: Int!
+    $reverse: Boolean!
+    $country: CountryCode
+    $language: LanguageCode
+  ) @inContext(country: $country, language: $language) {
+    collection(handle: $handle) {
+      title
+      handle
+      products(first: $first, sortKey: PRICE, reverse: $reverse, filters: [{ available: true }]) {
+        nodes { ...ShopiAssistProductCard }
+      }
+    }
+  }
+  ${PRODUCT_CARD_FRAGMENT}
+`;
+
+/** Products matching keywords, ordered by price. */
+export const SEARCH_BY_PRICE_QUERY = `#graphql
+  query ShopiAssistSearchByPrice(
+    $query: String!
+    $first: Int!
+    $reverse: Boolean!
+    $country: CountryCode
+    $language: LanguageCode
+  ) @inContext(country: $country, language: $language) {
+    search(
+      query: $query
+      first: $first
+      types: [PRODUCT]
+      sortKey: PRICE
+      reverse: $reverse
+      unavailableProducts: HIDE
+    ) {
+      nodes {
+        ... on Product { ...ShopiAssistProductCard }
+      }
+    }
+  }
+  ${PRODUCT_CARD_FRAGMENT}
+`;
+
 export const PRODUCT_DETAILS_QUERY = `#graphql
   query ShopiAssistProductDetails(
     $handle: String!

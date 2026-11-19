@@ -155,6 +155,58 @@ describe("shopper tools", () => {
     expect(result.cards[0].compareAtPrice).toEqual({ amount: "30.0", currencyCode: "USD" });
   });
 
+  it("get_products_by_price asks Shopify to do the sorting", async () => {
+    const products = [
+      storefrontProduct({ title: "Budget Board", handle: "budget-board" }),
+      storefrontProduct({ title: "Trail Mug" }),
+    ];
+
+    // Whole catalog, cheapest first.
+    const all = fakeGraphql({ products: { nodes: products } });
+    const cheapest = await run(
+      "get_products_by_price",
+      {},
+      toolContext({ storefront: all, buyer: { country: "US" } }),
+    );
+    expect(all.calls[0].query).toMatch(/sortKey: PRICE/);
+    expect(all.calls[0].query).toMatch(/available_for_sale:true/);
+    expect(all.calls[0].variables).toMatchObject({ first: 5, reverse: false, country: "US" });
+    expect(cheapest.json.rankedBy).toBe("price, lowest first");
+    expect(cheapest.json.products.map((product: { title: string }) => product.title)).toEqual([
+      "Budget Board",
+      "Trail Mug",
+    ]);
+    expect(cheapest.cards).toHaveLength(2);
+
+    // Most expensive of a kind.
+    const search = fakeGraphql({ search: { nodes: products } });
+    const dearest = await run(
+      "get_products_by_price",
+      { order: "highest_first", query: "snowboard", limit: 3 },
+      toolContext({ storefront: search }),
+    );
+    expect(search.calls[0].query).toMatch(/search\(/);
+    expect(search.calls[0].variables).toMatchObject({ query: "snowboard", first: 3, reverse: true });
+    expect(dearest.json.rankedBy).toBe("price, highest first");
+
+    // Within a collection.
+    const collection = fakeGraphql({ collection: { title: "Winter", products: { nodes: products } } });
+    const inCollection = await run(
+      "get_products_by_price",
+      { collectionHandle: "winter" },
+      toolContext({ storefront: collection }),
+    );
+    expect(collection.calls[0].variables).toMatchObject({ handle: "winter", reverse: false });
+    expect(inCollection.json.collection).toBe("Winter");
+
+    const missing = await run(
+      "get_products_by_price",
+      { collectionHandle: "nope" },
+      toolContext({ storefront: fakeGraphql({ collection: null }) }),
+    );
+    expect(missing.json.error).toMatch(/No collection/);
+  });
+
   it("get_product_details does not present a product without options as having sizes", async () => {
     const details = (variants: Array<Record<string, unknown>>, options: unknown[]) =>
       fakeGraphql({

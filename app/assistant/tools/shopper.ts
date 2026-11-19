@@ -20,8 +20,11 @@ import {
 import {
   BEST_SELLERS_QUERY,
   COLLECTION_BEST_SELLERS_QUERY,
+  COLLECTION_BY_PRICE_QUERY,
   COLLECTIONS_QUERY,
   PRODUCT_DETAILS_QUERY,
+  PRODUCTS_BY_PRICE_QUERY,
+  SEARCH_BY_PRICE_QUERY,
   SEARCH_PRODUCTS_QUERY,
   SHOP_POLICIES_QUERY,
   VARIANT_FOR_CART_QUERY,
@@ -314,6 +317,67 @@ const getBestSellers = defineTool({
     return productListResult(data.products.nodes, {
       rankedBy: "best selling",
     });
+  },
+});
+
+const getProductsByPrice = defineTool({
+  name: "get_products_by_price",
+  description:
+    "List in-stock products ordered by price. Use for every 'cheapest', 'most affordable', 'lowest price', 'most expensive' or 'top of the range' question; never work out the cheapest from products you happened to fetch another way. Optionally limited to search keywords or to one collection.",
+  audiences: ["shopper"],
+  schema: z.object({
+    order: z
+      .enum(["lowest_first", "highest_first"])
+      .default("lowest_first")
+      .describe("lowest_first for cheapest, highest_first for most expensive."),
+    limit: limitSchema,
+    query: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Keywords, when the shopper wants the cheapest of a kind, e.g. 'snowboard'."),
+    collectionHandle: handleSchema
+      .optional()
+      .describe("Limit to one collection, using its handle from list_collections."),
+  }),
+  isAvailable: (context) => Boolean(context.storefront),
+  async run({ order, limit, query, collectionHandle }, context) {
+    const reverse = order === "highest_first";
+    const variables = { first: limit, reverse, ...buyerVariables(context) };
+    const extra = {
+      rankedBy: `price, ${reverse ? "highest" : "lowest"} first`,
+      note: "In-stock products only, ordered by each product's lowest price. The first one is the answer to 'cheapest' or 'most expensive'.",
+    };
+
+    if (collectionHandle) {
+      const data = await context.storefront!<{
+        collection: {
+          title: string;
+          products: { nodes: Array<Partial<StorefrontProduct>> };
+        } | null;
+      }>(COLLECTION_BY_PRICE_QUERY, { handle: collectionHandle, ...variables });
+      if (!data.collection) {
+        throw new ToolError(`No collection with handle "${collectionHandle}".`);
+      }
+      return productListResult(data.collection.products.nodes, {
+        collection: data.collection.title,
+        ...extra,
+      });
+    }
+
+    if (query) {
+      const data = await context.storefront!<{
+        search: { nodes: Array<Partial<StorefrontProduct>> };
+      }>(SEARCH_BY_PRICE_QUERY, { query, ...variables });
+      return productListResult(data.search.nodes, { query, ...extra });
+    }
+
+    const data = await context.storefront!<{
+      products: { nodes: Array<Partial<StorefrontProduct>> };
+    }>(PRODUCTS_BY_PRICE_QUERY, variables);
+    return productListResult(data.products.nodes, extra);
   },
 });
 
@@ -978,6 +1042,7 @@ const requestReturn = defineTool({
 export const shopperTools: ToolDefinition[] = [
   searchProducts,
   getBestSellers,
+  getProductsByPrice,
   getProductDetails,
   listCollections,
   getStorePolicy,

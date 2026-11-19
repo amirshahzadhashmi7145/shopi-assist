@@ -33,6 +33,7 @@ On a development store the order form shows a **Fill test details** button, and 
 | Feature | Say | Expect |
 | --- | --- | --- |
 | Find products | "What are your best sellers?" | Product cards |
+| Cheapest and dearest | "What's your cheapest snowboard?", "most expensive?" | The right product, in stock |
 | Add to cart | "Add the first one to my cart" | "Added to your cart" |
 | Place an order | "I want to buy the [product name]" | Order summary, no extra questions |
 | What's in the cart | "What's in my cart?" | The real cart contents |

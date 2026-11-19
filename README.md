@@ -10,6 +10,7 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 
 - "What are your best sellers?" returns the store's best-selling products as cards with image, price and an Add to cart button.
 - Product search, product details and variants, collections.
+- "What's your cheapest snowboard?" or "most expensive" is answered by asking Shopify for in-stock products sorted by price, not by comparing whatever the assistant happened to look up.
 - Shipping, refund, privacy and terms answers read from the store's published policies.
 - "Add the small one to my cart" adds to the real storefront cart.
 - "I want to order two mugs and the blanket" puts those items in the cart and shows an order summary in the chat: each line, the subtotal and a Go to checkout button. Items already in the cart are topped up to the quantity asked for, so repeating an order never doubles it.
@@ -176,8 +177,8 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 
 Verified locally:
 
-- 221 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, pay-on-delivery orders (pricing, placing, limits, retries), retention and redaction, the proxy routes, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, order summary, order form, errors, persistence).
-- All 25 GraphQL queries and mutations validate against Shopify's published 2026-10 Admin and Storefront schemas.
+- 222 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, pay-on-delivery orders (pricing, placing, limits, retries), retention and redaction, the proxy routes, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, order summary, order form, errors, persistence).
+- All 28 GraphQL queries and mutations validate against Shopify's published 2026-10 Admin and Storefront schemas.
 - The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and stale ones (`npm run smoke`). Shopify's signature covers the query string and a timestamp with a 90-second window; it does not stop the same request being re-sent inside that window, which is one reason the limits above exist.
 - **Pay-on-delivery orders on a development store, end to end.** Through the app's own order endpoint: the country list loads; a made-up item is refused; an address without state and postal code is asked to add them; delivery options and totals come back and change with the option picked; a wrong total is refused; the order is created **unpaid** (payment pending, "due on fulfillment") with its tags; and the same request sent twice returns the same order. A state typed as a name ("Illinois", "California") is accepted. Not yet clicked through in a browser on the storefront, and tax was 0 on this store, so tax has not been compared with the checkout.
 - An independent security review of the code; its findings are fixed or listed below.
