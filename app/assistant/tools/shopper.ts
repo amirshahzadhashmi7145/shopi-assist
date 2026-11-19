@@ -647,7 +647,7 @@ const ORDER_NOT_FOUND =
   "No order matches that order number and email. Ask the shopper to double-check both, or to contact the store.";
 
 /** Short non-reversible key, so email addresses are not held in the limiter. */
-function fingerprint(value: string): string {
+export function fingerprint(value: string): string {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);

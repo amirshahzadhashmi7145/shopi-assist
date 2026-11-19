@@ -151,6 +151,16 @@ export const VARIANT_FOR_CART_QUERY = `#graphql
   }
 `;
 
+/** The countries the store sells to, named in the shopper's language. */
+export const DELIVERY_COUNTRIES_QUERY = `#graphql
+  query ShopiAssistDeliveryCountries($language: LanguageCode)
+  @inContext(language: $language) {
+    localization {
+      availableCountries { isoCode name }
+    }
+  }
+`;
+
 /** Every line of an order in one request, priced for the buyer's country. */
 export const VARIANTS_FOR_ORDER_QUERY = `#graphql
   query ShopiAssistVariantsForOrder($ids: [ID!]!, $country: CountryCode)

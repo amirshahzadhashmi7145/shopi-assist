@@ -13,7 +13,14 @@ export interface PromptInput {
    * and ordering in chat on, returns off. `placeOrder` needs both cart and
    * checkout, and counts as off when it is left out.
    */
-  abilities?: { addToCart: boolean; checkout: boolean; returns: boolean; placeOrder?: boolean };
+  abilities?: {
+    addToCart: boolean;
+    checkout: boolean;
+    returns: boolean;
+    placeOrder?: boolean;
+    /** The order summary offers a pay-on-delivery order form. */
+    chatOrders?: boolean;
+  };
   /** Plain sentences built from the merchant's dropdown picks. */
   quickPolicies?: string;
   /** Written by the merchant in setup. Every field is optional. */
@@ -58,8 +65,9 @@ function shopperPrompt(input: PromptInput): string {
     returns: false,
     placeOrder: true,
   };
-  const noPaymentRule =
-    "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. An order exists only once they finish there, so never say an order has been placed.";
+  const noPaymentRule = abilities.chatOrders
+    ? "This store also takes pay-on-delivery orders in the chat: the order summary has an 'Order here, pay on delivery' button that opens a short form for name, phone and delivery address. Point shoppers to that button when they want to order without the checkout page or to pay on delivery. You never take payment and never ask for or accept an address, phone number or card details in the chat messages; if a shopper types them, ask them to use the form or the checkout page instead. You cannot see whether an order went through, so never say an order has been placed; the form itself confirms it with an order number."
+    : "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. An order exists only once they finish there, so never say an order has been placed.";
   const checkoutRule = abilities.placeOrder
     ? `- Placing an order: when the shopper tells you what they want to buy, settle the exact variant and quantity of each item first (check its details and ask when there are several variants), then start the order once with every item. That puts the items in their cart and shows an order summary with a checkout button, so do not add the same items to the cart separately. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
     : abilities.checkout

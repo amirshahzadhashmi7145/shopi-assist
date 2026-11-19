@@ -270,7 +270,13 @@
       cartUrl: data.cartUrl || "/cart",
       cartAddUrl: data.cartAddUrl || "/cart/add",
       checkoutUrl: "/checkout",
+      orderEndpoint:
+        data.orderEndpoint || (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "order"),
     };
+    // True when the merchant takes pay-on-delivery orders in the chat.
+    this.chatOrders = false;
+    // The open order form, if any. Its contents are never stored.
+    this.orderForm = null;
     this.pending = false;
     this.lastFailedMessage = null;
     // False only while the stylesheet is still loading.
@@ -469,6 +475,14 @@
     if (this.pausedByShop) return;
 
     var changed = false;
+    var chatOrders = remote.chatOrders === true;
+    if (chatOrders !== this.chatOrders) {
+      this.chatOrders = chatOrders;
+      // An order summary already on screen gains or loses its button.
+      changed = this.state.messages.some(function (message) {
+        return message.role === "order";
+      });
+    }
     if (typeof remote.title === "string" && remote.title.trim()) {
       var title = remote.title.trim().slice(0, 60);
       if (title !== this.config.title) {
@@ -598,6 +612,7 @@
   Widget.prototype.renderAll = function () {
     var self = this;
     this.messagesEl.textContent = "";
+    this.orderForm = null;
     this.appendBubble("assistant", this.config.greeting);
     this.state.messages.forEach(function (message) {
       self.renderMessage(message);
@@ -644,7 +659,11 @@
   };
 
   Widget.prototype.appendNotice = function (text, tone, link) {
-    var notice = el("div", "sa-notice" + (tone === "error" ? " sa-notice-error" : ""));
+    var notice = el(
+      "div",
+      "sa-notice" +
+        (tone === "error" ? " sa-notice-error" : tone === "success" ? " sa-notice-success" : ""),
+    );
     notice.appendChild(el("span", null, text));
     if (link && safeHref(link.href)) {
       var anchor = el("a", null, link.label);
@@ -707,6 +726,15 @@
       actions.appendChild(edit);
     }
     box.appendChild(actions);
+
+    if (this.chatOrders) {
+      var here = el("button", "sa-card-button sa-order-here", "Order here, pay on delivery");
+      here.type = "button";
+      here.addEventListener("click", function () {
+        self.openOrderForm();
+      });
+      box.appendChild(here);
+    }
 
     this.messagesEl.appendChild(box);
     return box;
@@ -1054,6 +1082,8 @@
       }
 
       // One summary at a time: an older one would show a cart that has changed.
+      // An open order form was started from that older cart, so it goes too.
+      self.closeOrderForm();
       self.state.messages = self.state.messages.filter(function (message) {
         return message.role !== "order";
       });
@@ -1099,6 +1129,469 @@
       })
       .catch(function () {
         return { ok: false, message: "That item couldn't be added to your cart." };
+      });
+  };
+
+  // ------------------------------------------------- pay-on-delivery orders
+
+  var ORDER_FIELDS = [
+    { name: "name", label: "Full name", autocomplete: "name", required: true },
+    { name: "phone", label: "Phone", autocomplete: "tel", type: "tel", required: true },
+    { name: "email", label: "Email (optional)", autocomplete: "email", type: "email" },
+    { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
+    { name: "address2", label: "Apartment, suite (optional)", autocomplete: "address-line2" },
+    { name: "city", label: "City", autocomplete: "address-level2", required: true },
+    { name: "province", label: "State / province (optional)", autocomplete: "address-level1" },
+    { name: "zip", label: "Postal code (optional)", autocomplete: "postal-code" },
+  ];
+  var USE_CHECKOUT = " Please use the checkout instead.";
+
+  /** Sends one step of an order to the app. Never rejects. */
+  Widget.prototype.postOrder = function (payload) {
+    return window
+      .fetch(this.config.orderEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(payload),
+      })
+      .then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return null;
+          })
+          .then(function (body) {
+            return { ok: response.ok && body && body.ok === true, body: body || {} };
+          });
+      })
+      .catch(function () {
+        return { ok: false, body: {} };
+      });
+  };
+
+  /** The countries the store sells to, for the form's country list. */
+  Widget.prototype.loadCountries = function () {
+    var fallback = /^[A-Za-z]{2}$/.test(this.config.country)
+      ? [{ code: this.config.country.toUpperCase(), name: this.config.country.toUpperCase() }]
+      : [];
+    var url =
+      this.config.orderEndpoint + "?language=" + encodeURIComponent((this.config.locale || "").slice(0, 2));
+    return window
+      .fetch(url, { method: "GET", headers: { Accept: "application/json" }, credentials: "same-origin" })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (body) {
+        var countries = (body && Array.isArray(body.countries) ? body.countries : []).filter(
+          function (country) {
+            return country && /^[A-Z]{2}$/.test(country.code) && typeof country.name === "string";
+          },
+        );
+        return countries.length ? countries : fallback;
+      })
+      .catch(function () {
+        return fallback;
+      });
+  };
+
+  /** Opens the delivery details form under the chat, once. */
+  Widget.prototype.openOrderForm = function () {
+    var self = this;
+    if (this.orderForm) {
+      var first = this.orderForm.el.querySelector("input, button");
+      if (first) first.focus();
+      return Promise.resolve();
+    }
+
+    var form = el("form", "sa-order sa-order-form");
+    form.noValidate = true;
+    form.setAttribute("aria-label", "Order and pay on delivery");
+    var state = {
+      el: form,
+      values: {},
+      inputs: {},
+      errors: {},
+      items: null,
+      quote: null,
+      key: randomId(),
+      busy: false,
+    };
+    this.orderForm = state;
+    this.messagesEl.appendChild(form);
+
+    return this.loadCountries().then(function (countries) {
+      if (self.orderForm !== state) return;
+      state.countries = countries;
+      state.values.countryCode = (
+        countries.filter(function (country) {
+          return country.code === (self.config.country || "").toUpperCase();
+        })[0] ||
+        countries[0] || { code: "" }
+      ).code;
+      self.renderOrderDetails();
+    });
+  };
+
+  Widget.prototype.closeOrderForm = function () {
+    var state = this.orderForm;
+    this.orderForm = null;
+    if (state && state.el.parentNode) state.el.parentNode.removeChild(state.el);
+  };
+
+  /** Shows a message at the foot of the form; errors are announced. */
+  Widget.prototype.setOrderStatus = function (text, isError) {
+    var status = this.orderForm && this.orderForm.statusEl;
+    if (!status) return;
+    status.textContent = text || "";
+    status.hidden = !text;
+    status.className = "sa-order-status" + (isError ? " sa-order-status-error" : "");
+    if (isError) status.setAttribute("role", "alert");
+    else status.removeAttribute("role");
+  };
+
+  Widget.prototype.setOrderBusy = function (busy) {
+    var state = this.orderForm;
+    if (!state) return;
+    state.busy = busy;
+    var controls = state.el.querySelectorAll("button, input, select");
+    for (var i = 0; i < controls.length; i += 1) controls[i].disabled = busy;
+  };
+
+  /** Step 1: who the order is for and where it goes. */
+  Widget.prototype.renderOrderDetails = function () {
+    var self = this;
+    var state = this.orderForm;
+    var form = state.el;
+    form.textContent = "";
+    state.inputs = {};
+    form.appendChild(el("h3", "sa-order-title", "Delivery details"));
+
+    if (!state.countries.length) {
+      form.appendChild(
+        el("p", "sa-order-status sa-order-status-error", "Ordering here isn't available right now." + USE_CHECKOUT),
+      );
+      return;
+    }
+
+    var addField = function (spec, control) {
+      var wrap = el("div", "sa-field");
+      var id = "sa-order-" + spec.name;
+      var label = el("label", null, spec.label);
+      label.htmlFor = id;
+      control.id = id;
+      control.name = spec.name;
+      if (spec.autocomplete) control.autocomplete = spec.autocomplete;
+      if (spec.required) control.required = true;
+      wrap.appendChild(label);
+      wrap.appendChild(control);
+      var message = state.errors[spec.name];
+      if (message) {
+        var error = el("p", "sa-field-error", message);
+        error.id = id + "-error";
+        control.setAttribute("aria-invalid", "true");
+        control.setAttribute("aria-describedby", error.id);
+        wrap.appendChild(error);
+      }
+      state.inputs[spec.name] = control;
+      form.appendChild(wrap);
+    };
+
+    ORDER_FIELDS.forEach(function (spec) {
+      var input = el("input");
+      input.type = spec.type || "text";
+      input.value = state.values[spec.name] || "";
+      addField(spec, input);
+    });
+
+    var country = el("select");
+    state.countries.forEach(function (entry) {
+      var option = el("option", null, entry.name);
+      option.value = entry.code;
+      option.selected = entry.code === state.values.countryCode;
+      country.appendChild(option);
+    });
+    addField({ name: "countryCode", label: "Country", autocomplete: "country" }, country);
+    // One country to deliver to needs no choice.
+    if (state.countries.length === 1) country.parentNode.hidden = true;
+
+    state.statusEl = el("p", "sa-order-status");
+    state.statusEl.hidden = true;
+    form.appendChild(state.statusEl);
+
+    var actions = el("div", "sa-order-actions");
+    var review = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Review order");
+    review.type = "submit";
+    var cancel = el("button", "sa-card-button", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", function () {
+      self.closeOrderForm();
+    });
+    actions.appendChild(review);
+    actions.appendChild(cancel);
+    form.appendChild(actions);
+
+    form.onsubmit = function (event) {
+      event.preventDefault();
+      if (state.busy) return;
+      Object.keys(state.inputs).forEach(function (name) {
+        state.values[name] = state.inputs[name].value.trim();
+      });
+      state.errors = {};
+      self.quoteOrder();
+    };
+
+    var firstInvalid = form.querySelector('[aria-invalid="true"]');
+    (firstInvalid || state.inputs.name).focus();
+    this.scrollToEnd();
+  };
+
+  /** What the app needs to price or place the order. */
+  Widget.prototype.orderPayload = function (step) {
+    var state = this.orderForm;
+    var values = state.values;
+    return {
+      step: step,
+      items: state.items,
+      contact: { name: values.name, phone: values.phone, email: values.email || "" },
+      address: {
+        address1: values.address1,
+        address2: values.address2 || "",
+        city: values.city,
+        province: values.province || "",
+        zip: values.zip || "",
+        countryCode: values.countryCode,
+      },
+      shippingRateHandle: state.shippingRateHandle,
+    };
+  };
+
+  /** Reads the cart, then asks the app for delivery options and the total. */
+  Widget.prototype.quoteOrder = function () {
+    var self = this;
+    var state = this.orderForm;
+    this.setOrderBusy(true);
+    this.setOrderStatus("Working out delivery and total…");
+
+    return this.fetchCart()
+      .then(function (cart) {
+        if (self.orderForm !== state) return null;
+        var problem = !cart
+          ? "Your cart couldn't be read."
+          : !cart.items.length
+            ? "Your cart is empty."
+            : cart.items.length > MAX_ORDER_ITEMS ||
+                cart.items.some(function (line) {
+                  return (
+                    line.quantity > MAX_ITEM_QUANTITY ||
+                    line.selling_plan_allocation ||
+                    (line.properties && Object.keys(line.properties).length > 0)
+                  );
+                })
+              ? "This order can't be placed here."
+              : "";
+        if (problem) return { ok: false, body: { error: { message: problem + USE_CHECKOUT } } };
+
+        state.items = cart.items.map(function (line) {
+          return { variantId: String(line.variant_id), quantity: Number(line.quantity) };
+        });
+        return self.postOrder(self.orderPayload("quote"));
+      })
+      .then(function (result) {
+        if (!result || self.orderForm !== state) return;
+        self.setOrderBusy(false);
+        if (result.ok && result.body.quote) {
+          self.renderOrderReview(result.body.quote);
+          return;
+        }
+        self.showOrderError(result.body);
+      });
+  };
+
+  /** Puts a refused step back in front of the shopper with the reason. */
+  Widget.prototype.showOrderError = function (body) {
+    var state = this.orderForm;
+    var error = (body && body.error) || {};
+    var message =
+      typeof error.message === "string"
+        ? error.message
+        : "We couldn't reach the store. Check your connection and try again.";
+
+    if (error.fields && typeof error.fields === "object") {
+      state.errors = {};
+      Object.keys(error.fields).forEach(function (name) {
+        if (typeof error.fields[name] === "string") state.errors[name] = error.fields[name];
+      });
+      this.renderOrderDetails();
+    } else if (body && body.quote) {
+      this.renderOrderReview(body.quote);
+    }
+    this.setOrderStatus(message, true);
+    this.scrollToEnd();
+  };
+
+  /** Step 2: the total to pay on delivery, and the button that places the order. */
+  Widget.prototype.renderOrderReview = function (quote) {
+    var self = this;
+    var state = this.orderForm;
+    var form = state.el;
+    var locale = this.config.locale;
+    var money = function (value) {
+      return formatMoney(value, locale);
+    };
+    // A new total is a new order as far as retries go.
+    if (!state.quote || state.quote.total.amount !== quote.total.amount) state.key = randomId();
+    state.quote = quote;
+    state.shippingRateHandle = quote.shippingRateHandle;
+
+    form.textContent = "";
+    form.appendChild(el("h3", "sa-order-title", "Review your order"));
+
+    var list = el("ul", "sa-order-lines");
+    (Array.isArray(quote.lines) ? quote.lines : []).forEach(function (line) {
+      var item = el("li", "sa-order-line");
+      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " ×"));
+      item.appendChild(el("span", "sa-order-item", String(line.title || "Item")));
+      item.appendChild(el("span", "sa-order-amount", money(line.total)));
+      list.appendChild(item);
+    });
+    form.appendChild(list);
+
+    var rates = Array.isArray(quote.shippingRates) ? quote.shippingRates : [];
+    if (rates.length > 1) {
+      var options = el("fieldset", "sa-order-rates");
+      options.appendChild(el("legend", null, "Delivery"));
+      rates.forEach(function (rate, index) {
+        var label = el("label", "sa-order-rate");
+        var radio = el("input");
+        radio.type = "radio";
+        radio.name = "shippingRate";
+        radio.id = "sa-order-rate-" + index;
+        radio.checked = rate.handle === quote.shippingRateHandle;
+        radio.addEventListener("change", function () {
+          state.shippingRateHandle = rate.handle;
+          self.quoteOrder();
+        });
+        label.appendChild(radio);
+        label.appendChild(el("span", "sa-order-item", String(rate.title)));
+        label.appendChild(el("span", "sa-order-amount", money(rate.price)));
+        options.appendChild(label);
+      });
+      form.appendChild(options);
+    }
+
+    var totals = el("dl", "sa-order-totals");
+    var addTotal = function (label, value, strong) {
+      totals.appendChild(el("dt", strong ? "sa-order-grand" : null, label));
+      totals.appendChild(el("dd", strong ? "sa-order-grand" : null, money(value)));
+    };
+    addTotal("Subtotal", quote.subtotal);
+    addTotal("Delivery", quote.shipping);
+    if (quote.tax) addTotal("Tax", quote.tax);
+    addTotal("Total", quote.total, true);
+    form.appendChild(totals);
+
+    var values = state.values;
+    form.appendChild(
+      el(
+        "p",
+        "sa-order-note",
+        "Deliver to " +
+          [values.name, values.address1, values.address2, values.city, values.province, values.zip]
+            .filter(Boolean)
+            .join(", ") +
+          ". Phone " +
+          values.phone +
+          ".",
+      ),
+    );
+    form.appendChild(
+      el("p", "sa-order-note", "You pay " + money(quote.total) + " when your order arrives."),
+    );
+
+    state.statusEl = el("p", "sa-order-status");
+    state.statusEl.hidden = true;
+    form.appendChild(state.statusEl);
+
+    var actions = el("div", "sa-order-actions");
+    var place = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Place order");
+    place.type = "submit";
+    var edit = el("button", "sa-card-button", "Edit details");
+    edit.type = "button";
+    edit.addEventListener("click", function () {
+      self.renderOrderDetails();
+    });
+    actions.appendChild(place);
+    actions.appendChild(edit);
+    form.appendChild(actions);
+
+    form.onsubmit = function (event) {
+      event.preventDefault();
+      if (!state.busy) self.placeOrder();
+    };
+    place.focus();
+    this.scrollToEnd();
+  };
+
+  /** Places the order the shopper has just reviewed. */
+  Widget.prototype.placeOrder = function () {
+    var self = this;
+    var state = this.orderForm;
+    var payload = this.orderPayload("place");
+    payload.expectedTotal = state.quote.total;
+    payload.idempotencyKey = state.key;
+    this.setOrderBusy(true);
+    this.setOrderStatus("Placing your order…");
+
+    return this.postOrder(payload).then(function (result) {
+      if (self.orderForm !== state) return;
+      self.setOrderBusy(false);
+      var order = result.ok ? result.body.order : null;
+      if (!order || typeof order.name !== "string") {
+        self.showOrderError(result.body);
+        return;
+      }
+
+      self.closeOrderForm();
+      // The order is placed, so the summary of the old cart goes away too.
+      self.state.messages = self.state.messages.filter(function (message) {
+        return message.role !== "order";
+      });
+      var stale = self.messagesEl.querySelectorAll(".sa-order");
+      for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
+      self.pushEntry({
+        role: "notice",
+        tone: "success",
+        text:
+          "Order " +
+          order.name +
+          " is placed. You pay " +
+          formatMoney(order.total, self.config.locale) +
+          " on delivery.",
+      });
+      self.clearCart();
+    });
+  };
+
+  /** Empties the storefront cart once its contents have been ordered. */
+  Widget.prototype.clearCart = function () {
+    return window
+      .fetch(this.config.cartUrl + "/clear.js", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        credentials: "same-origin",
+        body: "{}",
+      })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (cart) {
+        if (cart) {
+          document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
+        }
+      })
+      .catch(function () {
+        // The order stands; the shopper can empty the cart themselves.
       });
   };
 
