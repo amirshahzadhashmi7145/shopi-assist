@@ -12,14 +12,16 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 - Product search, product details and variants, collections.
 - Shipping, refund, privacy and terms answers read from the store's published policies.
 - "Add the small one to my cart" adds to the real storefront cart.
-- "I want to buy it" shows a Go to checkout button. Payment always happens on the store's normal Shopify checkout; the assistant never places an order or takes payment itself.
+- "I want to order two mugs and the blanket" puts those items in the cart and shows an order summary in the chat: each line, the subtotal and a Go to checkout button. Items already in the cart are topped up to the quantity asked for, so repeating an order never doubles it.
+- "I want to buy it" or "checkout" shows the same summary for what is already in the cart, or says the cart is empty.
+- Delivery details and payment always happen on the store's normal Shopify checkout. The assistant never asks for an address or card in chat, and an order exists only once the shopper finishes checkout.
 - Order status by order number plus checkout email (off by default; the merchant opts in).
 - Return requests by order number, checkout email and a reason (off by default). This creates a return request in the Shopify admin that the merchant approves or declines. Nothing is refunded automatically.
 
 **For the merchant (inside Shopify admin)**
 
 - A **setup tour** that opens the first time the app is opened after install. It is built around ticking boxes and picking from lists, not writing:
-  1. *What it can do:* add to cart, checkout, order status, return requests.
+  1. *What it can do:* add to cart, place an order, order status, return requests. Ordering in chat needs both "add to cart" and "place an order" ticked; with only "place an order", the assistant shows the summary of the existing cart.
   2. *Your policies:* return window, who pays return shipping, how fast orders ship, delivery time, where you ship.
   3. *Name and tone.*
   4. *Go live.*
@@ -78,6 +80,7 @@ App server  /proxy/chat
 
 - **Two audiences, decided by the server.** A request through the app proxy is always a `shopper`; a request through the authenticated admin is always a `merchant`. Each tool declares which audience may use it, and a tool call for the wrong audience is refused. Nothing the browser sends can change the audience or the shop.
 - **Shoppers only see public data.** Catalog tools use the Storefront API, which returns only products the store has published. Sales figures, inventory counts and other customers' data are not reachable from the widget.
+- **Ordering in chat changes only the shopper's own cart**, in their own browser, through the storefront's cart endpoints. The server checks that each item is a published, in-stock variant and returns its id; it creates no order, draft order or checkout and needs no extra access scope. No address, phone number or payment detail passes through the chat.
 - **Return requests** are opt-in and use the same proof and throttles as order lookup, plus one request per order per day. They are the only thing a shopper's chat can write to the store, and what they write is a request awaiting the merchant's decision. The assistant never guesses which item to return.
 - **Order lookup** is opt-in, needs both order number and checkout email to match exactly, returns only status and tracking, and gives the same answer for "wrong email" and "no such order". Guessing is throttled four ways: per chat turn, per visitor address, per email address and per shop.
 - **No Admin API for shoppers.** A shopper's chat turn is not handed an Admin API client at all unless the merchant has turned order lookup on.
@@ -159,8 +162,8 @@ To use a different model provider, implement the `LlmProvider` interface in `app
 
 Verified locally:
 
-- 142 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, errors, persistence).
-- All 15 GraphQL queries validate against Shopify's published 2026-10 Admin and Storefront schemas.
+- 158 automated tests: tool-calling loop, audience boundary, each tool against fake API responses, shop and visitor isolation on a real SQLite database, rate and spend limits, order-lookup throttles, retention and redaction, the proxy route, the OpenAI adapter's request format, and the widget in a simulated browser (rendering, XSS safety, cart, order summary, errors, persistence).
+- All 18 GraphQL queries and mutations validate against Shopify's published 2026-10 Admin and Storefront schemas.
 - The built server accepts correctly signed proxy requests and rejects unsigned, forged, tampered and stale ones (`npm run smoke`). Shopify's signature covers the query string and a timestamp with a 90-second window; it does not stop the same request being re-sent inside that window, which is one reason the limits above exist.
 - An independent security review of the code; its findings are fixed or listed below.
 - `shopify theme check` and `shopify app security check` report no findings.
@@ -180,7 +183,7 @@ Two things only showed up on the real store and are now fixed and tested:
 Not yet verified:
 
 - Real answers from GPT-4o, including how well it picks tools. Everything so far used the mock model.
-- The other shopper tools on a real store: search, product details, collections, policies, add to cart from chat, the checkout button, order status.
+- The other shopper tools on a real store: search, product details, collections, policies, add to cart from chat, ordering in chat and the order summary, order status. The order summary reads the theme's `/cart.js`; so far it has only run against the preview server's stand-in cart (`npm run widget:preview`).
 - **Return requests on a real store.** The queries validate against Shopify's schema and the logic is tested with fake responses, but no real return request has been created yet. It needs a fulfilled order on the dev store.
 - The merchant assistant on a real store, including ShopifyQL responses (row format and access).
 - The admin pages inside the real Shopify admin: the setup tour, the shopper preview chat, Settings and the widget-status check. They type-check against Shopify's Polaris types and build, but have not been clicked through in a browser.
@@ -203,6 +206,7 @@ Not yet verified:
 
 - Merchant write actions (create discounts, edit products, adjust inventory, refunds). The tool registry is designed for them, but each should run only after the merchant confirms it in the UI.
 - Order cancellation and address changes for shoppers.
+- Orders created entirely inside the chat (for example cash on delivery, with the address typed into the chat). That would mean new write scopes, storing delivery details, and a way to stop fake orders from anonymous visitors.
 - Streaming replies.
 - Billing.
 - Translations of the widget's own labels.

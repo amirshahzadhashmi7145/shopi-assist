@@ -97,8 +97,57 @@ const lastBody = (fetchMock: FetchMock, index = -1) => {
 
 /** POST requests: chat messages and cart adds. */
 let fetchMock: FetchMock;
-/** GET requests: the widget asking the app for its settings. */
+/** GET requests for the widget's settings. */
 let configMock: FetchMock;
+/** GET /cart.js: the storefront cart. Unreadable unless a test sets one up. */
+let cartMock: FetchMock;
+
+/** A storefront cart as /cart.js returns it; prices are in cents. */
+const cartLine = (variantId: number, quantity: number, title: string, price: number) => ({
+  variant_id: variantId,
+  quantity,
+  title,
+  final_line_price: price * quantity,
+});
+const cartJson = (...items: Array<ReturnType<typeof cartLine>>) => ({
+  currency: "USD",
+  items,
+  total_price: items.reduce((sum, item) => sum + item.final_line_price, 0),
+});
+
+/**
+ * A cart that behaves like the storefront's: /cart/add.js adds to it and
+ * /cart.js reads it back. `catalog` maps variant id to [title, price in cents].
+ */
+function liveCart(
+  catalog: Record<number, [string, number]>,
+  chat: () => Promise<Response>,
+  initial: Record<number, number> = {},
+) {
+  const quantities = new Map<number, number>(
+    Object.entries(initial).map(([id, quantity]) => [Number(id), quantity]),
+  );
+  const adds: Array<Array<{ id: number; quantity: number }>> = [];
+  fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+    if (url !== "/cart/add.js") return chat();
+    const items = JSON.parse(init!.body as string).items as Array<{ id: number; quantity: number }>;
+    adds.push(items);
+    for (const item of items) {
+      quantities.set(item.id, (quantities.get(item.id) ?? 0) + item.quantity);
+    }
+    return jsonResponse({ items: [] });
+  });
+  cartMock.mockImplementation(() =>
+    jsonResponse(
+      cartJson(
+        ...[...quantities].map(([id, quantity]) =>
+          cartLine(id, quantity, catalog[id][0], catalog[id][1]),
+        ),
+      ),
+    ),
+  );
+  return { adds };
+}
 
 const appConfig = (overrides: Record<string, unknown> = {}) =>
   jsonResponse({ ok: true, enabled: true, ready: true, title: "", greeting: "", ...overrides });
@@ -108,10 +157,11 @@ beforeEach(() => {
   window.sessionStorage.clear();
   fetchMock = vi.fn<FetchHandler>(() => reply("Hello!"));
   configMock = vi.fn<FetchHandler>(() => appConfig());
-  window.fetch = ((url: string, init?: RequestInit) =>
-    (init?.method ?? "GET") === "GET"
-      ? configMock(url, init)
-      : fetchMock(url, init)) as unknown as typeof window.fetch;
+  cartMock = vi.fn<FetchHandler>(() => jsonResponse({ error: "not found" }, 404));
+  window.fetch = ((url: string, init?: RequestInit) => {
+    if ((init?.method ?? "GET") !== "GET") return fetchMock(url, init);
+    return url.endsWith("/cart.js") ? cartMock(url, init) : configMock(url, init);
+  }) as unknown as typeof window.fetch;
 });
 
 describe("chat widget", () => {
@@ -305,7 +355,170 @@ describe("chat widget", () => {
     expect(notice.querySelector("a")!.getAttribute("href")).toBe("/cart");
   });
 
-  it("shows a checkout link when the assistant offers checkout", async () => {
+  it("puts an order in the cart and shows a summary with a checkout button", async () => {
+    const cart = liveCart({ 101: ["Trail Mug", 1800], 103: ["Camp Blanket - Large", 8950] }, () =>
+      reply("Here's your order.", {
+        actions: [
+          {
+            type: "order",
+            items: [
+              { variantId: "101", quantity: 2, title: "Trail Mug" },
+              { variantId: "103", quantity: 1, title: "Camp Blanket (Large)" },
+              { variantId: "1 OR 1=1", quantity: 1, title: "Bad" },
+            ],
+          },
+        ],
+      }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("I want two mugs and a blanket");
+    await flush();
+
+    // One request adds every item; the malformed line is dropped.
+    expect(cart.adds).toEqual([
+      [
+        { id: 101, quantity: 2 },
+        { id: 103, quantity: 1 },
+      ],
+    ]);
+
+    const order = widget.$(".sa-order");
+    expect(order.getAttribute("aria-label")).toBe("Order summary");
+    expect(widget.all(".sa-order-line").map((line) => line.textContent)).toEqual([
+      "2 \u00d7Trail Mug$36.00",
+      "1 \u00d7Camp Blanket - Large$89.50",
+    ]);
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$125.50");
+    expect(order.textContent).toContain("Shipping and taxes are added at checkout.");
+
+    const links = Array.from(order.querySelectorAll("a"));
+    expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Go to checkout", "/checkout"],
+      ["Edit cart", "/cart"],
+    ]);
+  });
+
+  it("tops an order up instead of doubling what is already in the cart", async () => {
+    const cart = liveCart(
+      { 101: ["Trail Mug", 1800], 103: ["Camp Blanket", 8950] },
+      () =>
+        reply("Here's your order.", {
+          actions: [
+            {
+              type: "order",
+              items: [
+                { variantId: "101", quantity: 3 },
+                { variantId: "103", quantity: 1 },
+              ],
+            },
+          ],
+        }),
+      // The shopper already has one mug and the blanket.
+      { 101: 1, 103: 1 },
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("order three mugs and the blanket");
+    await flush();
+
+    expect(cart.adds).toEqual([[{ id: 101, quantity: 2 }]]);
+    expect(widget.all(".sa-order-line").map((line) => line.textContent)).toEqual([
+      "3 \u00d7Trail Mug$54.00",
+      "1 \u00d7Camp Blanket$89.50",
+    ]);
+
+    // Asking again changes nothing in the cart and leaves a single summary.
+    widget.send("order three mugs and the blanket");
+    await flush();
+    expect(cart.adds).toHaveLength(1);
+    expect(widget.all(".sa-order")).toHaveLength(1);
+  });
+
+  it("adds the item first when one reply both adds to the cart and orders", async () => {
+    const cart = liveCart({ 101: ["Trail Mug", 1800] }, () =>
+      reply("Done.", {
+        actions: [
+          { type: "add_to_cart", variantId: "101", quantity: 1 },
+          { type: "order", items: [{ variantId: "101", quantity: 1 }] },
+        ],
+      }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("add the mug and order it");
+    await flush();
+
+    expect(cart.adds).toEqual([[{ id: 101, quantity: 1 }]]);
+    expect(widget.all(".sa-order-line").map((line) => line.textContent)).toEqual([
+      "1 \u00d7Trail Mug$18.00",
+    ]);
+  });
+
+  it("shows no summary when the cart rejects part of an order", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url === "/cart/add.js"
+        ? jsonResponse({ status: 422, description: "The product 'Trail Mug' is already sold out." }, 422)
+        : reply("Here's your order.", {
+            actions: [{ type: "order", items: [{ variantId: "101", quantity: 1 }] }],
+          }),
+    );
+    cartMock.mockImplementation(() => jsonResponse(cartJson()));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("order the mug");
+    await flush();
+
+    expect(widget.$(".sa-notice-error").textContent).toBe(
+      "The product 'Trail Mug' is already sold out.",
+    );
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    // The assistant's reply is still shown as a reply, not as a failed message.
+    expect(widget.root.querySelector(".sa-retry")).toBeNull();
+  });
+
+  it("shows the cart as an order summary when the assistant offers checkout", async () => {
+    fetchMock.mockImplementation(() =>
+      reply("Great, you're all set.", { actions: [{ type: "checkout" }] }),
+    );
+    cartMock.mockImplementation(() =>
+      jsonResponse(cartJson(cartLine(101, 2, '<img src=x onerror="window.hacked=1">', 1800))),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("I want to buy it");
+    await flush();
+
+    const order = widget.$(".sa-order");
+    // Cart text is shown as text, never as markup.
+    expect(order.querySelector("img")).toBeNull();
+    expect(widget.$(".sa-order-item").textContent).toBe('<img src=x onerror="window.hacked=1">');
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
+    expect(widget.$(".sa-order-checkout").getAttribute("href")).toBe("/checkout");
+    // Only the chat message was posted: checking out adds nothing and places no order.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The summary is still there on the next page.
+    const nextPage = mountWidget();
+    expect(nextPage.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
+  });
+
+  it("says so when there is nothing in the cart to check out", async () => {
+    fetchMock.mockImplementation(() => reply("Sure.", { actions: [{ type: "checkout" }] }));
+    cartMock.mockImplementation(() => jsonResponse(cartJson()));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("checkout");
+    await flush();
+
+    expect(widget.$(".sa-notice").textContent).toBe(
+      "Your cart is empty. Tell me what you'd like to order.",
+    );
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    expect(widget.root.querySelector(".sa-notice a")).toBeNull();
+  });
+
+  it("falls back to a plain checkout link when the cart cannot be read", async () => {
     fetchMock.mockImplementation(() =>
       reply("Great, you're all set.", { actions: [{ type: "checkout" }] }),
     );
@@ -317,8 +530,19 @@ describe("chat widget", () => {
     const link = widget.$(".sa-notice a");
     expect(link.textContent).toBe("Go to checkout");
     expect(link.getAttribute("href")).toBe("/checkout");
-    // Only the chat message was sent: the widget itself places no order.
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the cart from the store's locale-aware cart path", async () => {
+    fetchMock.mockImplementation(() => reply("Sure.", { actions: [{ type: "checkout" }] }));
+    cartMock.mockImplementation(() => jsonResponse(cartJson(cartLine(101, 1, "Tasse", 1800))));
+    const widget = mountWidget({ cartUrl: "/fr/cart", cartAddUrl: "/fr/cart/add" });
+    widget.launcher.click();
+    widget.send("commander");
+    await flush();
+
+    expect(cartMock.mock.calls[0][0]).toBe("/fr/cart.js");
+    expect(widget.$(".sa-order a:last-child").getAttribute("href")).toBe("/fr/cart");
   });
 
   it("tells the shopper when the cart rejects an item", async () => {

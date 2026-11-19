@@ -11,7 +11,23 @@ import type { ActionFunctionArgs } from "react-router";
 import { ChatError, handleChatTurn } from "../assistant/chat.server";
 import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import type { ChatActionData } from "../components/AssistantChat";
+import type { ClientAction } from "../assistant/types";
 import { authenticate, unauthenticated } from "../shopify.server";
+
+/**
+ * This page has no storefront cart, so it says in words what the widget would
+ * do for the shopper after the reply.
+ */
+function describeAction(action: ClientAction): string {
+  if (action.type === "order") {
+    const items = action.items.map((item) => `${item.quantity} × ${item.title}`).join(", ");
+    return `On your storefront, the widget puts this in the shopper's cart and shows an order summary with a Go to checkout button: ${items}.`;
+  }
+  if (action.type === "checkout") {
+    return "On your storefront, the widget shows a summary of the shopper's cart with a Go to checkout button.";
+  }
+  return `On your storefront, the widget adds this to the shopper's cart: ${action.quantity} × ${action.title ?? "the item"}.`;
+}
 
 export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActionData> => {
   const { admin, session, sessionToken } = await authenticate.admin(request);
@@ -47,6 +63,7 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActio
         title: card.title,
         price: card.price ? `${card.price.amount} ${card.price.currencyCode}` : "",
       })),
+      widgetNotes: result.actions.map(describeAction),
     };
   } catch (error) {
     if (error instanceof ChatError) {
