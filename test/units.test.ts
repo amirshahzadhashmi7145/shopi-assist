@@ -314,6 +314,22 @@ describe("system prompts", () => {
     expect(none).not.toMatch(/start the order/);
   });
 
+  it("points shoppers to the order form, and never collects their details itself", () => {
+    const abilities = { addToCart: true, checkout: true, returns: false, placeOrder: true };
+
+    const withForm = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...abilities, chatOrders: true },
+    });
+    expect(withForm).toMatch(/'Order here, pay on delivery' button/);
+    expect(withForm).toMatch(/never ask for or accept an address, phone number or card details/);
+    expect(withForm).toMatch(/never say an order has been placed/);
+
+    const without = buildSystemPrompt({ ...input, audience: "shopper", abilities });
+    expect(without).not.toMatch(/pay on delivery/);
+  });
+
   it("keeps owner notes out of the merchant assistant's prompt", () => {
     const prompt = buildSystemPrompt({
       ...input,

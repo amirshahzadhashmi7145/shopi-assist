@@ -46,6 +46,7 @@ export const settingsSchema = z.object({
   allowAddToCart: z.boolean(),
   allowCheckout: z.boolean(),
   allowReturns: z.boolean(),
+  allowChatOrders: z.boolean(),
   // Quick policy picks.
   returnWindow: choice(POLICY_CHOICES.returnWindow),
   returnShipping: choice(POLICY_CHOICES.returnShipping),
@@ -73,6 +74,7 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   allowAddToCart: true,
   allowCheckout: true,
   allowReturns: false,
+  allowChatOrders: false,
   returnWindow: "",
   returnShipping: "",
   processingTime: "",
@@ -107,6 +109,7 @@ export async function getSettings(
     allowAddToCart: row.allowAddToCart,
     allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
+    allowChatOrders: row.allowChatOrders,
     returnWindow: pick(POLICY_CHOICES.returnWindow, row.returnWindow),
     returnShipping: pick(POLICY_CHOICES.returnShipping, row.returnShipping),
     processingTime: pick(POLICY_CHOICES.processingTime, row.processingTime),
@@ -149,6 +152,7 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "allowAddToCart",
   "allowCheckout",
   "allowReturns",
+  "allowChatOrders",
 ];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
 

@@ -53,8 +53,8 @@ function proxyParams(shop, extra = {}) {
   };
 }
 
-async function post(query, body) {
-  const response = await fetch(`${BASE}/proxy/chat?${query}`, {
+async function post(query, body, path = "chat") {
+  const response = await fetch(`${BASE}/proxy/${path}?${query}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Forwarded-For": "203.0.113.50" },
     body: JSON.stringify(body),
@@ -164,6 +164,20 @@ try {
     "validly signed but app not installed -> 404 not_installed",
     notInstalled.status === 404 && notInstalled.json?.error?.code === "not_installed",
     `(got ${notInstalled.status})`,
+  );
+
+  const orderBody = { step: "quote", items: [{ variantId: "1", quantity: 1 }] };
+  const unsignedOrder = await post(new URLSearchParams({ shop: SHOP }).toString(), orderBody, "order");
+  check("unsigned order request -> 400", unsignedOrder.status === 400, `(got ${unsignedOrder.status})`);
+
+  const forgedOrder = await post(signedQuery(proxyParams(SHOP), "wrong-secret"), orderBody, "order");
+  check("order request signed with the wrong secret -> 400", forgedOrder.status === 400, `(got ${forgedOrder.status})`);
+
+  const orderOff = await post(signedQuery(proxyParams(SHOP)), orderBody, "order");
+  check(
+    "signed order request while chat orders are off -> 403 disabled",
+    orderOff.status === 403 && orderOff.json?.error?.code === "disabled",
+    `(got ${orderOff.status} ${JSON.stringify(orderOff.json)})`,
   );
 
   console.log("\nRequests that must work");
