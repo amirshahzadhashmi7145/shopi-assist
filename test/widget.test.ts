@@ -772,6 +772,8 @@ describe("chat widget", () => {
     async function openForm(
       respond: (body: Record<string, unknown>) => Promise<Response>,
       config: Record<string, unknown> = {},
+      /** Runs once the widget is on the page, before the order form is opened. */
+      setup: () => void = () => {},
     ) {
       configMock.mockImplementation(() => appConfig({ chatOrders: true, ...config }));
       const cart = liveCart(
@@ -791,6 +793,7 @@ describe("chat widget", () => {
             }),
       );
       const widget = mountWidget();
+      setup();
       await flush();
       widget.launcher.click();
       widget.send("checkout");
@@ -813,7 +816,8 @@ describe("chat widget", () => {
     }
 
     const DETAILS = {
-      name: " Ada Lovelace ",
+      firstName: " Ada ",
+      lastName: "Lovelace",
       phone: "+1 613 555 0111",
       email: "ada@example.com",
       address1: "12 Analytical Way",
@@ -846,15 +850,16 @@ describe("chat widget", () => {
 
       // The form asks for what a delivery needs, with the browsing country chosen.
       expect(widget.all(".sa-order-form label").map((label) => label.textContent)).toEqual([
-        "Full name",
-        "Phone",
         "Email (optional, for order updates)",
+        "Country / region",
+        "First name (optional)",
+        "Last name",
         "Address",
-        "Apartment, suite (optional)",
+        "Apartment, suite, etc. (optional)",
         "City",
         "State / province",
-        "Postal code",
-        "Country",
+        "ZIP / postal code",
+        "Phone",
       ]);
       expect(field("countryCode").value).toBe("US");
       expect(field("phone").getAttribute("autocomplete")).toBe("tel");
@@ -865,7 +870,12 @@ describe("chat widget", () => {
       expect(orderPosts()[0]).toEqual({
         step: "quote",
         items: [{ variantId: "101", quantity: 2 }],
-        contact: { name: "Ada Lovelace", phone: "+1 613 555 0111", email: "ada@example.com" },
+        contact: {
+          firstName: "Ada",
+          lastName: "Lovelace",
+          phone: "+1 613 555 0111",
+          email: "ada@example.com",
+        },
         address: {
           address1: "12 Analytical Way",
           address2: "",
@@ -948,7 +958,7 @@ describe("chat widget", () => {
       expect(widget.$(".sa-order-status-error").textContent).toBe(
         "Please check the highlighted details.",
       );
-      expect(field("name").value).toBe("Ada Lovelace");
+      expect(field("lastName").value).toBe("Lovelace");
       expect(field("countryCode").value).toBe("CA");
       expect(widget.root.activeElement).toBe(field("phone"));
     });
@@ -1028,7 +1038,8 @@ describe("chat widget", () => {
       expect(fill.textContent).toBe("Fill test details");
 
       fill.click();
-      expect(field("name").value).toBe("Test Buyer");
+      expect(field("firstName").value).toBe("Test");
+      expect(field("lastName").value).toBe("Buyer");
       expect(field("email").value).toBe("test.buyer@example.com");
       expect(field("address1").value).toBe("742 Evergreen Terrace");
       expect(field("province").value).toBe("IL");
@@ -1039,6 +1050,96 @@ describe("chat widget", () => {
       fill.click();
       expect(field("city").value).toBe("Ottawa");
       expect(field("zip").value).toBe("K2P 2L8");
+    });
+
+    describe("states and provinces", () => {
+      /** The list Shopify renders for theme address forms, as the Liquid block puts it on the page. */
+      const addRegions = () => {
+        const select = document.createElement("select");
+        select.id = "shopi-assist-regions";
+        select.hidden = true;
+        const add = (country: string, provinces: unknown) => {
+          const option = document.createElement("option");
+          option.value = country;
+          option.textContent = country;
+          option.setAttribute("data-provinces", JSON.stringify(provinces));
+          select.appendChild(option);
+        };
+        add("United States", [
+          ["Illinois", "Illinois"],
+          ["New York", "New York"],
+          ['<img src=x onerror="window.hacked=1">', "Texas"],
+        ]);
+        add("Canada", [
+          ["Ontario", "Ontario"],
+          ["Quebec", "Québec"],
+        ]);
+        add("Germany", []);
+        document.body.appendChild(select);
+      };
+
+      it("offers the country's states as a list, as the checkout does", async () => {
+        const { widget, field, fill, submit } = await openForm(
+          (body) => jsonResponse({ ok: true, step: "quote", quote: quote(body.shippingRateHandle as string) }),
+          {},
+          addRegions,
+        );
+
+        const states = field("province") as HTMLSelectElement;
+        expect(states.tagName).toBe("SELECT");
+        expect(states.required).toBe(true);
+        expect(Array.from(states.options).map((option) => option.textContent)).toEqual([
+          "Select\u2026",
+          "Illinois",
+          "New York",
+          "Texas",
+        ]);
+        // Whatever the page's list holds is shown as text, never as markup.
+        expect(widget.root.querySelector(".sa-order-form img")).toBeNull();
+
+        fill({ ...DETAILS, countryCode: "US", province: "Illinois" });
+        await submit();
+        expect(orderPosts()[0].address).toMatchObject({ countryCode: "US", province: "Illinois" });
+      });
+
+      it("swaps the list when the country changes and keeps what was typed", async () => {
+        const { field } = await openForm(() => jsonResponse({ ok: true }), {}, addRegions);
+        field("lastName").value = "Lovelace";
+        (field("province") as HTMLSelectElement).value = "Illinois";
+
+        const country = field("countryCode");
+        country.value = "CA";
+        country.dispatchEvent(new Event("change", { bubbles: true }));
+
+        const states = field("province") as HTMLSelectElement;
+        expect(Array.from(states.options).map((option) => option.textContent)).toEqual([
+          "Select\u2026",
+          "Ontario",
+          "Québec",
+        ]);
+        // The old country's state does not carry over.
+        expect(states.value).toBe("");
+        expect(field("lastName").value).toBe("Lovelace");
+        expect(field("countryCode").value).toBe("CA");
+      });
+
+      it("asks for the state as text when the country has no list", async () => {
+        // No list on the page at all.
+        const none = await openForm(() => jsonResponse({ ok: true }));
+        expect(none.field("province").tagName).toBe("INPUT");
+      });
+
+      it("picks the test address's state from the list", async () => {
+        const { widget, field } = await openForm(
+          () => jsonResponse({ ok: true }),
+          { testMode: true },
+          addRegions,
+        );
+        widget.$<HTMLButtonElement>(".sa-order-test").click();
+
+        expect((field("province") as HTMLSelectElement).value).toBe("Illinois");
+        expect(field("zip").value).toBe("62704");
+      });
     });
 
     it("closes from Cancel and opens only one form at a time", async () => {

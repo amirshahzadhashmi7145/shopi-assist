@@ -397,6 +397,27 @@ describe("system prompts", () => {
     expect(lookupOff).toMatch(/you can repeat what the chat already says about it/);
   });
 
+  it("tells the assistant what proof an order lookup needs in this store", () => {
+    const strict = buildSystemPrompt({ ...input, audience: "shopper", orderLookupEnabled: true });
+    expect(strict).toMatch(/the email address or the phone number used on the order, whichever they have/);
+    expect(strict).toMatch(/offer the phone number when they have no email/);
+    expect(strict).not.toMatch(/with the order number alone, so look it up as soon as/);
+
+    const byNumber = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      orderLookupEnabled: true,
+      orderLookupByNumber: true,
+    });
+    expect(byNumber).toMatch(/basic status \(order date, payment status, delivery status\) with the order number alone/);
+    expect(byNumber).toMatch(/do not ask for an email first/);
+    expect(byNumber).toMatch(/tracking link are shared only when the shopper also gives the email address or the phone number/);
+
+    // The second setting means nothing without the first.
+    const lookupOff = buildSystemPrompt({ ...input, audience: "shopper", orderLookupByNumber: true });
+    expect(lookupOff).toMatch(/you cannot look up orders/);
+  });
+
   it("keeps owner notes out of the merchant assistant's prompt", () => {
     const prompt = buildSystemPrompt({
       ...input,

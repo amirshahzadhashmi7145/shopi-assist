@@ -28,6 +28,7 @@ export const settingsSchema = z.object({
   enabled: z.boolean(),
   instructions: text(2000, "instructions"),
   orderLookupEnabled: z.boolean(),
+  orderLookupByNumber: z.boolean(),
   retentionDays: z
     .number()
     .int("Use a whole number of days.")
@@ -63,6 +64,7 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   enabled: true,
   instructions: "",
   orderLookupEnabled: false,
+  orderLookupByNumber: false,
   retentionDays: 30,
   businessDescription: "",
   returnPolicy: "",
@@ -98,6 +100,7 @@ export async function getSettings(
     enabled: row.enabled,
     instructions: row.instructions,
     orderLookupEnabled: row.orderLookupEnabled,
+    orderLookupByNumber: row.orderLookupByNumber,
     retentionDays: row.retentionDays,
     businessDescription: row.businessDescription,
     returnPolicy: row.returnPolicy,
@@ -149,6 +152,7 @@ export async function saveSettings(
 const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "enabled",
   "orderLookupEnabled",
+  "orderLookupByNumber",
   "allowAddToCart",
   "allowCheckout",
   "allowReturns",

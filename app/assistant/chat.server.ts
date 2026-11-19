@@ -311,6 +311,7 @@ export async function handleChatTurn(
         : undefined,
     settings: {
       orderLookupEnabled: settings.orderLookupEnabled,
+      orderLookupByNumber: settings.orderLookupEnabled && settings.orderLookupByNumber,
       allowAddToCart: settings.allowAddToCart,
       allowCheckout: settings.allowCheckout,
       allowReturns: settings.allowReturns,
@@ -366,6 +367,8 @@ export async function handleChatTurn(
         },
         merchantInstructions: settings.instructions,
         orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
+        orderLookupByNumber:
+          settings.orderLookupByNumber && tools.some((tool) => tool.name === "get_order_status"),
         cart: context.cart,
         knownOrders: orders,
         today: now,
