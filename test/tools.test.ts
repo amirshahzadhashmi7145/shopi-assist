@@ -403,6 +403,63 @@ describe("get_order_status", () => {
     expect(result.content.toLowerCase()).not.toContain("buyer@example.com");
   });
 
+  it("needs no email for an order the server already tied to this chat", async () => {
+    const mine = { ...order, id: "gid://shopify/Order/1005", name: "#1005", email: null };
+    const admin = fakeGraphql({ orders: { nodes: [mine] } });
+    const context = {
+      ...enabled(admin),
+      knownOrders: [{ id: "gid://shopify/Order/1005", name: "#1005", source: "placed" as const }],
+    };
+
+    const result = await run("get_order_status", { orderNumber: "1005" }, context);
+    expect(result.json).toMatchObject({ order: "#1005", fulfillmentStatus: "FULFILLED" });
+
+    // The model sending an empty email means the same as leaving it out.
+    const blank = await run("get_order_status", { orderNumber: "#1005", email: "" }, context);
+    expect(blank.ok).toBe(true);
+  });
+
+  it("still asks for the email for any other order, and matches known orders by id", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [{ ...order, id: "gid://shopify/Order/1001" }] } });
+    const context = {
+      ...enabled(admin),
+      knownOrders: [{ id: "gid://shopify/Order/1005", name: "#1005", source: "placed" as const }],
+    };
+
+    const other = await run("get_order_status", { orderNumber: "1001" }, context);
+    expect(other.json.error).toMatch(/email address used at checkout is needed too/);
+    // Nothing was looked up, so nothing about order 1001 leaked.
+    expect(admin.calls).toHaveLength(0);
+
+    // A known name whose id no longer matches what Shopify returns is refused.
+    const renamed = await run(
+      "get_order_status",
+      { orderNumber: "1005" },
+      {
+        ...enabled(fakeGraphql({ orders: { nodes: [{ ...order, id: "gid://shopify/Order/9", name: "#1005" }] } })),
+        knownOrders: [{ id: "gid://shopify/Order/1005", name: "#1005", source: "verified" as const }],
+      },
+    );
+    expect(renamed.json.error).toMatch(/No order matches/);
+  });
+
+  it("remembers an order once the shopper has proved it is theirs", async () => {
+    const remembered: Array<{ id: string; name: string }> = [];
+    const admin = fakeGraphql({ orders: { nodes: [{ ...order, id: "gid://shopify/Order/1001" }] } });
+    const context = {
+      ...enabled(admin),
+      rememberOrder: async (found: { id: string; name: string }) => {
+        remembered.push(found);
+      },
+    };
+
+    await run("get_order_status", { orderNumber: "1001", email: "someone@else.com" }, context);
+    expect(remembered).toEqual([]);
+
+    await run("get_order_status", { orderNumber: "1001", email: "buyer@example.com" }, context);
+    expect(remembered).toEqual([{ id: "gid://shopify/Order/1001", name: "#1001" }]);
+  });
+
   it("gives the same answer for a wrong email as for a missing order", async () => {
     const wrongEmail = await run(
       "get_order_status",

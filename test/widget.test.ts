@@ -848,7 +848,7 @@ describe("chat widget", () => {
       expect(widget.all(".sa-order-form label").map((label) => label.textContent)).toEqual([
         "Full name",
         "Phone",
-        "Email (optional)",
+        "Email (optional, for order updates)",
         "Address",
         "Apartment, suite (optional)",
         "City",
@@ -906,6 +906,11 @@ describe("chat widget", () => {
         expectedTotal: usd("54.6"),
       });
       expect(placed.idempotencyKey).toMatch(/^[a-f0-9]{32}$/);
+      // The chat the order came from, so the assistant can be told about it.
+      expect(placed.conversationId).toBe("conv12345678");
+      expect(placed.visitorId).toMatch(/^[a-f0-9]{32}$/);
+      // A quote places nothing, so it does not need to say.
+      expect(orderPosts()[0]).not.toHaveProperty("conversationId");
 
       // Confirmed with the order number; the form and the old summary are gone.
       expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(

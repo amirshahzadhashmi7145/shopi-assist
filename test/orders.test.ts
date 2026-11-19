@@ -12,6 +12,7 @@ import {
 } from "../app/assistant/orders.server";
 import { RateLimiter } from "../app/assistant/rate-limit";
 import { saveSettings } from "../app/assistant/settings.server";
+import { createConversation, knownOrders, recentMessages } from "../app/assistant/store.server";
 import type { GraphqlFn } from "../app/assistant/types";
 import { createTestDb } from "./helpers/db";
 
@@ -29,6 +30,7 @@ afterAll(async () => {
   await cleanup();
 });
 beforeEach(async () => {
+  await db.conversation.deleteMany();
   await db.shopSettings.deleteMany();
   await saveSettings(SHOP_A, { allowChatOrders: true }, db);
   deps = {
@@ -521,6 +523,68 @@ describe("placing an order", () => {
     await result;
     const created = admin.calls.find((call) => call.operation === "ShopiAssistDraftOrderCreate")!;
     expect((created.variables!.input as { tags: string[] }).tags).not.toContain("shopi-assist-test");
+  });
+
+  it("tells the chat it was placed from, without any personal details", async () => {
+    const key = { shop: SHOP_A, audience: "shopper" as const, visitorId: "visitor-0001" };
+    const conversation = await createConversation(db, key);
+
+    await order(placeBody({ visitorId: "visitor-0001", conversationId: conversation.id })).result;
+
+    expect(await knownOrders(db, SHOP_A, conversation.id)).toEqual([
+      { id: "gid://shopify/Order/1", name: "#1001", source: "placed" },
+    ]);
+    const messages = await recentMessages(db, SHOP_A, conversation.id, 10);
+    expect(messages).toEqual([
+      { role: "user", content: "(I placed an order using the order form in this chat.)" },
+      {
+        role: "assistant",
+        content:
+          "Order #1001 is placed, to be paid on delivery. Items: 2 x Trail Mug. Delivery: Standard. Total: 44.6 USD.",
+      },
+    ]);
+    // What the assistant and the merchant's transcript get: the order, not the person.
+    expect(JSON.stringify(messages)).not.toMatch(/Lovelace|Analytical|Ottawa|613|ada@/);
+  });
+
+  it("tells no chat when the conversation is not this visitor's or this shop's", async () => {
+    // Four orders from one phone number: past a real store's limit, so run as a test store.
+    deps.isTestStore = async () => true;
+    const mine = await createConversation(db, {
+      shop: SHOP_A,
+      audience: "shopper",
+      visitorId: "visitor-0001",
+    });
+    await saveSettings(SHOP_B, { allowChatOrders: true }, db);
+    const elsewhere = await createConversation(db, {
+      shop: SHOP_B,
+      audience: "shopper",
+      visitorId: "visitor-0001",
+    });
+
+    for (const [index, ids] of [
+      { visitorId: "visitor-9999", conversationId: mine.id },
+      { visitorId: "visitor-0001", conversationId: elsewhere.id },
+      { visitorId: "visitor-0001" },
+      {},
+    ].entries()) {
+      const placed = await order(
+        placeBody({ ...ids, idempotencyKey: `form-key-00000000${index}9` }),
+      ).result;
+      // The order itself always goes through.
+      expect(placed).toMatchObject({ ok: true, order: { name: "#1001" } });
+    }
+
+    expect(await knownOrders(db, SHOP_A, mine.id)).toEqual([]);
+    expect(await knownOrders(db, SHOP_B, elsewhere.id)).toEqual([]);
+    expect(await recentMessages(db, SHOP_A, mine.id, 10)).toEqual([]);
+  });
+
+  it("rejects malformed chat ids instead of guessing", async () => {
+    const error = await failure(
+      order(placeBody({ visitorId: "v", conversationId: "DROP TABLE" })).result,
+    );
+    expect(error.code).toBe("invalid_request");
   });
 
   it("requires a well-formed total and retry key", async () => {

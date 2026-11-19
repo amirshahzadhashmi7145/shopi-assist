@@ -7,6 +7,7 @@ import type {
   CartLine,
   ClientAction,
   GraphqlFn,
+  KnownOrder,
   ProductCard,
 } from "../types";
 
@@ -43,6 +44,13 @@ export interface ToolContext {
    * Missing when it could not be read (and always in the admin preview).
    */
   cart?: CartLine[];
+  /**
+   * Orders already tied to this conversation by the server: placed through
+   * its order form, or proved to be the shopper's earlier in the chat.
+   */
+  knownOrders?: KnownOrder[];
+  /** Ties an order the shopper has just proved is theirs to the conversation. */
+  rememberOrder?: (order: { id: string; name: string }) => Promise<void>;
   rateLimiter: RateLimiter;
   /** Counters that live for one chat turn, shared by every tool call in it. */
   turn: {

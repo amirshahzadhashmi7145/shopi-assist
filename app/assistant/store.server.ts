@@ -7,7 +7,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 
-import type { Audience, StoredMessage } from "./types";
+import type { Audience, KnownOrder, StoredMessage } from "./types";
 
 export interface ConversationKey {
   shop: string;
@@ -75,6 +75,59 @@ export async function recentMessages(
       role: row.role === "assistant" ? "assistant" : "user",
       content: row.content,
     }));
+}
+
+const MAX_KNOWN_ORDERS = 10;
+
+/**
+ * Ties an order to a conversation, so later questions about it need no proof
+ * again. Only the server calls this, and only after it placed the order or
+ * checked the shopper's order number and email against Shopify.
+ */
+export async function rememberOrder(
+  db: PrismaClient,
+  shop: string,
+  conversationId: string,
+  order: KnownOrder,
+): Promise<void> {
+  // The conversation must be this shop's; an id alone is never enough.
+  const owned = await db.conversation.findFirst({
+    where: { id: conversationId, shop },
+    select: { id: true },
+  });
+  if (!owned) throw new Error("Conversation does not belong to this shop");
+
+  await db.conversationOrder.upsert({
+    where: { conversationId_orderId: { conversationId, orderId: order.id } },
+    create: {
+      shop,
+      conversationId,
+      orderId: order.id,
+      orderName: order.name,
+      source: order.source,
+    },
+    // An order placed here stays "placed" even if it is looked up later.
+    update: {},
+  });
+}
+
+/** The orders tied to this conversation, newest first. */
+export async function knownOrders(
+  db: PrismaClient,
+  shop: string,
+  conversationId: string,
+): Promise<KnownOrder[]> {
+  const rows = await db.conversationOrder.findMany({
+    where: { conversationId, shop, conversation: { shop } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: MAX_KNOWN_ORDERS,
+    select: { orderId: true, orderName: true, source: true },
+  });
+  return rows.map((row) => ({
+    id: row.orderId,
+    name: row.orderName,
+    source: row.source === "placed" ? "placed" : "verified",
+  }));
 }
 
 /** Stores one completed exchange and bumps the conversation's activity time. */

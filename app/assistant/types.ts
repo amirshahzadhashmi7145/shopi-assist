@@ -56,6 +56,19 @@ export interface CartLine {
   quantity: number;
 }
 
+/**
+ * An order tied to the current conversation: placed through its order form,
+ * or proved to be the shopper's by its number and checkout email. Recorded by
+ * the server, never taken from the browser.
+ */
+export interface KnownOrder {
+  /** "gid://shopify/Order/123" */
+  id: string;
+  /** "#1005" */
+  name: string;
+  source: "placed" | "verified";
+}
+
 /** Something the server asks the storefront widget to do in the browser. */
 export type ClientAction =
   | {

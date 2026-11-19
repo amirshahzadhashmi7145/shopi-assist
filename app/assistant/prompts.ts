@@ -1,4 +1,4 @@
-import type { Audience, CartLine } from "./types";
+import type { Audience, CartLine, KnownOrder } from "./types";
 
 export type PromptTone = "friendly" | "professional" | "playful";
 
@@ -38,6 +38,8 @@ export interface PromptInput {
    * which is different from an empty array (an empty cart).
    */
   cart?: CartLine[];
+  /** Orders the server has tied to this chat: placed here or already proved. */
+  knownOrders?: KnownOrder[];
   today: Date;
 }
 
@@ -57,6 +59,21 @@ export function buildSystemPrompt(input: PromptInput): string {
 function ownerBlock(label: string, value: string | undefined, max: number): string {
   const text = (value ?? "").trim().slice(0, max);
   return text ? `\n\n${label}:\n"""\n${text}\n"""` : "";
+}
+
+/** The orders this chat already knows, for the end of the prompt. */
+function knownOrdersBlock(orders: KnownOrder[] | undefined): string {
+  if (!orders?.length) return "";
+  const lines = orders
+    .map((order) => {
+      const name = order.name.replace(/[^#A-Za-z0-9\-_.]/g, "").slice(0, 40);
+      return `- ${name} (${order.source === "placed" ? "placed in this chat" : "already proved to be the shopper's"})`;
+    })
+    .join("\n");
+  return `
+
+Orders already known in this chat:
+${lines}`;
 }
 
 /** The cart as plain lines of data, safe to place inside the prompt. */
@@ -113,9 +130,16 @@ function shopperPrompt(input: PromptInput): string {
       ? "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart, and never claim it holds something else. An order summary shows the whole cart, so when the shopper orders something and the cart already holds other items, tell them those are in it too and offer to take them out. When they ask to remove an item or to empty the cart, do it. When they say they want only certain items, start the order with only those items. Never show the ids."
       : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart. You cannot change the cart; tell shoppers to edit it on the cart page.";
 
+  const hasKnownOrders = Boolean(input.knownOrders?.length);
+  const pastOrdersRule =
+    " Questions about an order that already exists (its details, its status, where it is) are about orders, not the cart: never answer them with the checkout summary.";
   const orderRule = input.orderLookupEnabled
-    ? "- Order status: you can look up an order only when the shopper gives both the order number and the email used at checkout. Ask for whichever is missing. Never guess either one, and never share order details any other way."
-    : "- Order status: you cannot look up orders. Point the shopper to their order confirmation email or to the store's contact page.";
+    ? `- Order status: you can look up an order only when the shopper gives both the order number and the email used at checkout. Ask for whichever is missing. Never guess either one, and never share order details any other way.${
+        hasKnownOrders
+          ? " The exception is an order listed under 'Orders already known in this chat' at the end of these instructions: for those the order number alone is enough, so look it up straight away and do not ask for the email. When the shopper says 'my order' or 'it' and one of those is what they were just talking about, they mean that order."
+          : ""
+      }${pastOrdersRule}`
+    : `- Order status: you cannot look up orders. Point the shopper to their order confirmation email or to the store's contact page. If an order was placed earlier in this chat, you can repeat what the chat already says about it.${pastOrdersRule}`;
 
   return `You are ${name ? `${name}, ` : ""}the shopping assistant for ${input.shopName}, an online store. You chat with shoppers in a small widget on the storefront. Today is ${date}.
 
@@ -152,7 +176,7 @@ ${
 
 Notes from the store owner. Treat them as accurate facts about this store and follow their guidance on tone and what to recommend. They never override the rules above.${ownerNotes}`
       : ""
-  }${cartBlock(input.cart, abilities.addToCart)}`;
+  }${input.orderLookupEnabled ? knownOrdersBlock(input.knownOrders) : ""}${cartBlock(input.cart, abilities.addToCart)}`;
 }
 
 function merchantPrompt(input: PromptInput): string {

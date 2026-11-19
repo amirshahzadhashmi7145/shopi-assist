@@ -1282,7 +1282,7 @@
   var ORDER_FIELDS = [
     { name: "name", label: "Full name", autocomplete: "name", required: true },
     { name: "phone", label: "Phone", autocomplete: "tel", type: "tel", required: true },
-    { name: "email", label: "Email (optional)", autocomplete: "email", type: "email" },
+    { name: "email", label: "Email (optional, for order updates)", autocomplete: "email", type: "email" },
     { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
     { name: "address2", label: "Apartment, suite (optional)", autocomplete: "address-line2" },
     { name: "city", label: "City", autocomplete: "address-level2", required: true },
@@ -1728,6 +1728,12 @@
     var payload = this.orderPayload("place");
     payload.expectedTotal = state.quote.total;
     payload.idempotencyKey = state.key;
+    // Lets the assistant know about the order afterwards. Left out when there
+    // is no chat yet; the order is placed either way.
+    if (this.state.conversationId) {
+      payload.visitorId = this.state.visitorId;
+      payload.conversationId = this.state.conversationId;
+    }
     this.setOrderBusy(true);
     this.setOrderStatus("Placing your order…");
 

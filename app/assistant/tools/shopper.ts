@@ -813,22 +813,32 @@ const orderProofSchema = {
     .min(1)
     .max(40)
     .regex(/^#?[A-Za-z0-9\-_.]+$/, "Order number like 1001 or #1001."),
-  email: z.email().max(254),
+  email: z
+    .union([z.literal(""), z.email().max(254)])
+    .optional()
+    .describe(
+      "The email used at checkout. Leave it out only for an order listed as already known in this chat.",
+    ),
 };
 
+const ORDER_NEEDS_EMAIL =
+  "This order is not one already known in this chat, so the email address used at checkout is needed too. Ask the shopper for it, then call again with both.";
+
 /**
- * Finds the order only if the shopper proved it is theirs by giving both the
- * order number and the checkout email, after applying the lookup throttles.
- * Throws the same error for "no such order" and "wrong email", so it cannot
- * be used to discover which order numbers exist.
+ * Finds the order only if it is the shopper's: either the server already tied
+ * it to this conversation (it was placed here, or proved earlier in the
+ * chat), or the shopper gives both the order number and the checkout email.
+ * The lookup throttles apply to the second case, which is the one that can be
+ * used to guess. It throws the same error for "no such order" and "wrong
+ * email", so it cannot be used to discover which order numbers exist.
  */
 async function findVerifiedOrder(
   context: ToolContext,
   orderNumber: string,
-  email: string,
+  email: string | undefined,
 ): Promise<VerifiedOrder> {
   const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
-  const wantedEmail = email.trim().toLowerCase();
+  const wantedEmail = (email ?? "").trim().toLowerCase();
 
   context.turn.orderLookups += 1;
   if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
@@ -836,6 +846,22 @@ async function findVerifiedOrder(
       "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
     );
   }
+
+  const known = context.knownOrders?.find(
+    (order) => order.name.replace(/^#/, "").toLowerCase() === wantedName,
+  );
+  if (known) {
+    const data = await context.admin!<{ orders: { nodes: VerifiedOrder[] } }>(
+      ORDER_STATUS_QUERY,
+      { query: `name:${wantedName}` },
+    );
+    // Matched on the id the server recorded, not on the name alone.
+    const order = data.orders.nodes.find((candidate) => candidate.id === known.id);
+    if (!order) throw new ToolError(ORDER_NOT_FOUND);
+    return order;
+  }
+  if (!wantedEmail) throw new ToolError(ORDER_NEEDS_EMAIL);
+
   const nowMs = context.now().getTime();
   const limits: Array<[key: string, max: number, windowMs: number]> = [
     [
@@ -868,13 +894,15 @@ async function findVerifiedOrder(
       (candidate.email ?? "").toLowerCase() === wantedEmail,
   );
   if (!order) throw new ToolError(ORDER_NOT_FOUND);
+  // Proved once: follow-up questions in this chat need no email again.
+  await context.rememberOrder?.({ id: order.id, name: order.name });
   return order;
 }
 
 const getOrderStatus = defineTool({
   name: "get_order_status",
   description:
-    "Check the status and tracking of the shopper's own order. Requires BOTH the order number and the email address used at checkout; ask for whichever is missing before calling.",
+    "Check the status and tracking of the shopper's own order. Requires BOTH the order number and the email address used at checkout; ask for whichever is missing before calling. The one exception is an order listed as already known in this chat: for those the order number alone is enough, so do not ask for the email.",
   audiences: ["shopper"],
   schema: z.object(orderProofSchema),
   // Off unless the merchant turned it on in the app settings.
@@ -913,7 +941,7 @@ interface ReturnableItem {
 const requestReturn = defineTool({
   name: "request_return",
   description:
-    "Ask the store to accept a return for the shopper's own order. Requires BOTH the order number and the checkout email, and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
+    "Ask the store to accept a return for the shopper's own order. Requires BOTH the order number and the checkout email (the email can be left out for an order already known in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,
