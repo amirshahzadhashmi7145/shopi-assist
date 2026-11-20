@@ -459,7 +459,17 @@ async function editItems(
 
   await addTags(admin, order.id, ["changed-in-chat"]);
   const total = updated.currentTotalPriceSet.presentmentMoney;
-  return `Order ${updated.name} is updated. The new total is ${total.amount} ${total.currencyCode}, to be paid on delivery.`;
+  return `Order ${updated.name} is updated. The new total is ${price(total)}, to be paid on delivery.`;
+}
+
+/** "$27.90", or "27.90 XYZ" for a currency this server cannot format. */
+function price(money: { amount: string; currencyCode: string }): string {
+  const amount = Number(money.amount);
+  try {
+    return new Intl.NumberFormat("en", { style: "currency", currency: money.currencyCode }).format(amount);
+  } catch {
+    return `${Number.isFinite(amount) ? amount.toFixed(2) : money.amount} ${money.currencyCode}`;
+  }
 }
 
 /** What the shopper did, for the chat's own record of it. */

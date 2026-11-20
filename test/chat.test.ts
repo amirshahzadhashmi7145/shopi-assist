@@ -324,9 +324,8 @@ describe("handleChatTurn", () => {
       { id: "gid://shopify/Order/1001", name: "#1001", source: "verified" },
     ]);
 
-    // Turn 2: "where is it?" The assistant looks it up with the number alone.
-    // A guest's remembered orders are not put in the prompt (the model takes
-    // them for the only orders it may help with); the tool knows them.
+    // Turn 2: "where is it?" names no order, so the assistant is told which
+    // order the chat has already proved and looks it up with the number alone.
     const provider = scriptedProvider([
       callTool("get_order_status", { orderNumber: "1001" }),
       text("It has shipped."),
@@ -336,7 +335,7 @@ describe("handleChatTurn", () => {
       { provider },
     );
     const system = provider.requests[0].messages[0].content as string;
-    expect(system).not.toContain("#1001");
+    expect(system).toContain("it names no order number. #1001 (proved earlier in this chat) is an order already proved to be theirs");
     expect(system).toMatch(/the order number alone is enough/);
     const toolResult = provider.requests[1].messages.at(-1)!;
     expect(toolResult.content).toContain('"fulfillmentStatus":"FULFILLED"');
@@ -397,7 +396,7 @@ describe("handleChatTurn", () => {
 
     await saveSettings(SHOP_A, { orderLookupEnabled: true, recogniseCustomers: true }, db);
     const signedIn = await prompt({ customerId: "7001", admin: adminFor("#2001") });
-    expect(signedIn.system).toContain("- #2001 (theirs: they are signed in to their account)");
+    expect(signedIn.system).toContain("#2001 (on their account: they are signed in)");
     expect(signedIn.system).toMatch(/This shopper is signed in/);
     // Asked of Shopify by the customer id Shopify signed, and nothing else.
     expect(signedIn.admin.calls.at(-1)!.variables).toEqual({ query: "customer_id:7001" });

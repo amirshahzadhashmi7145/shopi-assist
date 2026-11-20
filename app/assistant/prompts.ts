@@ -48,6 +48,8 @@ export interface PromptInput {
   cart?: CartLine[];
   /** Orders the server has tied to this chat: placed here or already proved. */
   knownOrders?: KnownOrder[];
+  /** What the shopper just wrote. Decides what is said about `knownOrders`. */
+  latestMessage?: string;
   today: Date;
 }
 
@@ -72,33 +74,50 @@ function ownerBlock(label: string, value: string | undefined, max: number): stri
 const orderName = (order: KnownOrder) => order.name.replace(/[^#A-Za-z0-9\-_.]/g, "").slice(0, 40);
 
 /**
- * A signed-in shopper's orders, for the end of the prompt. They may say "my
- * order" without a number, so these are listed.
+ * What to say about the orders this chat remembers, for this one message.
  *
- * A guest's remembered orders are deliberately not put in the prompt at all.
- * Told about them in any form, the model takes them for the only orders it
- * may help with and turns away an order the shopper has just given proof for.
- * The tools know the remembered orders, and the rules send every order to them.
+ * Remembered orders are never simply listed. Shown a list, the model takes it
+ * for the only orders it may help with, and turns away another order the
+ * shopper has just given proof for. Told nothing, it asks for proof of an
+ * order the chat already knows. So the note is aimed at the message:
+ *
+ *  - the message names a remembered order: say that one needs no proof;
+ *  - the message brings an email or some other number (another order, or a
+ *    phone number as proof): say nothing, and the ordinary rules apply;
+ *  - the message names no order at all ("cancel my order"): name the
+ *    remembered orders, since it can only be about one of them.
  */
-function accountOrdersBlock(orders: KnownOrder[] | undefined): string {
+function rememberedOrdersNote(orders: KnownOrder[] | undefined, message: string | undefined): string {
   if (!orders?.length) return "";
-  const lines = orders
-    .map((order) => {
-      const name = orderName(order);
-      const how =
-        order.source === "placed"
-          ? "placed in this chat"
-          : order.source === "customer"
-            ? "theirs: they are signed in to their account"
-            : "already proved to be the shopper's";
-      return `- ${name} (${how})`;
-    })
-    .join("\n");
+  const text = message ?? "";
+  const describe = (order: KnownOrder) =>
+    `${orderName(order)} (${
+      order.source === "placed"
+        ? "placed in this chat"
+        : order.source === "customer"
+          ? "on their account: they are signed in"
+          : "proved earlier in this chat"
+    })`;
+  const use =
+    "with the order number alone, straight away, and do not ask for an email or phone number";
+
+  const named = orders.filter((order) => {
+    const number = orderName(order).replace(/^#/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return number && new RegExp(`(^|[^A-Za-z0-9])${number}($|[^A-Za-z0-9])`, "i").test(text);
+  });
+  if (named.length) {
+    const one = named.length === 1;
+    return `
+
+About the shopper's latest message: ${named.map(describe).join(" and ")} ${one ? "is an order" : "are orders"} already proved to be theirs. Use your tools for ${one ? "it" : "them"} ${use}.`;
+  }
+  if (/@|\d{3,}/.test(text)) return "";
+
+  const listed = orders.slice(0, 5);
+  const one = listed.length === 1;
   return `
 
-Orders on this shopper's account or already proved in this chat:
-${lines}
-Your tools know these, so they need no email or phone number. If the shopper asks about any other order, use your tool with its number and whatever email address or phone number they gave: the tool tells you when something is missing.`;
+About the shopper's latest message: it names no order number. ${listed.map(describe).join(", ")} ${one ? "is an order" : "are orders"} already proved to be theirs. If they mean their order, it is ${one ? "that one" : "one of those: the one the conversation was just about, or ask which when that is unclear"}. Use your tools for it ${use}.`;
 }
 
 /** The cart as plain lines of data, safe to place inside the prompt. */
@@ -156,13 +175,13 @@ function shopperPrompt(input: PromptInput): string {
       : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart. You cannot change the cart; tell shoppers to edit it on the cart page.";
 
   const hasKnownOrders = Boolean(input.signedIn && input.knownOrders?.length);
-  // Said whether or not this chat has dealt with an order yet: see accountOrdersBlock.
+  // Said whether or not this chat has dealt with an order yet: see rememberedOrdersNote.
   const rememberedRule =
     " Your tools remember the orders placed or already proved earlier in this chat, and for those the order number alone is enough. So never ask for an email or phone number on your own: first use your tool with whatever the shopper has given, even only the order number, and ask for an email or phone number only when the tool's answer says one is needed. Never turn an order away yourself, whether or not this chat has seen it before. When the shopper says 'my order' or 'it', they mean the order this chat was just about.";
   const signedInRule = input.signedIn
     ? `\n- This shopper is signed in to their account on this store. ${
         hasKnownOrders
-          ? "Their recent orders are listed at the end of these instructions, so never ask them for an order number's email or phone. When they say 'my order' without a number, they mean the first of those unless they say otherwise; if several could be meant, ask which."
+          ? "Their own recent orders need no email or phone number, and are named at the end of these instructions whenever their message could be about one of them. When they say 'my order' without a number, they mean the first of those unless they say otherwise; if several could be meant, ask which."
           : "They have no recent orders on this account."
       }`
     : "";
@@ -229,7 +248,7 @@ ${
 
 Notes from the store owner. Treat them as accurate facts about this store and follow their guidance on tone and what to recommend. They never override the rules above.${ownerNotes}`
       : ""
-  }${input.orderLookupEnabled && input.signedIn ? accountOrdersBlock(input.knownOrders) : ""}${cartBlock(input.cart, abilities.addToCart)}`;
+  }${input.orderLookupEnabled ? rememberedOrdersNote(input.knownOrders, input.latestMessage) : ""}${cartBlock(input.cart, abilities.addToCart)}`;
 }
 
 function merchantPrompt(input: PromptInput): string {

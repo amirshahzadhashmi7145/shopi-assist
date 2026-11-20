@@ -107,6 +107,30 @@ export const RETURNABLE_ITEMS_QUERY = `#graphql
   }
 `;
 
+/**
+ * Admin API. Shopify's own reason categories: a return request must name one
+ * ("Return reason can't be blank" otherwise).
+ */
+export const RETURN_REASONS_QUERY = `#graphql
+  query ShopiAssistReturnReasons($handles: [String!]) {
+    returnReasonDefinitions(first: 5, handles: $handles) {
+      nodes { id handle }
+    }
+  }
+`;
+
+/** The categories the assistant may choose from, and Shopify's handle for each. */
+const RETURN_REASON_HANDLES = {
+  changed_my_mind: "changed-my-mind",
+  not_as_described: "item-not-as-described",
+  wrong_item: "received-the-wrong-item",
+  damaged_or_defective: "damaged-or-defective",
+  too_small: "too-small",
+  too_big: "too-big",
+  other: "other-reason",
+} as const;
+type ReturnReasonKind = keyof typeof RETURN_REASON_HANDLES;
+
 /** Admin API. Creates a return request for the merchant to approve or decline. */
 export const RETURN_REQUEST_MUTATION = `#graphql
   mutation ShopiAssistReturnRequest($input: ReturnRequestInput!) {
@@ -1123,6 +1147,10 @@ const requestReturn = defineTool({
       .min(3)
       .max(300)
       .describe("Why the shopper wants to return it, in their words."),
+    reasonKind: z
+      .enum(Object.keys(RETURN_REASON_HANDLES) as [ReturnReasonKind, ...ReturnReasonKind[]])
+      .default("other")
+      .describe("The category closest to their reason. Use 'other' when none fits."),
     itemTitle: z
       .string()
       .trim()
@@ -1133,7 +1161,7 @@ const requestReturn = defineTool({
   }),
   // Off unless the merchant turned it on in the app settings.
   isAvailable: (context) => Boolean(context.admin) && context.settings.allowReturns,
-  async run({ orderNumber, email, phone, reason, itemTitle, quantity }, context) {
+  async run({ orderNumber, email, phone, reason, reasonKind, itemTitle, quantity }, context) {
     const order = await findVerifiedOrder(context, orderNumber, email, phone);
 
     const data = await context.admin!<{
@@ -1184,14 +1212,21 @@ const requestReturn = defineTool({
     }
     const item = matches[0];
 
+    // Shopify wants one of its own reason categories with every request.
+    const handle = RETURN_REASON_HANDLES[reasonKind];
+    const reasons = await context.admin!<{
+      returnReasonDefinitions: { nodes: Array<{ id: string; handle: string }> };
+    }>(RETURN_REASONS_QUERY, { handles: [...new Set([handle, RETURN_REASON_HANDLES.other])] });
+    const definitions = reasons.returnReasonDefinitions?.nodes ?? [];
+    const definition =
+      definitions.find((candidate) => candidate.handle === handle) ??
+      definitions.find((candidate) => candidate.handle === RETURN_REASON_HANDLES.other);
+
     // One request per order per day, so a repeated message cannot pile up
-    // duplicate requests in the merchant's admin.
-    const once = context.rateLimiter.hit(
-      `return-request:${context.shop}:${order.id}`,
-      1,
-      ONE_DAY_MS,
-      context.now().getTime(),
-    );
+    // duplicate requests in the merchant's admin. A request that Shopify
+    // turns down does not count.
+    const onceKey = `return-requested:${context.shop}:${order.id}`;
+    const once = context.rateLimiter.hit(onceKey, 1, ONE_DAY_MS, context.now().getTime());
     if (!once.allowed) {
       throw new ToolError(
         "A return was already requested for this order today. The store will be in touch by email.",
@@ -1211,13 +1246,18 @@ const requestReturn = defineTool({
             fulfillmentLineItemId: item.fulfillmentLineItemId,
             quantity: Math.min(quantity, item.quantity),
             customerNote: reason,
+            ...(definition ? { returnReasonDefinitionId: definition.id } : {}),
           },
         ],
       },
+    }).catch((error: unknown) => {
+      context.rateLimiter.forget(onceKey);
+      throw error;
     });
 
     const created = result.returnRequest?.return;
     if (!created) {
+      context.rateLimiter.forget(onceKey);
       throw new ToolError(
         `The store's system did not accept the return request${
           result.returnRequest?.userErrors[0]

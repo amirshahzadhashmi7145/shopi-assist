@@ -415,6 +415,7 @@ export async function handleChatTurn(
           settings.orderLookupByNumber && tools.some((tool) => tool.name === "get_order_status"),
         cart: context.cart,
         knownOrders: orders,
+        latestMessage: message,
         today: now,
       }),
       history: [...history, { role: "user", content: message }],

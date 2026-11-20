@@ -445,7 +445,7 @@ describe("changing the items", () => {
     );
 
     expect((await result).message).toBe(
-      "Order #1005 is updated. The new total is 161.0 USD, to be paid on delivery.",
+      "Order #1005 is updated. The new total is $161.00, to be paid on delivery.",
     );
     expect(operations(admin)).toEqual([
       "ShopiAssistOrderForAction",

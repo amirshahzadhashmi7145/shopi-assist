@@ -981,6 +981,15 @@ describe("request_return", () => {
     },
   });
   const created = { returnRequest: { return: { name: "#1001-R1", status: "REQUESTED" }, userErrors: [] } };
+  // Shopify's reason categories, which every request must name one of.
+  const reasons = {
+    returnReasonDefinitions: {
+      nodes: [
+        { id: "gid://shopify/ReturnReasonDefinition/7", handle: "too-small" },
+        { id: "gid://shopify/ReturnReasonDefinition/5", handle: "other-reason" },
+      ],
+    },
+  };
   const proof = { orderNumber: "1001", email: "buyer@example.com", reason: "Too small" };
   const returnsOn = (admin: ReturnType<typeof fakeGraphql>, rateLimiter = new RateLimiter()) =>
     toolContext({
@@ -1002,14 +1011,20 @@ describe("request_return", () => {
     const admin = fakeGraphql(
       { orders: { nodes: [order] } },
       returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 2]),
+      reasons,
       created,
     );
 
-    const result = await run("request_return", { ...proof, quantity: 5 }, returnsOn(admin));
+    const result = await run(
+      "request_return",
+      { ...proof, quantity: 5, reasonKind: "too_small" },
+      returnsOn(admin),
+    );
 
     expect(result.json).toMatchObject({ status: "requested", returnReference: "#1001-R1", quantity: 2 });
     expect(result.json.note).toMatch(/request, not an approval/);
-    expect(admin.calls[2].variables).toEqual({
+    expect(admin.calls[2].variables).toEqual({ handles: ["too-small", "other-reason"] });
+    expect(admin.calls[3].variables).toEqual({
       input: {
         orderId: "gid://shopify/Order/9001",
         returnLineItems: [
@@ -1018,10 +1033,27 @@ describe("request_return", () => {
             // Capped at what can actually be returned.
             quantity: 2,
             customerNote: "Too small",
+            returnReasonDefinitionId: "gid://shopify/ReturnReasonDefinition/7",
           },
         ],
       },
     });
+  });
+
+  it("files the request under 'other' when no category was chosen", async () => {
+    const admin = fakeGraphql(
+      { orders: { nodes: [order] } },
+      returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]),
+      reasons,
+      created,
+    );
+
+    await run("request_return", { ...proof, reason: "It is the wrong size" }, returnsOn(admin));
+
+    expect(admin.calls[2].variables).toEqual({ handles: ["other-reason"] });
+    const line = (admin.calls[3].variables as { input: { returnLineItems: Array<Record<string, unknown>> } })
+      .input.returnLineItems[0];
+    expect(line.returnReasonDefinitionId).toBe("gid://shopify/ReturnReasonDefinition/5");
   });
 
   it("asks which item instead of guessing when the order has several", async () => {
@@ -1041,7 +1073,7 @@ describe("request_return", () => {
     // Looked up the order and its items, but sent nothing.
     expect(admin.calls).toHaveLength(2);
 
-    const second = fakeGraphql({ orders: { nodes: [order] } }, items, created);
+    const second = fakeGraphql({ orders: { nodes: [order] } }, items, reasons, created);
     const chosen = await run("request_return", { ...proof, itemTitle: "kettle" }, returnsOn(second));
     expect(chosen.json).toMatchObject({ status: "requested", item: "Camp Kettle" });
   });
@@ -1061,14 +1093,29 @@ describe("request_return", () => {
   it("allows one request per order per day", async () => {
     const rateLimiter = new RateLimiter();
     const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
-    const first = fakeGraphql({ orders: { nodes: [order] } }, item, created);
-    const again = fakeGraphql({ orders: { nodes: [order] } }, item, created);
+    const first = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+    const again = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
 
     expect((await run("request_return", proof, returnsOn(first, rateLimiter))).json.status).toBe("requested");
     const repeat = await run("request_return", proof, returnsOn(again, rateLimiter));
 
     expect(repeat.json.error).toMatch(/already requested for this order today/);
-    expect(again.calls).toHaveLength(2);
+    // Order, items and reasons were read; no second request was sent.
+    expect(again.calls).toHaveLength(3);
+  });
+
+  it("lets the shopper try again after Shopify turned a request down", async () => {
+    const rateLimiter = new RateLimiter();
+    const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
+    const refused = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, {
+      returnRequest: { return: null, userErrors: [{ message: "Return reason can't be blank" }] },
+    });
+    const retry = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+
+    const first = await run("request_return", proof, returnsOn(refused, rateLimiter));
+    expect(first.json.error).toMatch(/did not accept the return request/);
+    const second = await run("request_return", proof, returnsOn(retry, rateLimiter));
+    expect(second.json.status).toBe("requested");
   });
 
   it("explains when nothing can be returned or Shopify rejects the request", async () => {
@@ -1086,6 +1133,7 @@ describe("request_return", () => {
         fakeGraphql(
           { orders: { nodes: [order] } },
           returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]),
+          reasons,
           { returnRequest: { return: null, userErrors: [{ message: "Return window has closed" }] } },
         ),
       ),

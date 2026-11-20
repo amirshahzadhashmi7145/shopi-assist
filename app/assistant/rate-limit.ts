@@ -47,6 +47,11 @@ export class RateLimiter {
     return { allowed: true, retryAfterMs: 0 };
   }
 
+  /** Gives back what was counted against `key`, for an attempt that came to nothing. */
+  forget(key: string): void {
+    this.buckets.delete(key);
+  }
+
   /** Drops expired buckets at most once a minute so the map cannot grow forever. */
   private sweep(now: number): void {
     if (now - this.lastSweep < 60_000) return;
