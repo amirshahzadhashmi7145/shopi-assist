@@ -38,6 +38,11 @@ export interface ToolContext {
     allowAddressChange?: boolean;
     allowOrderEdit?: boolean;
   };
+  /**
+   * Whether Shopify says this is a development store. Asked only when a
+   * lookup limit is reached: such stores get more room for testing.
+   */
+  isTestStore?: () => Promise<boolean>;
   buyer: {
     /** ISO country code for localized prices, e.g. "US". */
     country?: string;
@@ -69,6 +74,8 @@ export interface ToolContext {
   /** Counters that live for one chat turn, shared by every tool call in it. */
   turn: {
     orderLookups: number;
+    /** The different orders looked into this turn. */
+    orderNames?: string[];
   };
   /** Injected clock for tests. */
   now: () => Date;

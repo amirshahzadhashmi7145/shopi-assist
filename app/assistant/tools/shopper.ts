@@ -800,7 +800,8 @@ const startCheckout = defineTool({
 // Order lookup limits. Guessing an order number for a known email must stay
 // impractical even for someone rotating addresses, so the address is only one
 // of four independent keys. Return requests count against the same limits.
-const ORDER_LOOKUPS_PER_TURN = 2;
+const ORDER_LOOKUPS_PER_TURN = 2; // different orders in one message
+const ORDER_CALLS_PER_TURN = 6; // lookups in one message, the same order included
 const ORDER_LOOKUPS_PER_ADDRESS = 5; // per 15 minutes
 const ORDER_LOOKUPS_PER_EMAIL = 5; // per hour, whoever is asking
 const ORDER_LOOKUPS_PER_SHOP = 60; // per hour, all visitors together
@@ -809,6 +810,42 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const ORDER_LOOKUP_THROTTLED =
   "Too many order lookups. Ask the shopper to try again later or contact the store.";
+/** How much looser the lookup limits are on a development store. */
+const TEST_STORE_ROOM = 50;
+
+/**
+ * One message may look into a couple of orders, and into the same order a few
+ * times: its status, then its items, then the change.
+ */
+function countTurnLookup(context: ToolContext, wantedName: string): void {
+  context.turn.orderLookups += 1;
+  const names = (context.turn.orderNames ??= []);
+  if (!names.includes(wantedName)) names.push(wantedName);
+  if (names.length > ORDER_LOOKUPS_PER_TURN || context.turn.orderLookups > ORDER_CALLS_PER_TURN) {
+    throw new ToolError(
+      "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
+    );
+  }
+}
+
+type LookupLimit = [key: string, max: number, windowMs: number];
+
+/**
+ * Counts one order lookup against each limit, or throws when one is used up.
+ * A development store then gets a second, much larger allowance, so that
+ * someone testing the chat is not locked out after a handful of orders.
+ * Whether the store is one is asked only when a limit is reached.
+ */
+async function countLookup(context: ToolContext, limits: LookupLimit[]): Promise<void> {
+  const nowMs = context.now().getTime();
+  for (const [key, max, windowMs] of limits) {
+    if (context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) continue;
+    const extra =
+      (await context.isTestStore?.()) &&
+      context.rateLimiter.hit(`${key}:test`, max * TEST_STORE_ROOM, windowMs, nowMs).allowed;
+    if (!extra) throw new ToolError(ORDER_LOOKUP_THROTTLED);
+  }
+}
 const ORDER_NOT_FOUND =
   "No order matches that order number with that email or phone number. Ask the shopper to double-check both, or to contact the store.";
 
@@ -862,9 +899,18 @@ export const orderProofSchema = {
     .min(1)
     .max(40)
     .regex(/^#?[A-Za-z0-9\-_.]+$/, "Order number like 1001 or #1001."),
+  // Anything that is not an email address counts as "none given" instead of
+  // failing the call. The model sometimes passes the "[email removed]"
+  // placeholder it sees in the transcript; for an order this chat already
+  // knows that must not matter, and for any other the tool asks for proof.
   email: z
-    .union([z.literal(""), z.email().max(254)])
-    .optional()
+    .preprocess(
+      (value) =>
+        typeof value === "string" && z.email().max(254).safeParse(value.trim()).success
+          ? value.trim()
+          : undefined,
+      z.string().optional(),
+    )
     .describe("The email used at checkout, when the shopper gives one."),
   phone: z
     .string()
@@ -880,7 +926,7 @@ const ORDER_NUMBER_NOT_FOUND =
   "No order has that number. Ask the shopper to check it, or to contact the store.";
 
 const ORDER_NEEDS_EMAIL =
-  "This order is not one already known in this chat, so the email address or the phone number used on the order is needed too. Ask the shopper for either one, then call again with it.";
+  "This order has not been proved in this chat yet, so the email address or the phone number used on the order is needed too. Ask the shopper for either one, then call again with it.";
 
 /**
  * Finds the order only if it is the shopper's: either the server already tied
@@ -900,12 +946,7 @@ export async function findVerifiedOrder(
   const wantedEmail = (email ?? "").trim().toLowerCase();
   const wantedPhone = phoneDigits(phone);
 
-  context.turn.orderLookups += 1;
-  if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
-    throw new ToolError(
-      "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
-    );
-  }
+  countTurnLookup(context, wantedName);
 
   const known = context.knownOrders?.find(
     (order) => order.name.replace(/^#/, "").toLowerCase() === wantedName,
@@ -927,8 +968,7 @@ export async function findVerifiedOrder(
   // An email, when given, is what is checked; the phone is the fallback.
   const proof = wantedEmail || wantedPhone;
 
-  const nowMs = context.now().getTime();
-  const limits: Array<[key: string, max: number, windowMs: number]> = [
+  await countLookup(context, [
     [
       `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
       ORDER_LOOKUPS_PER_ADDRESS,
@@ -940,12 +980,7 @@ export async function findVerifiedOrder(
       ONE_HOUR_MS,
     ],
     [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
-  ];
-  for (const [key, max, windowMs] of limits) {
-    if (!context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) {
-      throw new ToolError(ORDER_LOOKUP_THROTTLED);
-    }
-  }
+  ]);
 
   const data = await context.admin!<{
     orders: {
@@ -983,26 +1018,15 @@ async function findOrderByNumber(
 ): Promise<VerifiedOrder> {
   const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
 
-  context.turn.orderLookups += 1;
-  if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
-    throw new ToolError(
-      "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
-    );
-  }
-  const nowMs = context.now().getTime();
-  const limits: Array<[key: string, max: number, windowMs: number]> = [
+  countTurnLookup(context, wantedName);
+  await countLookup(context, [
     [
       `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
       ORDER_LOOKUPS_PER_ADDRESS,
       FIFTEEN_MINUTES_MS,
     ],
     [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
-  ];
-  for (const [key, max, windowMs] of limits) {
-    if (!context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) {
-      throw new ToolError(ORDER_LOOKUP_THROTTLED);
-    }
-  }
+  ]);
 
   const data = await context.admin!<{ orders: { nodes: VerifiedOrder[] } }>(
     ORDER_STATUS_QUERY,
@@ -1019,7 +1043,7 @@ async function findOrderByNumber(
 const getOrderStatus = defineTool({
   name: "get_order_status",
   description:
-    "Check the status of the shopper's order by its order number. Whether proof is also needed (the email address or the phone number used on the order, either one) depends on the store, and your instructions say which. Proof is never needed for an order listed as already known in this chat. The tracking number and link are only returned when the order is known in this chat or proof is given.",
+    "Check the status of the shopper's order by its order number. Whether proof is also needed (the email address or the phone number used on the order, either one) depends on the store, and your instructions say which. Proof is never needed for an order placed or already proved earlier in this chat. The tracking number and link are only returned for such an order or when proof is given.",
   audiences: ["shopper"],
   schema: z.object(orderProofSchema),
   // Off unless the merchant turned it on in the app settings.
@@ -1089,7 +1113,7 @@ interface ReturnableItem {
 const requestReturn = defineTool({
   name: "request_return",
   description:
-    "Ask the store to accept a return for the shopper's own order. Requires the order number, proof that it is theirs (the email address or the phone number used on the order; neither is needed for an order already known in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
+    "Ask the store to accept a return for the shopper's own order. Requires the order number, proof that it is theirs (the email address or the phone number used on the order; neither is needed for an order placed or already proved earlier in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,

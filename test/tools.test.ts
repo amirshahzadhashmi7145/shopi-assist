@@ -637,6 +637,63 @@ describe("get_order_status", () => {
     expect(admin.calls).toHaveLength(5);
   });
 
+  it("lets one message look into the same order several times, but only a couple of orders", async () => {
+    const order = { id: "gid://shopify/Order/1", name: "#1001", email: "buyer@example.com" };
+    const context = toolContext({
+      admin: fakeGraphql({ orders: { nodes: [order] } }),
+      storefront: fakeGraphql({}),
+      settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
+      rateLimiter: new RateLimiter(),
+      isTestStore: async () => true,
+    });
+    const look = (orderNumber: string) =>
+      run("get_order_status", { orderNumber, email: "buyer@example.com" }, context);
+
+    // Status, then again for its items, then for the change: all one order.
+    for (let i = 0; i < 4; i += 1) {
+      expect((await look("1001")).json.error ?? "").not.toMatch(/Only a couple of orders/);
+    }
+    expect((await look("1002")).json.error ?? "").not.toMatch(/Only a couple of orders/);
+    // A third order in the same message is one too many.
+    expect((await look("1003")).json.error).toMatch(/Only a couple of orders/);
+  });
+
+  it("gives a development store far more lookups, and still stops in the end", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [] } });
+    const rateLimiter = new RateLimiter();
+    let asked = 0;
+    const attempt = (n: number) =>
+      run(
+        "get_order_status",
+        { orderNumber: String(n), email: `a${n}@b.co` },
+        toolContext({
+          admin,
+          storefront: fakeGraphql({}),
+          settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
+          buyer: { ip: "203.0.113.7" },
+          rateLimiter,
+          isTestStore: async () => {
+            asked += 1;
+            return true;
+          },
+        }),
+      );
+
+    for (let i = 0; i < 5; i += 1) await attempt(i);
+    // Not asked while the ordinary limit still has room.
+    expect(asked).toBe(0);
+
+    const sixth = await attempt(6);
+    expect(sixth.json.error).not.toMatch(/Too many/);
+    expect(asked).toBe(1);
+
+    // The extra allowance is 50 times the ordinary one: 250 more from one
+    // address, of which the sixth lookup was the first.
+    for (let i = 7; i <= 255; i += 1) await attempt(i);
+    const last = await attempt(256);
+    expect(last.json.error).toMatch(/Too many order lookups/);
+  });
+
   it("throttles guesses against one email even when the address keeps changing", async () => {
     const admin = fakeGraphql({ orders: { nodes: [] } });
     const rateLimiter = new RateLimiter();

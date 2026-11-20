@@ -65,16 +65,18 @@ const CONFIRM_NOTE =
 const cancelOrder = defineTool({
   name: "cancel_order",
   description:
-    "Start cancelling the shopper's own order. Works only before the order starts shipping. Needs the order number and proof that it is theirs (the email address or phone number on the order; neither for an order already known in this chat), and their reason. It shows a card with a confirm button; the order is cancelled only when the shopper presses it.",
+    "Start cancelling the shopper's own order. Works only before the order starts shipping. Needs the order number and proof that it is theirs (the email address or phone number on the order; neither for an order placed or already proved earlier in this chat; when unsure, call anyway and the result says what is missing), and their reason when they gave one. It shows a card with a confirm button; the order is cancelled only when the shopper presses it.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,
     reason: z
       .string()
       .trim()
-      .min(2)
       .max(200)
-      .describe("Why the shopper wants to cancel, in their words."),
+      .optional()
+      .describe(
+        "Why the shopper wants to cancel, in their words. Leave it out when they gave no reason; never make one up.",
+      ),
   }),
   isAvailable: (context) => available(context, context.settings.allowOrderCancel),
   async run({ orderNumber, email, phone, reason }, context) {
@@ -86,7 +88,7 @@ const cancelOrder = defineTool({
       orderId: order.id,
       orderName: order.name,
       kind,
-      reason,
+      reason: reason || undefined,
     });
 
     return {
@@ -121,7 +123,7 @@ const cancelOrder = defineTool({
 const changeDeliveryAddress = defineTool({
   name: "change_delivery_address",
   description:
-    "Start changing where the shopper's own order is delivered. Works only before the order starts shipping, and only within the same country. Needs the order number and proof that it is theirs (the email address or phone number on the order; neither for an order already known in this chat). It shows a form for the new address; never take the address in the chat.",
+    "Start changing where the shopper's own order is delivered. Works only before the order starts shipping, and only within the same country. Needs the order number and proof that it is theirs (the email address or phone number on the order; neither for an order placed or already proved earlier in this chat; when unsure, call anyway and the result says what is missing). It shows a form for the new address; never take the address in the chat.",
   audiences: ["shopper"],
   schema: z.object(orderProofSchema),
   isAvailable: (context) => available(context, context.settings.allowAddressChange),
@@ -165,7 +167,7 @@ const changeDeliveryAddress = defineTool({
 const changeOrderItems = defineTool({
   name: "change_order_items",
   description:
-    "See or change the items in the shopper's own order. Works only before the order starts shipping, and only for an order nothing has been paid for yet. Needs the order number and proof that it is theirs (the email address or phone number on the order; neither for an order already known in this chat). Call it with no items to get the order's current items with their variantIds. To change them, pass each item that should change with the quantity it should END UP with: 0 removes it, and an item not yet in the order is added (variantId from get_product_details). It shows a card with a confirm button; the order changes only when the shopper presses it.",
+    "See or change the items in the shopper's own order. Works only before the order starts shipping, and only for an order nothing has been paid for yet. Needs the order number and proof that it is theirs (the email address or phone number on the order; neither for an order placed or already proved earlier in this chat; when unsure, call anyway and the result says what is missing). Call it with no items to get the order's current items with their variantIds. 'One more' or 'another' means a higher quantity of an item the order already holds: never add a different product unless the shopper names it. To change them, pass each item that should change with the quantity it should END UP with: 0 removes it, and an item not yet in the order is added (variantId from get_product_details). It shows a card with a confirm button; the order changes only when the shopper presses it.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,
@@ -203,7 +205,7 @@ const changeOrderItems = defineTool({
           total: money(order.total),
           canChange: order.nothingPaid,
           note: order.nothingPaid
-            ? "These are the order's items now. Ask the shopper what to change, then call again with only the items that change and the quantity each should end up with. Never show the variantIds."
+            ? "These are the order's items now. If the shopper has already said what to change (for example 'one more' of an item listed here), call again now with that item and the quantity it should end up with; otherwise ask them. Send only the items that change. Never show the variantIds."
             : "This order has been paid, so its items cannot be changed in the chat. Tell the shopper and suggest contacting the store.",
         },
       };
@@ -251,7 +253,7 @@ const changeOrderItems = defineTool({
         const variant = data.nodes?.[index];
         if (!variant?.id || !variant.product || !variant.price) {
           throw new ToolError(
-            `Variant ${change.variantId} does not exist. Look the item up with get_product_details first.`,
+            `Variant ${change.variantId} is not in this order and is not a product of this store. Never guess an id. The order holds: ${JSON.stringify(current)}. To change one of those, use its variantId; for a different product, get its variantId from get_product_details first.`,
           );
         }
         const title =

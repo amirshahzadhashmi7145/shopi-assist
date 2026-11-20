@@ -69,12 +69,22 @@ function ownerBlock(label: string, value: string | undefined, max: number): stri
   return text ? `\n\n${label}:\n"""\n${text}\n"""` : "";
 }
 
-/** The orders this chat already knows, for the end of the prompt. */
-function knownOrdersBlock(orders: KnownOrder[] | undefined): string {
+const orderName = (order: KnownOrder) => order.name.replace(/[^#A-Za-z0-9\-_.]/g, "").slice(0, 40);
+
+/**
+ * A signed-in shopper's orders, for the end of the prompt. They may say "my
+ * order" without a number, so these are listed.
+ *
+ * A guest's remembered orders are deliberately not put in the prompt at all.
+ * Told about them in any form, the model takes them for the only orders it
+ * may help with and turns away an order the shopper has just given proof for.
+ * The tools know the remembered orders, and the rules send every order to them.
+ */
+function accountOrdersBlock(orders: KnownOrder[] | undefined): string {
   if (!orders?.length) return "";
   const lines = orders
     .map((order) => {
-      const name = order.name.replace(/[^#A-Za-z0-9\-_.]/g, "").slice(0, 40);
+      const name = orderName(order);
       const how =
         order.source === "placed"
           ? "placed in this chat"
@@ -86,8 +96,9 @@ function knownOrdersBlock(orders: KnownOrder[] | undefined): string {
     .join("\n");
   return `
 
-Orders already known in this chat:
-${lines}`;
+Orders on this shopper's account or already proved in this chat:
+${lines}
+Your tools know these, so they need no email or phone number. If the shopper asks about any other order, use your tool with its number and whatever email address or phone number they gave: the tool tells you when something is missing.`;
 }
 
 /** The cart as plain lines of data, safe to place inside the prompt. */
@@ -144,11 +155,14 @@ function shopperPrompt(input: PromptInput): string {
       ? "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart, and never claim it holds something else. An order summary shows the whole cart, so when the shopper orders something and the cart already holds other items, tell them those are in it too and offer to take them out. When they ask to remove an item or to empty the cart, do it. When they say they want only certain items, start the order with only those items. Never show the ids."
       : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart. You cannot change the cart; tell shoppers to edit it on the cart page.";
 
-  const hasKnownOrders = Boolean(input.knownOrders?.length);
+  const hasKnownOrders = Boolean(input.signedIn && input.knownOrders?.length);
+  // Said whether or not this chat has dealt with an order yet: see accountOrdersBlock.
+  const rememberedRule =
+    " Your tools remember the orders placed or already proved earlier in this chat, and for those the order number alone is enough. So never ask for an email or phone number on your own: first use your tool with whatever the shopper has given, even only the order number, and ask for an email or phone number only when the tool's answer says one is needed. Never turn an order away yourself, whether or not this chat has seen it before. When the shopper says 'my order' or 'it', they mean the order this chat was just about.";
   const signedInRule = input.signedIn
     ? `\n- This shopper is signed in to their account on this store. ${
         hasKnownOrders
-          ? "Their recent orders are among the orders listed as already known in this chat, so never ask them for an order number's email or phone. When they say 'my order' without a number, they mean the first of those unless they say otherwise; if several could be meant, ask which."
+          ? "Their recent orders are listed at the end of these instructions, so never ask them for an order number's email or phone. When they say 'my order' without a number, they mean the first of those unless they say otherwise; if several could be meant, ask which."
           : "They have no recent orders on this account."
       }`
     : "";
@@ -158,13 +172,13 @@ function shopperPrompt(input: PromptInput): string {
     abilities.changeItems ? "change its items" : "",
   ].filter(Boolean);
   const changesRule = changes.length
-    ? `\n- Changing an existing order: for the shopper's own order you can start to ${changes.join(", or ")}. Each works only before the order starts shipping; your tool checks that and tells you when it is too late, and then you say so plainly${abilities.returns ? " and mention that a return can be requested once it arrives" : ""}. The order must be one already known in this chat, or the shopper must give its number with the email address or phone number on it; an order number alone is never enough to change anything. You never make the change yourself: a card with a button appears in the chat and the change happens only when the shopper presses it, so tell them to press it and never say it is done.${
+    ? `\n- Changing an existing order: for the shopper's own order you can start to ${changes.join(", or ")}. Each works only before the order starts shipping; your tool checks that and tells you when it is too late, and then you say so plainly${abilities.returns ? " and mention that a return can be requested once it arrives" : ""}. Use your tool as soon as you have the order number, passing whatever email address or phone number the shopper gave with it. The tool checks who they are, never you: an order number alone is never enough to change anything, so it tells you when an email or phone number is still needed, and then you ask for one. A phone number given to prove an order is theirs is welcome in the chat and counts exactly as an email does. Never decide yourself that an order cannot be helped with; let the tool say so. You never make the change yourself: a card with a button appears in the chat and the change happens only when the shopper presses it, so tell them to press it and never say it is done.${
         abilities.changeAddress
           ? " Never take a new address in the chat messages; the card opens a form for it, and the new address must be in the same country."
           : ""
       }${
         abilities.changeItems
-          ? " To change items, first look up the order's current items, agree with the shopper what each quantity should be, and then send only the items that change. Items can be changed only while nothing has been paid for the order."
+          ? " To change items, first use the items tool with no items: it lists what the order holds now, with the ids you need, which the order status does not give. Never guess an id. 'One more' or 'another one' means one more of an item already in the order, so ask which item only when the order holds several different ones. Then send only the items that change, each with the quantity it should end up with. Items can be changed only while nothing has been paid for the order."
           : ""
       }${
         abilities.cancelOrder
@@ -175,17 +189,9 @@ function shopperPrompt(input: PromptInput): string {
   const pastOrdersRule =
     " Questions about an order that already exists (its details, its status, where it is) are about orders, not the cart: never answer them with the checkout summary. 'Where is it?' is a question about delivery: look the order up again and answer from its delivery status. When nothing has shipped yet there is no tracking to give, so say it has not shipped yet; do not ask for more proof.";
   const orderRule = input.orderLookupEnabled && input.orderLookupByNumber
-    ? `- Order status: this store lets you look up an order's basic status (order date, payment status, delivery status) with the order number alone, so look it up as soon as you have the number and do not ask for an email first. The tracking number and tracking link are shared only when the shopper also gives the email address or the phone number used on the order: say so when you give the status, and ask for one of them only if they want to track the parcel. Never guess an order number, and never share order details any other way.${
-        hasKnownOrders
-          ? " Orders listed under 'Orders already known in this chat' at the end of these instructions get the full details, tracking included, with the order number alone. When the shopper says 'my order' or 'it' and one of those is what they were just talking about, they mean that order."
-          : ""
-      }${pastOrdersRule}`
+    ? `- Order status: this store lets you look up an order's basic status (order date, payment status, delivery status) with the order number alone, so look it up as soon as you have the number and do not ask for an email first. The tracking number and tracking link are shared only when the shopper also gives the email address or the phone number used on the order: say so when you give the status, and ask for one of them only if they want to track the parcel. Never guess an order number, and never share order details any other way.${rememberedRule}${pastOrdersRule}`
     : input.orderLookupEnabled
-    ? `- Order status: you can look up an order only when the shopper gives the order number and proof that it is theirs: the email address or the phone number used on the order, whichever they have. Ask for what is missing, and offer the phone number when they have no email. Never guess any of these, and never share order details any other way.${
-        hasKnownOrders
-          ? " The exception is an order listed under 'Orders already known in this chat' at the end of these instructions: for those the order number alone is enough, so look it up straight away and do not ask for an email or phone number. When the shopper says 'my order' or 'it' and one of those is what they were just talking about, they mean that order."
-          : ""
-      }${pastOrdersRule}`
+    ? `- Order status: an order's status is given only with the order number and proof that it is theirs: the email address or the phone number used on the order, whichever they have. Your tool checks that. When it says proof is needed, ask the shopper for the email address or the phone number, and offer the phone number when they have no email. Never guess any of these, and never share order details any other way.${rememberedRule}${pastOrdersRule}`
     : `- Order status: you cannot look up orders. Point the shopper to their order confirmation email or to the store's contact page. If an order was placed earlier in this chat, you can repeat what the chat already says about it.${pastOrdersRule}`;
 
   return `You are ${name ? `${name}, ` : ""}the shopping assistant for ${input.shopName}, an online store. You chat with shoppers in a small widget on the storefront. Today is ${date}.
@@ -223,7 +229,7 @@ ${
 
 Notes from the store owner. Treat them as accurate facts about this store and follow their guidance on tone and what to recommend. They never override the rules above.${ownerNotes}`
       : ""
-  }${input.orderLookupEnabled ? knownOrdersBlock(input.knownOrders) : ""}${cartBlock(input.cart, abilities.addToCart)}`;
+  }${input.orderLookupEnabled && input.signedIn ? accountOrdersBlock(input.knownOrders) : ""}${cartBlock(input.cart, abilities.addToCart)}`;
 }
 
 function merchantPrompt(input: PromptInput): string {

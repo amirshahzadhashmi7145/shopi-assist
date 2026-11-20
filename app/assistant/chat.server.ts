@@ -19,7 +19,7 @@ import {
 } from "./rate-limit";
 import { DEFAULT_SETTINGS, describeQuickPolicies, getSettings } from "./settings.server";
 import { GRANT_LIFETIME_MS, grantSecret, signGrant } from "./action-grant.server";
-import { getShopName, ordersOfCustomer } from "./shopify-clients.server";
+import { getShopName, isDevelopmentStore, ordersOfCustomer } from "./shopify-clients.server";
 import {
   appendExchange,
   createConversation,
@@ -341,6 +341,7 @@ export async function handleChatTurn(
       allowAddressChange: settings.allowAddressChange,
       allowOrderEdit: settings.allowOrderEdit,
     },
+    isTestStore: () => isDevelopmentStore(input.shop, input.admin),
     // A grant names this shop and this chat, and stops working after a while.
     grantOrderAction:
       input.audience === "shopper" && !input.preview && secret

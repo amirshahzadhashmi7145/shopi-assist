@@ -9,6 +9,7 @@ An embedded Shopify app (React Router template) plus a theme app extension. Read
 - Every tool declares its `audiences`. Tools reachable by `shopper` may only expose what an anonymous storefront visitor could already see. Admin-data tools are `merchant` only.
 - The exception is order status, which the merchant opts into. Full status and tracking need the order number plus proof (checkout email, or the phone number on the order), or an order the server already tied to the conversation. With the second opt-in, an order number alone gets the basics only: date, payment status, delivery status. Never add tracking, items, names or addresses to that number-only answer.
 - Every Prisma query on `Conversation`, `Message`, `ConversationOrder` or `ShopSettings` filters by the authenticated shop.
+- A guest's remembered orders (`ConversationOrder`) are never put in the system prompt. Told about them in any form, the model takes them for the only orders it may help with and turns away an order the shopper has just proved. The tools know them; the prompt only says to send every order to the tool and to ask for an email or phone when the tool says so. Only a signed-in customer's orders are listed.
 - `ConversationOrder` rows are written only by the server, after it placed the order or checked the order number and email against Shopify. Never create one from anything the browser or the model says.
 - The widget never assigns HTML strings (`innerHTML` and friends). Model output is rendered as text nodes.
 - Do not log message text, emails, tokens or webhook payloads.

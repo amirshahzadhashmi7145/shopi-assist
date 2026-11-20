@@ -794,7 +794,7 @@ describe("the tools that start a change", () => {
         storefront: routedGraphql({ ShopiAssistVariantsForOrder: () => ({ nodes: [null] }) }),
       }),
     );
-    expect(madeUp.json.error).toMatch(/Variant 999 does not exist/);
+    expect(madeUp.json.error).toMatch(/Variant 999 is not in this order and is not a product of this store/);
 
     const paid = shopifyOrder({ displayFinancialStatus: "PAID", totalReceivedSet: set("125.0") });
     const paidChange = await run(

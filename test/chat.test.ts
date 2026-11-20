@@ -324,8 +324,9 @@ describe("handleChatTurn", () => {
       { id: "gid://shopify/Order/1001", name: "#1001", source: "verified" },
     ]);
 
-    // Turn 2: "where is it?" The assistant is told the order is known and can
-    // look it up with the number alone.
+    // Turn 2: "where is it?" The assistant looks it up with the number alone.
+    // A guest's remembered orders are not put in the prompt (the model takes
+    // them for the only orders it may help with); the tool knows them.
     const provider = scriptedProvider([
       callTool("get_order_status", { orderNumber: "1001" }),
       text("It has shipped."),
@@ -335,7 +336,7 @@ describe("handleChatTurn", () => {
       { provider },
     );
     const system = provider.requests[0].messages[0].content as string;
-    expect(system).toContain("Orders already known in this chat:\n- #1001 (already proved to be the shopper's)");
+    expect(system).not.toContain("#1001");
     expect(system).toMatch(/the order number alone is enough/);
     const toolResult = provider.requests[1].messages.at(-1)!;
     expect(toolResult.content).toContain('"fulfillmentStatus":"FULFILLED"');
