@@ -418,6 +418,58 @@ describe("system prompts", () => {
     expect(lookupOff).toMatch(/you cannot look up orders/);
   });
 
+  it("explains order changes only as far as the store allows them", () => {
+    const base = { addToCart: true, checkout: true, returns: true };
+
+    const none = buildSystemPrompt({ ...input, audience: "shopper", abilities: base });
+    expect(none).toMatch(/you cannot cancel an order or change its address or items/);
+
+    const all = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...base, cancelOrder: true, changeAddress: true, changeItems: true },
+    });
+    expect(all).toMatch(/start to cancel it, or change its delivery address, or change its items/);
+    expect(all).toMatch(/only before the order starts shipping/);
+    expect(all).toMatch(/an order number alone is never enough to change anything/);
+    expect(all).toMatch(/the change happens only when the shopper presses it/);
+    expect(all).toMatch(/Never take a new address in the chat messages/);
+    expect(all).toMatch(/call it a request and never promise a refund/);
+    expect(all).toMatch(/a return can be requested once it arrives/);
+
+    const cancelOnly = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...base, returns: false, cancelOrder: true },
+    });
+    expect(cancelOnly).toMatch(/you can start to cancel it\./);
+    expect(cancelOnly).not.toMatch(/new address/);
+    expect(cancelOnly).not.toMatch(/a return can be requested/);
+  });
+
+  it("tells the assistant when the shopper is signed in", () => {
+    const signedIn = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      orderLookupEnabled: true,
+      signedIn: true,
+      knownOrders: [{ id: "gid://shopify/Order/7", name: "#1007", source: "customer" }],
+    });
+    expect(signedIn).toMatch(/This shopper is signed in to their account on this store/);
+    expect(signedIn).toContain("- #1007 (theirs: they are signed in to their account)");
+
+    const noOrders = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      orderLookupEnabled: true,
+      signedIn: true,
+    });
+    expect(noOrders).toMatch(/They have no recent orders on this account/);
+
+    const guest = buildSystemPrompt({ ...input, audience: "shopper", orderLookupEnabled: true });
+    expect(guest).not.toMatch(/signed in/);
+  });
+
   it("keeps owner notes out of the merchant assistant's prompt", () => {
     const prompt = buildSystemPrompt({
       ...input,

@@ -440,6 +440,18 @@ a.sa-card-title:hover {
   filter: brightness(1.08);
 }
 
+/* For the one button that cannot be undone: cancelling an order. */
+.sa-card-button-danger {
+  border-color: var(--sa-danger);
+  background: var(--sa-danger);
+  color: #ffffff;
+}
+
+.sa-card-button-danger:hover {
+  border-color: var(--sa-danger);
+  filter: brightness(1.08);
+}
+
 .sa-card-button:disabled {
   cursor: default;
   opacity: 0.7;
@@ -447,7 +459,8 @@ a.sa-card-title:hover {
 
 /* Order summary ----------------------------------------------------------- */
 
-.sa-order {
+.sa-order,
+.sa-action {
   display: flex;
   flex-direction: column;
   gap: 8px;

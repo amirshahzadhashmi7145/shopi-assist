@@ -14,13 +14,15 @@ embedded = true
 #   unauthenticated_read_product_listings  storefront widget: catalog search, best sellers, product details
 #   write_app_proxy                        lets the app register the /apps/shopi-assist storefront proxy
 #   write_returns                          shopper return requests (opt-in); the merchant approves each one
+#   write_orders                           shopper-confirmed changes to their own unshipped order (opt-in): cancel, new address
+#   write_order_edits                      shopper-confirmed item changes to their own unshipped, unpaid order (opt-in)
 #   write_draft_orders                     pay-on-delivery orders from the chat form (opt-in): price, create, complete
 #   write_payment_terms                    marks those orders "due on fulfillment", so they are unpaid, not paid
 #
 # Note: linking the project to a new app (`shopify app dev --reset`) rewrites
 # this file from the app's remote settings and can blank this line. If the
 # assistant suddenly cannot read anything, check here first.
-scopes = "read_products,read_orders,read_reports,unauthenticated_read_product_listings,write_app_proxy,write_draft_orders,write_payment_terms,write_returns"
+scopes = "read_products,read_orders,read_reports,unauthenticated_read_product_listings,write_app_proxy,write_draft_orders,write_order_edits,write_orders,write_payment_terms,write_returns"
 
 [webhooks]
 api_version = "2026-10"

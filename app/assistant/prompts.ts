@@ -20,7 +20,13 @@ export interface PromptInput {
     placeOrder?: boolean;
     /** The order summary offers a pay-on-delivery order form. */
     chatOrders?: boolean;
+    /** Changes to an existing order, each confirmed by the shopper with a button. */
+    cancelOrder?: boolean;
+    changeAddress?: boolean;
+    changeItems?: boolean;
   };
+  /** The shopper is signed in to their store account (Shopify says so). */
+  signedIn?: boolean;
   /** Plain sentences built from the merchant's dropdown picks. */
   quickPolicies?: string;
   /** Written by the merchant in setup. Every field is optional. */
@@ -69,7 +75,13 @@ function knownOrdersBlock(orders: KnownOrder[] | undefined): string {
   const lines = orders
     .map((order) => {
       const name = order.name.replace(/[^#A-Za-z0-9\-_.]/g, "").slice(0, 40);
-      return `- ${name} (${order.source === "placed" ? "placed in this chat" : "already proved to be the shopper's"})`;
+      const how =
+        order.source === "placed"
+          ? "placed in this chat"
+          : order.source === "customer"
+            ? "theirs: they are signed in to their account"
+            : "already proved to be the shopper's";
+      return `- ${name} (${how})`;
     })
     .join("\n");
   return `
@@ -133,6 +145,33 @@ function shopperPrompt(input: PromptInput): string {
       : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart. You cannot change the cart; tell shoppers to edit it on the cart page.";
 
   const hasKnownOrders = Boolean(input.knownOrders?.length);
+  const signedInRule = input.signedIn
+    ? `\n- This shopper is signed in to their account on this store. ${
+        hasKnownOrders
+          ? "Their recent orders are among the orders listed as already known in this chat, so never ask them for an order number's email or phone. When they say 'my order' without a number, they mean the first of those unless they say otherwise; if several could be meant, ask which."
+          : "They have no recent orders on this account."
+      }`
+    : "";
+  const changes = [
+    abilities.cancelOrder ? "cancel it" : "",
+    abilities.changeAddress ? "change its delivery address" : "",
+    abilities.changeItems ? "change its items" : "",
+  ].filter(Boolean);
+  const changesRule = changes.length
+    ? `\n- Changing an existing order: for the shopper's own order you can start to ${changes.join(", or ")}. Each works only before the order starts shipping; your tool checks that and tells you when it is too late, and then you say so plainly${abilities.returns ? " and mention that a return can be requested once it arrives" : ""}. The order must be one already known in this chat, or the shopper must give its number with the email address or phone number on it; an order number alone is never enough to change anything. You never make the change yourself: a card with a button appears in the chat and the change happens only when the shopper presses it, so tell them to press it and never say it is done.${
+        abilities.changeAddress
+          ? " Never take a new address in the chat messages; the card opens a form for it, and the new address must be in the same country."
+          : ""
+      }${
+        abilities.changeItems
+          ? " To change items, first look up the order's current items, agree with the shopper what each quantity should be, and then send only the items that change. Items can be changed only while nothing has been paid for the order."
+          : ""
+      }${
+        abilities.cancelOrder
+          ? " A paid order is not cancelled in the chat: the button sends the store a cancellation request, so call it a request and never promise a refund."
+          : ""
+      }`
+    : "\n- Changing an existing order: you cannot cancel an order or change its address or items. Tell the shopper to contact the store.";
   const pastOrdersRule =
     " Questions about an order that already exists (its details, its status, where it is) are about orders, not the cart: never answer them with the checkout summary. 'Where is it?' is a question about delivery: look the order up again and answer from its delivery status. When nothing has shipped yet there is no tracking to give, so say it has not shipped yet; do not ask for more proof.";
   const orderRule = input.orderLookupEnabled && input.orderLookupByNumber
@@ -167,7 +206,7 @@ ${
       : "- You cannot add items to the cart. Tell shoppers to use the Add to cart button on the product page."
   }
 ${checkoutRule}
-${orderRule}
+${orderRule}${signedInRule}${changesRule}
 ${cartRule}
 ${
     abilities.returns

@@ -50,6 +50,11 @@ On a development store the order form shows a **Fill test details** button, and 
 | Order status, number only | Tick "Let shoppers check status with the order number alone", then "status of order 1002" | Date, payment and delivery status, and an offer of tracking with email or phone |
 | Order status, no email | "Order 1002, my phone is +1 202 555 0143" | Full status |
 | State list in the order form | Open the order form, change the country | The state box becomes a list for countries with states |
+| Cancel an order | Tick "Cancel orders". "Cancel order 1002, my phone is +1 202 555 0143, I changed my mind" | A card; pressing Cancel order cancels it in admin |
+| Cancel a shipped order | Mark a dummy order fulfilled in admin, then ask to cancel it | "Already being prepared or has shipped", no card |
+| New address | Tick "Change the delivery address". "Change the address for order 1003" with proof | A card, then a form; the order shows the new address and the tag `address-changed-in-chat` |
+| Change items | Tick "Change the items in an order". "Add another one to order 1003" with proof | A card listing the order after the change; pressing Confirm change updates it |
+| Signed-in customer | Tick "Recognise signed-in customers", sign in on the storefront, "where is my order?" | Answers without asking for a number or email |
 | Wrong email | Same order number, another email | "No order matches" |
 | Return request | Mark a dummy order fulfilled in admin first, then "I want to return order #1002", email, reason | A return request in admin |
 

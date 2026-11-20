@@ -273,6 +273,13 @@ const placeSchema = orderSchema.extend({
 
 type OrderDetails = z.infer<typeof orderSchema>;
 
+/** Who and where, as the forms collect them. Shared with address changes. */
+export const deliverySchema = z.object({
+  contact: orderSchema.shape.contact,
+  address: orderSchema.shape.address,
+});
+export type DeliveryDetails = z.infer<typeof deliverySchema>;
+
 const FORM_FIELDS: readonly OrderField[] = [
   "firstName",
   "lastName",
@@ -286,7 +293,7 @@ const FORM_FIELDS: readonly OrderField[] = [
   "countryCode",
 ];
 
-function parse<Schema extends z.ZodType>(schema: Schema, body: unknown): z.infer<Schema> {
+export function parse<Schema extends z.ZodType>(schema: Schema, body: unknown): z.infer<Schema> {
   const parsed = schema.safeParse(body);
   if (parsed.success) return parsed.data;
 
@@ -343,7 +350,7 @@ function enforce(
 // Shopify calls
 // ---------------------------------------------------------------------------
 
-interface UserError {
+export interface UserError {
   field?: string[] | null;
   message: string;
 }
@@ -368,8 +375,8 @@ interface CalculatedDraftOrder {
   totalPriceSet: MoneySet;
 }
 
-function draftOrderInput(order: OrderDetails): Record<string, unknown> {
-  const { contact, address } = order;
+/** The delivery address in the shape Shopify's Admin API takes. */
+export function shippingAddressInput({ contact, address }: DeliveryDetails): Record<string, unknown> {
   // People type either "ON" or "Ontario". A short code goes in the code
   // field; a name goes in the older free-text field, which Shopify matches
   // against the country's provinces.
@@ -380,27 +387,31 @@ function draftOrderInput(order: OrderDetails): Record<string, unknown> {
       : {};
 
   return {
+    firstName: contact.firstName || null,
+    lastName: contact.lastName,
+    address1: address.address1,
+    address2: address.address2 || null,
+    city: address.city,
+    zip: address.zip || null,
+    countryCode: address.countryCode,
+    phone: contact.phone,
+    ...province,
+  };
+}
+
+function draftOrderInput(order: OrderDetails): Record<string, unknown> {
+  return {
     lineItems: order.items.map((item) => ({
       variantId: `gid://shopify/ProductVariant/${item.variantId}`,
       quantity: item.quantity,
     })),
-    shippingAddress: {
-      firstName: contact.firstName || null,
-      lastName: contact.lastName,
-      address1: address.address1,
-      address2: address.address2 || null,
-      city: address.city,
-      zip: address.zip || null,
-      countryCode: address.countryCode,
-      phone: contact.phone,
-      ...province,
-    },
-    ...(contact.email ? { email: contact.email } : {}),
+    shippingAddress: shippingAddressInput(order),
+    ...(order.contact.email ? { email: order.contact.email } : {}),
   };
 }
 
 /** Shopify's own wording for a rejected address, mapped back to the form. */
-function fieldErrors(errors: UserError[]): Partial<Record<OrderField, string>> {
+export function fieldErrors(errors: UserError[]): Partial<Record<OrderField, string>> {
   const fields: Partial<Record<OrderField, string>> = {};
   const names: Record<string, OrderField> = {
     address1: "address1",

@@ -1057,6 +1057,11 @@
       });
     }
 
+    if (action.type === "order_action") {
+      this.showOrderAction(action);
+      return Promise.resolve();
+    }
+
     if (action.type === "clear_cart") {
       return this.clearCart().then(function (cleared) {
         self.pushEntry(
@@ -1415,6 +1420,8 @@
   /** Opens the delivery details form under the chat, once. */
   Widget.prototype.openOrderForm = function () {
     var self = this;
+    // A form for something else (a new address) makes way for this one.
+    if (this.orderForm && this.orderForm.mode) this.closeOrderForm();
     if (this.orderForm) {
       var first = this.orderForm.el.querySelector("input, button");
       if (first) first.focus();
@@ -1483,7 +1490,10 @@
     var form = state.el;
     form.textContent = "";
     state.inputs = {};
-    form.appendChild(el("h3", "sa-order-title", "Delivery details"));
+    var forAddress = state.mode === "address";
+    form.appendChild(
+      el("h3", "sa-order-title", forAddress ? "New delivery address" : "Delivery details"),
+    );
 
     if (!state.countries.length) {
       form.appendChild(
@@ -1572,6 +1582,8 @@
     };
 
     ORDER_FIELDS.forEach(function (spec) {
+      // A new address for an existing order: the store already has the email.
+      if (forAddress && spec.name === "email") return;
       if (spec.kind === "country") {
         var countries = el("select");
         state.countries.forEach(function (entry) {
@@ -1622,7 +1634,11 @@
     form.appendChild(state.statusEl);
 
     var actions = el("div", "sa-order-actions");
-    var review = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Review order");
+    var review = el(
+      "button",
+      "sa-card-button sa-card-button-primary sa-order-checkout",
+      forAddress ? "Save address" : "Review order",
+    );
     review.type = "submit";
     var cancel = el("button", "sa-card-button", "Cancel");
     cancel.type = "button";
@@ -1638,12 +1654,206 @@
       if (state.busy) return;
       keepValues();
       state.errors = {};
-      self.quoteOrder();
+      if (forAddress) self.saveAddress();
+      else self.quoteOrder();
     };
 
     var firstInvalid = form.querySelector('[aria-invalid="true"]');
-    (firstInvalid || state.inputs.email).focus();
+    (firstInvalid || state.inputs.email || state.inputs.firstName).focus();
     this.scrollToEnd();
+  };
+
+  // ------------------------------------------- changes to an existing order
+
+  var ORDER_ACTION_KINDS = { cancel: true, cancel_request: true, address: true, edit: true };
+
+  /** Takes any confirmation card off the screen. Cards are never saved. */
+  Widget.prototype.dropActionCards = function () {
+    var cards = this.messagesEl.querySelectorAll(".sa-action");
+    for (var i = 0; i < cards.length; i += 1) cards[i].parentNode.removeChild(cards[i]);
+  };
+
+  /**
+   * A card asking the shopper to confirm a change to their own order: cancel
+   * it, change its items, or send it somewhere else. The assistant only
+   * proposes; nothing happens to the order until the button here is pressed,
+   * and then it is the store's server, not this page, that decides.
+   */
+  Widget.prototype.showOrderAction = function (action) {
+    var self = this;
+    if (
+      !ORDER_ACTION_KINDS[action.kind] ||
+      typeof action.token !== "string" ||
+      typeof action.title !== "string"
+    ) {
+      return;
+    }
+    // One at a time: an older card may describe an order that has since changed.
+    this.dropActionCards();
+    if (this.orderForm && this.orderForm.mode) this.closeOrderForm();
+
+    var card = el("section", "sa-action");
+    card.setAttribute("aria-label", action.title.slice(0, 200));
+    card.appendChild(el("h3", "sa-order-title", action.title.slice(0, 200)));
+
+    var lines = (Array.isArray(action.lines) ? action.lines : []).filter(function (line) {
+      return typeof line === "string";
+    });
+    if (lines.length) {
+      var list = el("ul", "sa-order-lines");
+      lines.slice(0, 20).forEach(function (line) {
+        list.appendChild(el("li", "sa-order-line", line.slice(0, 200)));
+      });
+      card.appendChild(list);
+    }
+    if (typeof action.note === "string" && action.note) {
+      card.appendChild(el("p", "sa-order-note", action.note.slice(0, 300)));
+    }
+
+    var status = el("p", "sa-order-status");
+    status.hidden = true;
+    card.appendChild(status);
+    var say = function (text, isError) {
+      status.textContent = text;
+      status.hidden = !text;
+      status.className = "sa-order-status" + (isError ? " sa-order-status-error" : "");
+      if (isError) status.setAttribute("role", "alert");
+      else status.removeAttribute("role");
+    };
+
+    var actions = el("div", "sa-order-actions");
+    var confirm = el(
+      "button",
+      "sa-card-button sa-order-checkout " +
+        (action.kind === "cancel" ? "sa-card-button-danger" : "sa-card-button-primary"),
+      typeof action.confirmLabel === "string" ? action.confirmLabel.slice(0, 40) : "Confirm",
+    );
+    confirm.type = "button";
+    var dismiss = el("button", "sa-card-button", action.kind === "cancel" ? "Keep my order" : "Not now");
+    dismiss.type = "button";
+    dismiss.addEventListener("click", function () {
+      if (self.orderForm && self.orderForm.card === card) self.closeOrderForm();
+      if (card.parentNode) card.parentNode.removeChild(card);
+    });
+
+    confirm.addEventListener("click", function () {
+      if (action.kind === "address") {
+        self.openAddressForm(action, card);
+        return;
+      }
+      confirm.disabled = true;
+      dismiss.disabled = true;
+      say("One moment…", false);
+      self.postOrder({ step: action.kind, token: action.token }).then(function (result) {
+        if (result.ok && typeof result.body.message === "string") {
+          if (card.parentNode) card.parentNode.removeChild(card);
+          self.pushEntry({ role: "notice", tone: "success", text: result.body.message });
+          return;
+        }
+        var error = result.body.error || {};
+        say(
+          typeof error.message === "string"
+            ? error.message
+            : "We couldn't reach the store. Check your connection and try again.",
+          true,
+        );
+        dismiss.disabled = false;
+        // An expired or refused request will not succeed on a second press.
+        confirm.disabled = error.code === "invalid_request" || error.code === "unavailable";
+      });
+    });
+
+    actions.appendChild(confirm);
+    actions.appendChild(dismiss);
+    card.appendChild(actions);
+    this.messagesEl.appendChild(card);
+    this.scrollToEnd();
+  };
+
+  /** Opens the address form for an order whose delivery address may change. */
+  Widget.prototype.openAddressForm = function (action, card) {
+    var self = this;
+    if (this.orderForm && this.orderForm.card === card) {
+      var first = this.orderForm.el.querySelector("input, select");
+      if (first) first.focus();
+      return Promise.resolve();
+    }
+    this.closeOrderForm();
+
+    var form = el("form", "sa-order sa-order-form");
+    form.noValidate = true;
+    form.setAttribute("aria-label", "New delivery address");
+    var locked = /^[A-Z]{2}$/.test(action.countryCode || "") ? action.countryCode : "";
+    var state = {
+      el: form,
+      mode: "address",
+      token: action.token,
+      card: card,
+      values: { countryCode: locked },
+      inputs: {},
+      errors: {},
+      busy: false,
+      regions: readRegions(),
+    };
+    this.orderForm = state;
+    this.messagesEl.appendChild(form);
+
+    return this.loadCountries().then(function (countries) {
+      if (self.orderForm !== state) return;
+      // The address may change, the country may not: offer only that one.
+      var same = countries.filter(function (country) {
+        return country.code === locked;
+      });
+      if (!same.length && locked) {
+        var name = locked;
+        try {
+          name = new Intl.DisplayNames([self.config.locale || "en"], { type: "region" }).of(locked) || locked;
+        } catch (error) {
+          name = locked;
+        }
+        same = [{ code: locked, name: name }];
+      }
+      state.countries = same.length ? same : countries;
+      self.renderOrderDetails();
+    });
+  };
+
+  /** Sends the new address for the order the form was opened for. */
+  Widget.prototype.saveAddress = function () {
+    var self = this;
+    var state = this.orderForm;
+    var values = state.values;
+    this.setOrderBusy(true);
+    this.setOrderStatus("Saving your new address…");
+
+    return this.postOrder({
+      step: "address",
+      token: state.token,
+      contact: {
+        firstName: values.firstName || "",
+        lastName: values.lastName,
+        phone: values.phone,
+        email: "",
+      },
+      address: {
+        address1: values.address1,
+        address2: values.address2 || "",
+        city: values.city,
+        province: values.province || "",
+        zip: values.zip || "",
+        countryCode: values.countryCode,
+      },
+    }).then(function (result) {
+      if (self.orderForm !== state) return;
+      self.setOrderBusy(false);
+      if (result.ok && typeof result.body.message === "string") {
+        self.closeOrderForm();
+        if (state.card && state.card.parentNode) state.card.parentNode.removeChild(state.card);
+        self.pushEntry({ role: "notice", tone: "success", text: result.body.message });
+        return;
+      }
+      self.showOrderError(result.body);
+    });
   };
 
   /** What the app needs to price or place the order. */

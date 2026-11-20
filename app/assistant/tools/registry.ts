@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { OrderActionGrant } from "../action-grant.server";
 import type { LlmToolCall, LlmToolSpec } from "../llm/provider";
 import type { RateLimiter } from "../rate-limit";
 import type {
@@ -32,6 +33,10 @@ export interface ToolContext {
     allowAddToCart: boolean;
     allowCheckout: boolean;
     allowReturns: boolean;
+    /** Changes to an existing order. All off unless the merchant opts in. */
+    allowOrderCancel?: boolean;
+    allowAddressChange?: boolean;
+    allowOrderEdit?: boolean;
   };
   buyer: {
     /** ISO country code for localized prices, e.g. "US". */
@@ -51,6 +56,13 @@ export interface ToolContext {
    * its order form, or proved to be the shopper's earlier in the chat.
    */
   knownOrders?: KnownOrder[];
+  /**
+   * Signs a grant for one change to one order, for the widget to bring back
+   * when the shopper confirms. Missing when the server cannot sign.
+   */
+  grantOrderAction?: (
+    grant: Pick<OrderActionGrant, "orderId" | "orderName" | "kind" | "reason" | "changes" | "countryCode">,
+  ) => string;
   /** Ties an order the shopper has just proved is theirs to the conversation. */
   rememberOrder?: (order: { id: string; name: string }) => Promise<void>;
   rateLimiter: RateLimiter;

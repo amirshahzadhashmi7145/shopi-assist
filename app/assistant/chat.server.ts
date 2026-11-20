@@ -18,7 +18,8 @@ import {
   type RateLimiter,
 } from "./rate-limit";
 import { DEFAULT_SETTINGS, describeQuickPolicies, getSettings } from "./settings.server";
-import { getShopName } from "./shopify-clients.server";
+import { GRANT_LIFETIME_MS, grantSecret, signGrant } from "./action-grant.server";
+import { getShopName, ordersOfCustomer } from "./shopify-clients.server";
 import {
   appendExchange,
   createConversation,
@@ -298,15 +299,36 @@ export async function handleChatTurn(
     }
   }
 
+  // A shopper signed in to their store account: their own recent orders are
+  // known without proof. The id is the one Shopify signed onto the request.
+  const signedIn =
+    input.audience === "shopper" &&
+    !input.preview &&
+    Boolean(input.customerId) &&
+    settings.recogniseCustomers &&
+    settings.orderLookupEnabled;
+  if (signedIn && input.admin) {
+    const theirs = await ordersOfCustomer(input.shop, input.customerId!, input.admin, now.getTime());
+    for (const order of theirs) {
+      if (!orders.some((known) => known.id === order.id)) orders.push(order);
+    }
+  }
+  const secret = grantSecret();
+
   // 5. Run the model with the tools this audience is allowed to use.
   const context: ToolContext = {
     shop: input.shop,
     audience: input.audience,
     storefront: input.storefront,
     // Shoppers get no Admin API access at all unless the merchant switched
-    // on a feature that needs it (order status or return requests).
+    // on a feature that needs it (order status, returns or order changes).
     admin:
-      input.audience === "merchant" || settings.orderLookupEnabled || settings.allowReturns
+      input.audience === "merchant" ||
+      settings.orderLookupEnabled ||
+      settings.allowReturns ||
+      settings.allowOrderCancel ||
+      settings.allowAddressChange ||
+      settings.allowOrderEdit
         ? input.admin
         : undefined,
     settings: {
@@ -315,7 +337,24 @@ export async function handleChatTurn(
       allowAddToCart: settings.allowAddToCart,
       allowCheckout: settings.allowCheckout,
       allowReturns: settings.allowReturns,
+      allowOrderCancel: settings.allowOrderCancel,
+      allowAddressChange: settings.allowAddressChange,
+      allowOrderEdit: settings.allowOrderEdit,
     },
+    // A grant names this shop and this chat, and stops working after a while.
+    grantOrderAction:
+      input.audience === "shopper" && !input.preview && secret
+        ? (grant) =>
+            signGrant(
+              {
+                ...grant,
+                shop: input.shop,
+                conversationId: conversation.id,
+                exp: now.getTime() + GRANT_LIFETIME_MS,
+              },
+              secret,
+            )
+        : undefined,
     buyer: { country, language, ip: input.ip },
     cart: input.audience === "shopper" ? readCart(input.cart) : undefined,
     knownOrders: orders,
@@ -357,7 +396,11 @@ export async function handleChatTurn(
           chatOrders:
             settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
           returns: tools.some((tool) => tool.name === "request_return"),
+          cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
+          changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
+          changeItems: tools.some((tool) => tool.name === "change_order_items"),
         },
+        signedIn,
         quickPolicies: describeQuickPolicies(settings),
         knowledge: {
           businessDescription: settings.businessDescription,

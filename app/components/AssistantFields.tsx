@@ -24,6 +24,10 @@ export const FIELD_GROUPS = {
     "allowChatOrders",
     "orderLookupEnabled",
     "orderLookupByNumber",
+    "recogniseCustomers",
+    "allowOrderCancel",
+    "allowAddressChange",
+    "allowOrderEdit",
     "allowReturns",
   ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
@@ -75,6 +79,30 @@ export function AbilityFields({ settings }: FieldGroupProps) {
         label="Let shoppers check status with the order number alone"
         details="Without the email, the assistant shares only the basics: order date, payment status and delivery status. Order numbers are easy to guess, so anyone could see those basics for any order. Tracking numbers, tracking links and return requests still need the checkout email. Needs 'Check order status'."
         {...checked(settings.orderLookupByNumber)}
+      />
+      <s-checkbox
+        name="recogniseCustomers"
+        label="Recognise signed-in customers"
+        details="A shopper who is signed in to their account on your store can ask about their own recent orders without giving an order number or email. Needs 'Check order status'."
+        {...checked(settings.recogniseCustomers)}
+      />
+      <s-checkbox
+        name="allowOrderCancel"
+        label="Cancel orders"
+        details="Only before the order starts shipping, and only when the shopper proves it is theirs and presses a confirm button. An order nothing has been paid for is cancelled and restocked. A paid order is not cancelled or refunded by the assistant: it is tagged 'cancellation-requested' for you to handle."
+        {...checked(settings.allowOrderCancel)}
+      />
+      <s-checkbox
+        name="allowAddressChange"
+        label="Change the delivery address"
+        details="Only before the order starts shipping, within the same country, for an order the shopper proves is theirs. They type the new address into a form, not the chat. The order is tagged 'address-changed-in-chat' so you can check it."
+        {...checked(settings.allowAddressChange)}
+      />
+      <s-checkbox
+        name="allowOrderEdit"
+        label="Change the items in an order"
+        details="Only before the order starts shipping and only while nothing has been paid (pay-on-delivery orders): the shopper can add or remove items and change quantities, then confirms the new order with a button. The order is tagged 'changed-in-chat'."
+        {...checked(settings.allowOrderEdit)}
       />
       <s-checkbox
         name="allowReturns"

@@ -855,7 +855,7 @@ interface VerifiedOrder {
   }>;
 }
 
-const orderProofSchema = {
+export const orderProofSchema = {
   orderNumber: z
     .string()
     .trim()
@@ -890,7 +890,7 @@ const ORDER_NEEDS_EMAIL =
  * used to guess. It throws the same error for "no such order" and "wrong
  * email", so it cannot be used to discover which order numbers exist.
  */
-async function findVerifiedOrder(
+export async function findVerifiedOrder(
   context: ToolContext,
   orderNumber: string,
   email: string | undefined,

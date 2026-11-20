@@ -48,6 +48,10 @@ export const settingsSchema = z.object({
   allowCheckout: z.boolean(),
   allowReturns: z.boolean(),
   allowChatOrders: z.boolean(),
+  allowOrderCancel: z.boolean(),
+  allowAddressChange: z.boolean(),
+  allowOrderEdit: z.boolean(),
+  recogniseCustomers: z.boolean(),
   // Quick policy picks.
   returnWindow: choice(POLICY_CHOICES.returnWindow),
   returnShipping: choice(POLICY_CHOICES.returnShipping),
@@ -77,6 +81,10 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   allowCheckout: true,
   allowReturns: false,
   allowChatOrders: false,
+  allowOrderCancel: false,
+  allowAddressChange: false,
+  allowOrderEdit: false,
+  recogniseCustomers: false,
   returnWindow: "",
   returnShipping: "",
   processingTime: "",
@@ -113,6 +121,10 @@ export async function getSettings(
     allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
     allowChatOrders: row.allowChatOrders,
+    allowOrderCancel: row.allowOrderCancel,
+    allowAddressChange: row.allowAddressChange,
+    allowOrderEdit: row.allowOrderEdit,
+    recogniseCustomers: row.recogniseCustomers,
     returnWindow: pick(POLICY_CHOICES.returnWindow, row.returnWindow),
     returnShipping: pick(POLICY_CHOICES.returnShipping, row.returnShipping),
     processingTime: pick(POLICY_CHOICES.processingTime, row.processingTime),
@@ -157,6 +169,10 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "allowCheckout",
   "allowReturns",
   "allowChatOrders",
+  "allowOrderCancel",
+  "allowAddressChange",
+  "allowOrderEdit",
+  "recogniseCustomers",
 ];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
 

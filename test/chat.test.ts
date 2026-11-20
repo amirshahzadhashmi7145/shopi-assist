@@ -381,6 +381,70 @@ describe("handleChatTurn", () => {
     expect(await system()).toMatch(/with the order number alone, so look it up as soon as you have the number/);
   });
 
+  it("recognises a signed-in customer's own orders, only when the merchant allows it", async () => {
+    const adminFor = (name: string) =>
+      fakeGraphql({
+        shop: { name: "Shop A" },
+        orders: { nodes: [{ id: `gid://shopify/Order/${name.slice(1)}`, name }] },
+      });
+    const prompt = async (overrides: Partial<ChatTurnInput>) => {
+      const provider = scriptedProvider([text("ok")]);
+      const admin = overrides.admin as ReturnType<typeof fakeGraphql>;
+      await turn(overrides, { provider });
+      return { system: provider.requests[0].messages[0].content as string, admin };
+    };
+
+    await saveSettings(SHOP_A, { orderLookupEnabled: true, recogniseCustomers: true }, db);
+    const signedIn = await prompt({ customerId: "7001", admin: adminFor("#2001") });
+    expect(signedIn.system).toContain("- #2001 (theirs: they are signed in to their account)");
+    expect(signedIn.system).toMatch(/This shopper is signed in/);
+    // Asked of Shopify by the customer id Shopify signed, and nothing else.
+    expect(signedIn.admin.calls.at(-1)!.variables).toEqual({ query: "customer_id:7001" });
+
+    // A guest gets no such list.
+    const guest = await prompt({ visitorId: "visitor-0002", admin: adminFor("#2002") });
+    expect(guest.system).not.toMatch(/signed in/);
+    expect(guest.system).not.toContain("#2002");
+
+    // Nor does anyone while the merchant has it switched off.
+    await saveSettings(SHOP_A, { recogniseCustomers: false }, db);
+    const off = await prompt({ visitorId: "visitor-0003", customerId: "7003", admin: adminFor("#2003") });
+    expect(off.system).not.toContain("#2003");
+
+    // Staff trying the assistant in the admin are not a customer.
+    await saveSettings(SHOP_A, { recogniseCustomers: true }, db);
+    const preview = await prompt({ preview: true, customerId: "7004", admin: adminFor("#2004") });
+    expect(preview.system).not.toContain("#2004");
+  });
+
+  it("offers order changes only to shoppers on a server that can sign a grant", async () => {
+    await saveSettings(
+      SHOP_A,
+      { allowOrderCancel: true, allowAddressChange: true, allowOrderEdit: true },
+      db,
+    );
+    const tools = async (overrides: Partial<ChatTurnInput> = {}) => {
+      const provider = scriptedProvider([text("ok")]);
+      await turn({ admin: fakeGraphql({ shop: { name: "Shop A" } }), ...overrides }, { provider });
+      return provider.requests[0].tools.map((tool) => tool.name);
+    };
+    const changes = ["cancel_order", "change_delivery_address", "change_order_items"];
+    const before = process.env.SHOPIFY_API_SECRET;
+
+    try {
+      process.env.SHOPIFY_API_SECRET = "test-signing-secret";
+      expect(await tools()).toEqual(expect.arrayContaining(changes));
+      // The admin's "try it as a shopper" chat cannot change real orders.
+      for (const name of changes) expect(await tools({ preview: true })).not.toContain(name);
+
+      delete process.env.SHOPIFY_API_SECRET;
+      for (const name of changes) expect(await tools({ visitorId: "visitor-0009" })).not.toContain(name);
+    } finally {
+      if (before === undefined) delete process.env.SHOPIFY_API_SECRET;
+      else process.env.SHOPIFY_API_SECRET = before;
+    }
+  });
+
   it("passes the shopper's cart to the assistant, and only a well-formed one", async () => {
     const system = async (overrides: Partial<ChatTurnInput>) => {
       const provider = scriptedProvider([text("ok")]);

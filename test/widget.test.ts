@@ -1157,6 +1157,180 @@ describe("chat widget", () => {
     });
   });
 
+  describe("changes to an existing order", () => {
+    const cancelCard = (overrides: Record<string, unknown> = {}) => ({
+      type: "order_action",
+      kind: "cancel",
+      order: "#1005",
+      token: "signed-grant-for-1005",
+      title: "Cancel order #1005?",
+      lines: ["2 \u00d7 Trail Mug", '<img src=x onerror="window.hacked=1">'],
+      note: "Nothing has been charged for this order. Cancelling it cannot be undone.",
+      confirmLabel: "Cancel order",
+      ...overrides,
+    });
+    const orderPosts = () =>
+      orderMock.mock.calls
+        .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+
+    async function showCard(action: Record<string, unknown>) {
+      fetchMock.mockImplementation(() => reply("Press the button to confirm.", { actions: [action] }));
+      const widget = mountWidget();
+      widget.launcher.click();
+      widget.send("cancel my order 1005");
+      await flush();
+      const buttons = () =>
+        Array.from(widget.root.querySelectorAll<HTMLButtonElement>(".sa-action button"));
+      return { widget, buttons };
+    }
+
+    it("shows a card and changes nothing until the shopper presses its button", async () => {
+      orderMock.mockImplementation(() =>
+        jsonResponse({ ok: true, step: "cancel", order: { name: "#1005" }, message: "Order #1005 is cancelled." }),
+      );
+      const { widget, buttons } = await showCard(cancelCard());
+
+      const card = widget.$(".sa-action");
+      expect(card.querySelector(".sa-order-title")!.textContent).toBe("Cancel order #1005?");
+      expect(Array.from(card.querySelectorAll("li")).map((line) => line.textContent)).toEqual([
+        "2 \u00d7 Trail Mug",
+        '<img src=x onerror="window.hacked=1">',
+      ]);
+      // Whatever the server sends is shown as text, never as markup.
+      expect(card.querySelector("img")).toBeNull();
+      expect(buttons().map((button) => button.textContent)).toEqual(["Cancel order", "Keep my order"]);
+      // Showing the card asked the store for nothing.
+      expect(orderPosts()).toEqual([]);
+
+      buttons()[0].click();
+      await flush();
+
+      expect(orderPosts()).toEqual([{ step: "cancel", token: "signed-grant-for-1005" }]);
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      const notice = widget.all(".sa-notice").at(-1)!;
+      expect(notice.textContent).toBe("Order #1005 is cancelled.");
+      expect(notice.classList.contains("sa-notice-success")).toBe(true);
+
+      // The confirmation is kept for the next page; the grant is not.
+      const stored = JSON.stringify({ ...window.localStorage });
+      expect(stored).toContain("Order #1005 is cancelled.");
+      expect(stored).not.toContain("signed-grant-for-1005");
+    });
+
+    it("does nothing when the shopper keeps the order", async () => {
+      const { widget, buttons } = await showCard(cancelCard());
+      buttons()[1].click();
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      expect(orderPosts()).toEqual([]);
+    });
+
+    it("shows the store's reason when it is too late, and does not offer a second try", async () => {
+      orderMock.mockImplementation(() =>
+        jsonResponse({
+          ok: false,
+          error: {
+            code: "unavailable",
+            status: 409,
+            message: "Order #1005 is already being prepared or has shipped, so it can no longer be cancelled or changed here.",
+          },
+        }),
+      );
+      const { widget, buttons } = await showCard(cancelCard());
+      buttons()[0].click();
+      await flush();
+
+      expect(widget.$(".sa-action .sa-order-status-error").textContent).toMatch(/already being prepared/);
+      expect(buttons()[0].disabled).toBe(true);
+      expect(buttons()[1].disabled).toBe(false);
+      expect(widget.all(".sa-notice")).toHaveLength(0);
+    });
+
+    it("ignores a card that is not well formed", async () => {
+      const { widget } = await showCard(cancelCard({ kind: "refund_everything" }));
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      const noToken = await showCard(cancelCard({ token: undefined }));
+      expect(noToken.widget.root.querySelector(".sa-action")).toBeNull();
+    });
+
+    it("takes a new address in a form and sends it with the grant", async () => {
+      orderMock.mockImplementation((_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? jsonResponse({
+              ok: true,
+              step: "address",
+              order: { name: "#1005" },
+              message: "The delivery address for order #1005 is updated.",
+            })
+          : jsonResponse({
+              ok: true,
+              countries: [
+                { code: "CA", name: "Canada" },
+                { code: "US", name: "United States" },
+              ],
+            }),
+      );
+      const { widget, buttons } = await showCard(
+        cancelCard({
+          kind: "address",
+          title: "Change the delivery address for order #1005",
+          lines: [],
+          confirmLabel: "Enter new address",
+          countryCode: "US",
+        }),
+      );
+      buttons()[0].click();
+      await flush();
+
+      const form = widget.$<HTMLFormElement>(".sa-order-form");
+      expect(form.querySelector(".sa-order-title")!.textContent).toBe("New delivery address");
+      // No email, and no choice of country: the order stays where it is going.
+      expect(form.querySelector('[name="email"]')).toBeNull();
+      const country = form.querySelector<HTMLSelectElement>('[name="countryCode"]')!;
+      expect(Array.from(country.options).map((option) => option.value)).toEqual(["US"]);
+      expect(country.parentElement!.hidden).toBe(true);
+
+      const values: Record<string, string> = {
+        firstName: "Ada",
+        lastName: "Lovelace",
+        address1: "350 Fifth Avenue",
+        city: "New York",
+        province: "NY",
+        zip: "10118",
+        phone: "+1 202 555 0143",
+      };
+      for (const [name, value] of Object.entries(values)) {
+        form.querySelector<HTMLInputElement>(`[name="${name}"]`)!.value = value;
+      }
+      form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+      await flush();
+
+      expect(orderPosts()).toEqual([
+        {
+          step: "address",
+          token: "signed-grant-for-1005",
+          contact: { firstName: "Ada", lastName: "Lovelace", phone: "+1 202 555 0143", email: "" },
+          address: {
+            address1: "350 Fifth Avenue",
+            address2: "",
+            city: "New York",
+            province: "NY",
+            zip: "10118",
+            countryCode: "US",
+          },
+        },
+      ]);
+      expect(widget.root.querySelector(".sa-order-form")).toBeNull();
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+        "The delivery address for order #1005 is updated.",
+      );
+      // The address itself is kept nowhere in the browser.
+      const stored = JSON.stringify({ ...window.localStorage }) + JSON.stringify({ ...window.sessionStorage });
+      expect(stored).not.toMatch(/Lovelace|Fifth Avenue|10118/);
+    });
+  });
+
   it("tells the shopper when the cart rejects an item", async () => {
     fetchMock.mockImplementation((url: string) =>
       url === "/cart/add.js"

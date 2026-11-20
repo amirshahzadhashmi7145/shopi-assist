@@ -66,7 +66,11 @@ export interface KnownOrder {
   id: string;
   /** "#1005" */
   name: string;
-  source: "placed" | "verified";
+  /**
+   * "placed" through the chat's order form, "verified" by number plus email
+   * or phone, or the shopper's own because they are signed in ("customer").
+   */
+  source: "placed" | "verified" | "customer";
 }
 
 /** Something the server asks the storefront widget to do in the browser. */
@@ -90,6 +94,24 @@ export type ClientAction =
       items: OrderItem[];
       /** Empty the cart first, so the order holds these items and nothing else. */
       replace?: boolean;
+    }
+  /**
+   * Show a card that lets the shopper confirm a change to their own order.
+   * `token` is a signed grant for exactly that change; the server acts on it
+   * only when the shopper presses the button.
+   */
+  | {
+      type: "order_action";
+      kind: "cancel" | "cancel_request" | "address" | "edit";
+      /** "#1005" */
+      order: string;
+      token: string;
+      title: string;
+      lines: string[];
+      note?: string;
+      confirmLabel: string;
+      /** For "address": the country the new address must be in. */
+      countryCode?: string;
     }
   /** Take every line with this variant out of the cart. */
   | { type: "remove_from_cart"; variantId: string; title?: string }

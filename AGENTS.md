@@ -13,6 +13,8 @@ An embedded Shopify app (React Router template) plus a theme app extension. Read
 - The widget never assigns HTML strings (`innerHTML` and friends). Model output is rendered as text nodes.
 - Do not log message text, emails, tokens or webhook payloads.
 - Pay-on-delivery orders (`app/assistant/orders.server.ts`, `/proxy/order`) are not a model tool and must stay that way. Names, phone numbers and addresses go from the widget's form to Shopify only: never to the LLM, the transcript, the logs or browser storage. Prices come from Shopify, never from the request. Never complete a draft order without payment terms, or Shopify records it as paid.
+- Changes to an existing order (cancel, address, items) are never made by a tool. A tool returns a signed grant (`action-grant.server.ts`); the change is made by `handleOrderAction` only when the widget brings the grant back from a button press. Keep it that way, keep `blocker()` as the only test for "too late", and never grant a change for an order number alone. No money moves: nothing is cancelled or re-priced once anything has been paid.
+- A signed-in customer's id comes only from the app proxy's signed `logged_in_customer_id`.
 - Storefront API documents go in `app/assistant/tools/storefront-queries.ts`; all other `#graphql` documents are validated against the Admin schema.
 
 ## Checks to run before finishing a change

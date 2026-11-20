@@ -11,6 +11,10 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 
 import {
+  handleOrderAction,
+  ORDER_ACTION_STEPS,
+} from "../assistant/order-actions.server";
+import {
   handleChatOrder,
   listDeliveryCountries,
   orderErrorResponse,
@@ -58,13 +62,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (body instanceof Response) return body;
 
   try {
-    const result = await handleChatOrder({
-      shop: session.shop,
-      body,
-      ip: clientIp(request),
-      admin: toGraphqlFn(admin, "Admin"),
-      storefront: toGraphqlFn(storefront, "Storefront"),
-    });
+    // A confirmed change to an existing order: the body carries a signed grant.
+    const isOrderAction = (ORDER_ACTION_STEPS as readonly unknown[]).includes(body.step);
+    const result = isOrderAction
+      ? await handleOrderAction({
+          shop: session.shop,
+          body,
+          ip: clientIp(request),
+          admin: toGraphqlFn(admin, "Admin"),
+        })
+      : await handleChatOrder({
+          shop: session.shop,
+          body,
+          ip: clientIp(request),
+          admin: toGraphqlFn(admin, "Admin"),
+          storefront: toGraphqlFn(storefront, "Storefront"),
+        });
     return Response.json(result, { headers: NO_STORE });
   } catch (error) {
     return throughProxy(orderErrorResponse(error));
