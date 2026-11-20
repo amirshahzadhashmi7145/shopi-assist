@@ -122,7 +122,7 @@ function previewOrder(body) {
   if (!/^\+?\d{7,15}$/.test(String(body.contact?.phone || "").replace(/[\s().-]/g, ""))) {
     fields.phone = "Enter a phone number with 7 to 15 digits.";
   }
-  if (String(body.contact?.name || "").trim().length < 2) fields.name = "Enter your full name.";
+  if (!String(body.contact?.lastName || "").trim()) fields.lastName = "Enter your last name.";
   if (String(body.address?.address1 || "").trim().length < 3) fields.address1 = "Enter your street address.";
   if (!String(body.address?.city || "").trim()) fields.city = "Enter your city.";
   if (Object.keys(fields).length) {
@@ -206,6 +206,10 @@ function page(url) {
   data-cart-url="/cart"
   data-cart-add-url="/cart/add"
 ></div>
+<select id="shopi-assist-regions" hidden>
+  <option value="Canada" data-provinces='[["Alberta","Alberta"],["British Columbia","British Columbia"],["Ontario","Ontario"],["Quebec","Quebec"]]'>Canada</option>
+  <option value="United States" data-provinces='[["California","California"],["Illinois","Illinois"],["New York","New York"],["Texas","Texas"]]'>United States</option>
+</select>
 <script src="/assets/shopi-assist.js" defer></script>
 ${
   demo
@@ -229,7 +233,7 @@ ${
       };
       setTimeout(function () { root.querySelector(".sa-order-here").click(); }, 1500);
       setTimeout(function () {
-        var values = { name: "Ada Lovelace", phone: "+1 613 555 0111", address1: "12 Analytical Way", city: "Ottawa", province: "ON", zip: "K1A 0B1" };
+        var values = { firstName: "Ada", lastName: "Lovelace", phone: "+1 613 555 0111", address1: "742 Evergreen Terrace", city: "Springfield", province: "Illinois", zip: "62704" };
         if (${JSON.stringify(form)} === "details") values.phone = "12";
         Object.keys(values).forEach(function (name) {
           root.querySelector('.sa-order-form [name="' + name + '"]').value = values[name];

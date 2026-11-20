@@ -772,6 +772,8 @@ describe("chat widget", () => {
     async function openForm(
       respond: (body: Record<string, unknown>) => Promise<Response>,
       config: Record<string, unknown> = {},
+      /** Runs once the widget is on the page, before the order form is opened. */
+      setup: () => void = () => {},
     ) {
       configMock.mockImplementation(() => appConfig({ chatOrders: true, ...config }));
       const cart = liveCart(
@@ -791,6 +793,7 @@ describe("chat widget", () => {
             }),
       );
       const widget = mountWidget();
+      setup();
       await flush();
       widget.launcher.click();
       widget.send("checkout");
@@ -813,7 +816,8 @@ describe("chat widget", () => {
     }
 
     const DETAILS = {
-      name: " Ada Lovelace ",
+      firstName: " Ada ",
+      lastName: "Lovelace",
       phone: "+1 613 555 0111",
       email: "ada@example.com",
       address1: "12 Analytical Way",
@@ -846,15 +850,16 @@ describe("chat widget", () => {
 
       // The form asks for what a delivery needs, with the browsing country chosen.
       expect(widget.all(".sa-order-form label").map((label) => label.textContent)).toEqual([
-        "Full name",
-        "Phone",
         "Email (optional, for order updates)",
+        "Country / region",
+        "First name (optional)",
+        "Last name",
         "Address",
-        "Apartment, suite (optional)",
+        "Apartment, suite, etc. (optional)",
         "City",
         "State / province",
-        "Postal code",
-        "Country",
+        "ZIP / postal code",
+        "Phone",
       ]);
       expect(field("countryCode").value).toBe("US");
       expect(field("phone").getAttribute("autocomplete")).toBe("tel");
@@ -865,7 +870,12 @@ describe("chat widget", () => {
       expect(orderPosts()[0]).toEqual({
         step: "quote",
         items: [{ variantId: "101", quantity: 2 }],
-        contact: { name: "Ada Lovelace", phone: "+1 613 555 0111", email: "ada@example.com" },
+        contact: {
+          firstName: "Ada",
+          lastName: "Lovelace",
+          phone: "+1 613 555 0111",
+          email: "ada@example.com",
+        },
         address: {
           address1: "12 Analytical Way",
           address2: "",
@@ -948,7 +958,7 @@ describe("chat widget", () => {
       expect(widget.$(".sa-order-status-error").textContent).toBe(
         "Please check the highlighted details.",
       );
-      expect(field("name").value).toBe("Ada Lovelace");
+      expect(field("lastName").value).toBe("Lovelace");
       expect(field("countryCode").value).toBe("CA");
       expect(widget.root.activeElement).toBe(field("phone"));
     });
@@ -1028,7 +1038,8 @@ describe("chat widget", () => {
       expect(fill.textContent).toBe("Fill test details");
 
       fill.click();
-      expect(field("name").value).toBe("Test Buyer");
+      expect(field("firstName").value).toBe("Test");
+      expect(field("lastName").value).toBe("Buyer");
       expect(field("email").value).toBe("test.buyer@example.com");
       expect(field("address1").value).toBe("742 Evergreen Terrace");
       expect(field("province").value).toBe("IL");
@@ -1039,6 +1050,96 @@ describe("chat widget", () => {
       fill.click();
       expect(field("city").value).toBe("Ottawa");
       expect(field("zip").value).toBe("K2P 2L8");
+    });
+
+    describe("states and provinces", () => {
+      /** The list Shopify renders for theme address forms, as the Liquid block puts it on the page. */
+      const addRegions = () => {
+        const select = document.createElement("select");
+        select.id = "shopi-assist-regions";
+        select.hidden = true;
+        const add = (country: string, provinces: unknown) => {
+          const option = document.createElement("option");
+          option.value = country;
+          option.textContent = country;
+          option.setAttribute("data-provinces", JSON.stringify(provinces));
+          select.appendChild(option);
+        };
+        add("United States", [
+          ["Illinois", "Illinois"],
+          ["New York", "New York"],
+          ['<img src=x onerror="window.hacked=1">', "Texas"],
+        ]);
+        add("Canada", [
+          ["Ontario", "Ontario"],
+          ["Quebec", "Québec"],
+        ]);
+        add("Germany", []);
+        document.body.appendChild(select);
+      };
+
+      it("offers the country's states as a list, as the checkout does", async () => {
+        const { widget, field, fill, submit } = await openForm(
+          (body) => jsonResponse({ ok: true, step: "quote", quote: quote(body.shippingRateHandle as string) }),
+          {},
+          addRegions,
+        );
+
+        const states = field("province") as HTMLSelectElement;
+        expect(states.tagName).toBe("SELECT");
+        expect(states.required).toBe(true);
+        expect(Array.from(states.options).map((option) => option.textContent)).toEqual([
+          "Select\u2026",
+          "Illinois",
+          "New York",
+          "Texas",
+        ]);
+        // Whatever the page's list holds is shown as text, never as markup.
+        expect(widget.root.querySelector(".sa-order-form img")).toBeNull();
+
+        fill({ ...DETAILS, countryCode: "US", province: "Illinois" });
+        await submit();
+        expect(orderPosts()[0].address).toMatchObject({ countryCode: "US", province: "Illinois" });
+      });
+
+      it("swaps the list when the country changes and keeps what was typed", async () => {
+        const { field } = await openForm(() => jsonResponse({ ok: true }), {}, addRegions);
+        field("lastName").value = "Lovelace";
+        (field("province") as HTMLSelectElement).value = "Illinois";
+
+        const country = field("countryCode");
+        country.value = "CA";
+        country.dispatchEvent(new Event("change", { bubbles: true }));
+
+        const states = field("province") as HTMLSelectElement;
+        expect(Array.from(states.options).map((option) => option.textContent)).toEqual([
+          "Select\u2026",
+          "Ontario",
+          "Québec",
+        ]);
+        // The old country's state does not carry over.
+        expect(states.value).toBe("");
+        expect(field("lastName").value).toBe("Lovelace");
+        expect(field("countryCode").value).toBe("CA");
+      });
+
+      it("asks for the state as text when the country has no list", async () => {
+        // No list on the page at all.
+        const none = await openForm(() => jsonResponse({ ok: true }));
+        expect(none.field("province").tagName).toBe("INPUT");
+      });
+
+      it("picks the test address's state from the list", async () => {
+        const { widget, field } = await openForm(
+          () => jsonResponse({ ok: true }),
+          { testMode: true },
+          addRegions,
+        );
+        widget.$<HTMLButtonElement>(".sa-order-test").click();
+
+        expect((field("province") as HTMLSelectElement).value).toBe("Illinois");
+        expect(field("zip").value).toBe("62704");
+      });
     });
 
     it("closes from Cancel and opens only one form at a time", async () => {
@@ -1053,6 +1154,180 @@ describe("chat widget", () => {
       expect(widget.root.querySelector(".sa-order-form")).toBeNull();
       // The summary with its checkout button is still there.
       expect(widget.$(".sa-order-checkout").getAttribute("href")).toBe("/checkout");
+    });
+  });
+
+  describe("changes to an existing order", () => {
+    const cancelCard = (overrides: Record<string, unknown> = {}) => ({
+      type: "order_action",
+      kind: "cancel",
+      order: "#1005",
+      token: "signed-grant-for-1005",
+      title: "Cancel order #1005?",
+      lines: ["2 \u00d7 Trail Mug", '<img src=x onerror="window.hacked=1">'],
+      note: "Nothing has been charged for this order. Cancelling it cannot be undone.",
+      confirmLabel: "Cancel order",
+      ...overrides,
+    });
+    const orderPosts = () =>
+      orderMock.mock.calls
+        .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+
+    async function showCard(action: Record<string, unknown>) {
+      fetchMock.mockImplementation(() => reply("Press the button to confirm.", { actions: [action] }));
+      const widget = mountWidget();
+      widget.launcher.click();
+      widget.send("cancel my order 1005");
+      await flush();
+      const buttons = () =>
+        Array.from(widget.root.querySelectorAll<HTMLButtonElement>(".sa-action button"));
+      return { widget, buttons };
+    }
+
+    it("shows a card and changes nothing until the shopper presses its button", async () => {
+      orderMock.mockImplementation(() =>
+        jsonResponse({ ok: true, step: "cancel", order: { name: "#1005" }, message: "Order #1005 is cancelled." }),
+      );
+      const { widget, buttons } = await showCard(cancelCard());
+
+      const card = widget.$(".sa-action");
+      expect(card.querySelector(".sa-order-title")!.textContent).toBe("Cancel order #1005?");
+      expect(Array.from(card.querySelectorAll("li")).map((line) => line.textContent)).toEqual([
+        "2 \u00d7 Trail Mug",
+        '<img src=x onerror="window.hacked=1">',
+      ]);
+      // Whatever the server sends is shown as text, never as markup.
+      expect(card.querySelector("img")).toBeNull();
+      expect(buttons().map((button) => button.textContent)).toEqual(["Cancel order", "Keep my order"]);
+      // Showing the card asked the store for nothing.
+      expect(orderPosts()).toEqual([]);
+
+      buttons()[0].click();
+      await flush();
+
+      expect(orderPosts()).toEqual([{ step: "cancel", token: "signed-grant-for-1005" }]);
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      const notice = widget.all(".sa-notice").at(-1)!;
+      expect(notice.textContent).toBe("Order #1005 is cancelled.");
+      expect(notice.classList.contains("sa-notice-success")).toBe(true);
+
+      // The confirmation is kept for the next page; the grant is not.
+      const stored = JSON.stringify({ ...window.localStorage });
+      expect(stored).toContain("Order #1005 is cancelled.");
+      expect(stored).not.toContain("signed-grant-for-1005");
+    });
+
+    it("does nothing when the shopper keeps the order", async () => {
+      const { widget, buttons } = await showCard(cancelCard());
+      buttons()[1].click();
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      expect(orderPosts()).toEqual([]);
+    });
+
+    it("shows the store's reason when it is too late, and does not offer a second try", async () => {
+      orderMock.mockImplementation(() =>
+        jsonResponse({
+          ok: false,
+          error: {
+            code: "unavailable",
+            status: 409,
+            message: "Order #1005 is already being prepared or has shipped, so it can no longer be cancelled or changed here.",
+          },
+        }),
+      );
+      const { widget, buttons } = await showCard(cancelCard());
+      buttons()[0].click();
+      await flush();
+
+      expect(widget.$(".sa-action .sa-order-status-error").textContent).toMatch(/already being prepared/);
+      expect(buttons()[0].disabled).toBe(true);
+      expect(buttons()[1].disabled).toBe(false);
+      expect(widget.all(".sa-notice")).toHaveLength(0);
+    });
+
+    it("ignores a card that is not well formed", async () => {
+      const { widget } = await showCard(cancelCard({ kind: "refund_everything" }));
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      const noToken = await showCard(cancelCard({ token: undefined }));
+      expect(noToken.widget.root.querySelector(".sa-action")).toBeNull();
+    });
+
+    it("takes a new address in a form and sends it with the grant", async () => {
+      orderMock.mockImplementation((_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? jsonResponse({
+              ok: true,
+              step: "address",
+              order: { name: "#1005" },
+              message: "The delivery address for order #1005 is updated.",
+            })
+          : jsonResponse({
+              ok: true,
+              countries: [
+                { code: "CA", name: "Canada" },
+                { code: "US", name: "United States" },
+              ],
+            }),
+      );
+      const { widget, buttons } = await showCard(
+        cancelCard({
+          kind: "address",
+          title: "Change the delivery address for order #1005",
+          lines: [],
+          confirmLabel: "Enter new address",
+          countryCode: "US",
+        }),
+      );
+      buttons()[0].click();
+      await flush();
+
+      const form = widget.$<HTMLFormElement>(".sa-order-form");
+      expect(form.querySelector(".sa-order-title")!.textContent).toBe("New delivery address");
+      // No email, and no choice of country: the order stays where it is going.
+      expect(form.querySelector('[name="email"]')).toBeNull();
+      const country = form.querySelector<HTMLSelectElement>('[name="countryCode"]')!;
+      expect(Array.from(country.options).map((option) => option.value)).toEqual(["US"]);
+      expect(country.parentElement!.hidden).toBe(true);
+
+      const values: Record<string, string> = {
+        firstName: "Ada",
+        lastName: "Lovelace",
+        address1: "350 Fifth Avenue",
+        city: "New York",
+        province: "NY",
+        zip: "10118",
+        phone: "+1 202 555 0143",
+      };
+      for (const [name, value] of Object.entries(values)) {
+        form.querySelector<HTMLInputElement>(`[name="${name}"]`)!.value = value;
+      }
+      form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+      await flush();
+
+      expect(orderPosts()).toEqual([
+        {
+          step: "address",
+          token: "signed-grant-for-1005",
+          contact: { firstName: "Ada", lastName: "Lovelace", phone: "+1 202 555 0143", email: "" },
+          address: {
+            address1: "350 Fifth Avenue",
+            address2: "",
+            city: "New York",
+            province: "NY",
+            zip: "10118",
+            countryCode: "US",
+          },
+        },
+      ]);
+      expect(widget.root.querySelector(".sa-order-form")).toBeNull();
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+        "The delivery address for order #1005 is updated.",
+      );
+      // The address itself is kept nowhere in the browser.
+      const stored = JSON.stringify({ ...window.localStorage }) + JSON.stringify({ ...window.sessionStorage });
+      expect(stored).not.toMatch(/Lovelace|Fifth Avenue|10118/);
     });
   });
 

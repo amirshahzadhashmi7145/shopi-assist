@@ -7,7 +7,7 @@ import {
   toolsFor,
 } from "../app/assistant/tools/registry";
 import { shopifyqlRows } from "../app/assistant/tools/merchant";
-import { htmlToText, numericId } from "../app/assistant/tools/shopper";
+import { htmlToText, numericId, samePhone } from "../app/assistant/tools/shopper";
 import { RateLimiter } from "../app/assistant/rate-limit";
 import { fakeGraphql, storefrontProduct, toolContext } from "./helpers/fakes";
 
@@ -427,7 +427,7 @@ describe("get_order_status", () => {
     };
 
     const other = await run("get_order_status", { orderNumber: "1001" }, context);
-    expect(other.json.error).toMatch(/email address used at checkout is needed too/);
+    expect(other.json.error).toMatch(/email address or the phone number used on the order is needed too/);
     // Nothing was looked up, so nothing about order 1001 leaked.
     expect(admin.calls).toHaveLength(0);
 
@@ -458,6 +458,125 @@ describe("get_order_status", () => {
 
     await run("get_order_status", { orderNumber: "1001", email: "buyer@example.com" }, context);
     expect(remembered).toEqual([{ id: "gid://shopify/Order/1001", name: "#1001" }]);
+  });
+
+  it("accepts the phone number on the order as proof, for shoppers with no email", async () => {
+    const remembered: string[] = [];
+    const cod = {
+      ...order,
+      id: "gid://shopify/Order/1005",
+      name: "#1005",
+      email: null,
+      phone: null,
+      shippingAddress: { phone: "03198754964" },
+    };
+    const lookup = (phone: string) => {
+      const admin = fakeGraphql({ orders: { nodes: [cod] } });
+      const context = {
+        ...enabled(admin),
+        rememberOrder: async (found: { name: string }) => {
+          remembered.push(found.name);
+        },
+      };
+      return run("get_order_status", { orderNumber: "1005", phone }, context).then((result) => ({
+        result,
+        admin,
+      }));
+    };
+
+    // Written the local way, with spaces, or with the country code: all the same line.
+    for (const phone of ["03198754964", "0319 875-4964", "+92 319 8754964"]) {
+      const { result, admin } = await lookup(phone);
+      expect(result.json).toMatchObject({
+        order: "#1005",
+        shipments: [{ tracking: [{ number: "1Z999" }] }],
+      });
+      // Only this path reads phone numbers from Shopify.
+      expect(admin.calls[0].query).toMatch(/ShopiAssistOrderStatusWithPhone/);
+      // The phone is used for matching only and never echoed back.
+      expect(result.content).not.toContain("8754964");
+    }
+    expect(remembered).toEqual(["#1005", "#1005", "#1005"]);
+
+    const wrong = await lookup("0300 1112223");
+    expect(wrong.result.json.error).toMatch(/No order matches/);
+
+    // The last few digits are not a phone number.
+    const partial = await lookup("4964");
+    expect(partial.result.json.error).toMatch(/looks incomplete/);
+    expect(partial.admin.calls).toHaveLength(0);
+  });
+
+  it("looks up by email without ever asking Shopify for phone numbers", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [order] } });
+    await run(
+      "get_order_status",
+      { orderNumber: "1001", email: "buyer@example.com", phone: "03198754964" },
+      enabled(admin),
+    );
+    expect(admin.calls[0].query).toMatch(/query ShopiAssistOrderStatus\(/);
+    expect(admin.calls[0].query).not.toMatch(/phone/);
+  });
+
+  it("gives only the basics from the order number alone, and only when the merchant allows it", async () => {
+    const byNumber = (admin: ReturnType<typeof fakeGraphql>) => {
+      const context = enabled(admin);
+      const remembered: string[] = [];
+      return {
+        ...context,
+        settings: { ...context.settings, orderLookupByNumber: true },
+        rememberOrder: async (found: { name: string }) => {
+          remembered.push(found.name);
+        },
+        remembered,
+      };
+    };
+
+    const context = byNumber(fakeGraphql({ orders: { nodes: [order] } }));
+    const result = await run("get_order_status", { orderNumber: "1001" }, context);
+    expect(result.json).toMatchObject({
+      order: "#1001",
+      placedOn: "2026-11-10",
+      paymentStatus: "PAID",
+      fulfillmentStatus: "FULFILLED",
+      shipments: [{ status: "SUCCESS", carrier: "UPS" }],
+    });
+    // Nothing that leads to where the parcel is going, and nothing personal.
+    expect(result.content).not.toMatch(/1Z999|ups\.example|buyer@/i);
+    expect(result.json.note).toMatch(/tracking number and link are shared when/i);
+    // A number proves nothing, so the order is not treated as the shopper's from now on.
+    expect(context.remembered).toEqual([]);
+
+    // With proof, the same store gives the full answer.
+    const proved = await run(
+      "get_order_status",
+      { orderNumber: "1001", email: "buyer@example.com" },
+      byNumber(fakeGraphql({ orders: { nodes: [order] } })),
+    );
+    expect(proved.json.shipments[0].tracking[0].number).toBe("1Z999");
+
+    const missing = await run(
+      "get_order_status",
+      { orderNumber: "4242" },
+      byNumber(fakeGraphql({ orders: { nodes: [order] } })),
+    );
+    expect(missing.json.error).toMatch(/No order has that number/);
+
+    // Walking through order numbers is slowed by the same per-address limit.
+    const limited = byNumber(fakeGraphql({ orders: { nodes: [order] } }));
+    limited.rateLimiter = new RateLimiter();
+    const attempts = [];
+    for (let index = 0; index < 6; index += 1) {
+      limited.turn = { orderLookups: 0 };
+      attempts.push(await run("get_order_status", { orderNumber: String(1001 + index) }, limited));
+    }
+    expect(attempts.at(-1)!.json.error).toMatch(/Too many order lookups/);
+
+    // Without the merchant's opt-in, a number alone gets nothing.
+    const admin = fakeGraphql({ orders: { nodes: [order] } });
+    const off = await run("get_order_status", { orderNumber: "1001" }, enabled(admin));
+    expect(off.json.error).toMatch(/needed too/);
+    expect(admin.calls).toHaveLength(0);
   });
 
   it("gives the same answer for a wrong email as for a missing order", async () => {
@@ -516,6 +635,63 @@ describe("get_order_status", () => {
 
     expect(sixth.json.error).toMatch(/Too many order lookups/);
     expect(admin.calls).toHaveLength(5);
+  });
+
+  it("lets one message look into the same order several times, but only a couple of orders", async () => {
+    const order = { id: "gid://shopify/Order/1", name: "#1001", email: "buyer@example.com" };
+    const context = toolContext({
+      admin: fakeGraphql({ orders: { nodes: [order] } }),
+      storefront: fakeGraphql({}),
+      settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
+      rateLimiter: new RateLimiter(),
+      isTestStore: async () => true,
+    });
+    const look = (orderNumber: string) =>
+      run("get_order_status", { orderNumber, email: "buyer@example.com" }, context);
+
+    // Status, then again for its items, then for the change: all one order.
+    for (let i = 0; i < 4; i += 1) {
+      expect((await look("1001")).json.error ?? "").not.toMatch(/Only a couple of orders/);
+    }
+    expect((await look("1002")).json.error ?? "").not.toMatch(/Only a couple of orders/);
+    // A third order in the same message is one too many.
+    expect((await look("1003")).json.error).toMatch(/Only a couple of orders/);
+  });
+
+  it("gives a development store far more lookups, and still stops in the end", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [] } });
+    const rateLimiter = new RateLimiter();
+    let asked = 0;
+    const attempt = (n: number) =>
+      run(
+        "get_order_status",
+        { orderNumber: String(n), email: `a${n}@b.co` },
+        toolContext({
+          admin,
+          storefront: fakeGraphql({}),
+          settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
+          buyer: { ip: "203.0.113.7" },
+          rateLimiter,
+          isTestStore: async () => {
+            asked += 1;
+            return true;
+          },
+        }),
+      );
+
+    for (let i = 0; i < 5; i += 1) await attempt(i);
+    // Not asked while the ordinary limit still has room.
+    expect(asked).toBe(0);
+
+    const sixth = await attempt(6);
+    expect(sixth.json.error).not.toMatch(/Too many/);
+    expect(asked).toBe(1);
+
+    // The extra allowance is 50 times the ordinary one: 250 more from one
+    // address, of which the sixth lookup was the first.
+    for (let i = 7; i <= 255; i += 1) await attempt(i);
+    const last = await attempt(256);
+    expect(last.json.error).toMatch(/Too many order lookups/);
   });
 
   it("throttles guesses against one email even when the address keeps changing", async () => {
@@ -805,6 +981,15 @@ describe("request_return", () => {
     },
   });
   const created = { returnRequest: { return: { name: "#1001-R1", status: "REQUESTED" }, userErrors: [] } };
+  // Shopify's reason categories, which every request must name one of.
+  const reasons = {
+    returnReasonDefinitions: {
+      nodes: [
+        { id: "gid://shopify/ReturnReasonDefinition/7", handle: "too-small" },
+        { id: "gid://shopify/ReturnReasonDefinition/5", handle: "other-reason" },
+      ],
+    },
+  };
   const proof = { orderNumber: "1001", email: "buyer@example.com", reason: "Too small" };
   const returnsOn = (admin: ReturnType<typeof fakeGraphql>, rateLimiter = new RateLimiter()) =>
     toolContext({
@@ -826,14 +1011,20 @@ describe("request_return", () => {
     const admin = fakeGraphql(
       { orders: { nodes: [order] } },
       returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 2]),
+      reasons,
       created,
     );
 
-    const result = await run("request_return", { ...proof, quantity: 5 }, returnsOn(admin));
+    const result = await run(
+      "request_return",
+      { ...proof, quantity: 5, reasonKind: "too_small" },
+      returnsOn(admin),
+    );
 
     expect(result.json).toMatchObject({ status: "requested", returnReference: "#1001-R1", quantity: 2 });
     expect(result.json.note).toMatch(/request, not an approval/);
-    expect(admin.calls[2].variables).toEqual({
+    expect(admin.calls[2].variables).toEqual({ handles: ["too-small", "other-reason"] });
+    expect(admin.calls[3].variables).toEqual({
       input: {
         orderId: "gid://shopify/Order/9001",
         returnLineItems: [
@@ -842,10 +1033,27 @@ describe("request_return", () => {
             // Capped at what can actually be returned.
             quantity: 2,
             customerNote: "Too small",
+            returnReasonDefinitionId: "gid://shopify/ReturnReasonDefinition/7",
           },
         ],
       },
     });
+  });
+
+  it("files the request under 'other' when no category was chosen", async () => {
+    const admin = fakeGraphql(
+      { orders: { nodes: [order] } },
+      returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]),
+      reasons,
+      created,
+    );
+
+    await run("request_return", { ...proof, reason: "It is the wrong size" }, returnsOn(admin));
+
+    expect(admin.calls[2].variables).toEqual({ handles: ["other-reason"] });
+    const line = (admin.calls[3].variables as { input: { returnLineItems: Array<Record<string, unknown>> } })
+      .input.returnLineItems[0];
+    expect(line.returnReasonDefinitionId).toBe("gid://shopify/ReturnReasonDefinition/5");
   });
 
   it("asks which item instead of guessing when the order has several", async () => {
@@ -865,7 +1073,7 @@ describe("request_return", () => {
     // Looked up the order and its items, but sent nothing.
     expect(admin.calls).toHaveLength(2);
 
-    const second = fakeGraphql({ orders: { nodes: [order] } }, items, created);
+    const second = fakeGraphql({ orders: { nodes: [order] } }, items, reasons, created);
     const chosen = await run("request_return", { ...proof, itemTitle: "kettle" }, returnsOn(second));
     expect(chosen.json).toMatchObject({ status: "requested", item: "Camp Kettle" });
   });
@@ -885,14 +1093,29 @@ describe("request_return", () => {
   it("allows one request per order per day", async () => {
     const rateLimiter = new RateLimiter();
     const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
-    const first = fakeGraphql({ orders: { nodes: [order] } }, item, created);
-    const again = fakeGraphql({ orders: { nodes: [order] } }, item, created);
+    const first = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+    const again = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
 
     expect((await run("request_return", proof, returnsOn(first, rateLimiter))).json.status).toBe("requested");
     const repeat = await run("request_return", proof, returnsOn(again, rateLimiter));
 
     expect(repeat.json.error).toMatch(/already requested for this order today/);
-    expect(again.calls).toHaveLength(2);
+    // Order, items and reasons were read; no second request was sent.
+    expect(again.calls).toHaveLength(3);
+  });
+
+  it("lets the shopper try again after Shopify turned a request down", async () => {
+    const rateLimiter = new RateLimiter();
+    const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
+    const refused = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, {
+      returnRequest: { return: null, userErrors: [{ message: "Return reason can't be blank" }] },
+    });
+    const retry = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+
+    const first = await run("request_return", proof, returnsOn(refused, rateLimiter));
+    expect(first.json.error).toMatch(/did not accept the return request/);
+    const second = await run("request_return", proof, returnsOn(retry, rateLimiter));
+    expect(second.json.status).toBe("requested");
   });
 
   it("explains when nothing can be returned or Shopify rejects the request", async () => {
@@ -910,6 +1133,7 @@ describe("request_return", () => {
         fakeGraphql(
           { orders: { nodes: [order] } },
           returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]),
+          reasons,
           { returnRequest: { return: null, userErrors: [{ message: "Return window has closed" }] } },
         ),
       ),
@@ -1025,6 +1249,22 @@ describe("merchant tools", () => {
         expect(document).not.toMatch(/\b(email|phone|firstName|lastName|shippingAddress|billingAddress|customer)\b/);
       }
     });
+  });
+});
+
+describe("samePhone", () => {
+  it("matches the same line however it is written", () => {
+    expect(samePhone("03198754964", "+92 319 8754964")).toBe(true);
+    expect(samePhone("+1 (202) 555-0143", "2025550143")).toBe(true);
+    expect(samePhone("+12025550143", "+12025550143")).toBe(true);
+  });
+
+  it("does not match different lines, short tails or nothing", () => {
+    expect(samePhone("03198754964", "03198754965")).toBe(false);
+    expect(samePhone("03198754964", "4964")).toBe(false);
+    expect(samePhone("03198754964", "")).toBe(false);
+    expect(samePhone(null, undefined)).toBe(false);
+    expect(samePhone("", "")).toBe(false);
   });
 });
 

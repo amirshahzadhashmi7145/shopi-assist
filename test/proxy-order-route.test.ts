@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // test can see exactly what the route passes along.
 const appProxy = vi.fn();
 const handleChatOrder = vi.fn();
+const handleOrderAction = vi.fn();
 const listDeliveryCountries = vi.fn();
 
 vi.mock("../app/shopify.server", () => ({
@@ -17,6 +18,11 @@ vi.mock("../app/assistant/orders.server", async (importOriginal) => {
     handleChatOrder: (...args: unknown[]) => handleChatOrder(...args),
     listDeliveryCountries: (...args: unknown[]) => listDeliveryCountries(...args),
   };
+});
+
+vi.mock("../app/assistant/order-actions.server", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../app/assistant/order-actions.server")>();
+  return { ...original, handleOrderAction: (...args: unknown[]) => handleOrderAction(...args) };
 });
 
 const { action, loader } = await import("../app/routes/proxy.order");
@@ -142,6 +148,41 @@ describe("POST /proxy/order", () => {
     const crashed = await (await run(post({ step: "place" }))).json();
     expect(crashed.error.status).toBe(500);
     expect(JSON.stringify(crashed)).not.toContain("Analytical");
+  });
+});
+
+describe("POST /proxy/order with a confirmed order change", () => {
+  it("hands the grant to the order-change handler, with the shop from the signed request", async () => {
+    handleOrderAction.mockReset().mockResolvedValue({
+      ok: true,
+      step: "cancel",
+      order: { name: "#1005" },
+      message: "Order #1005 is cancelled.",
+    });
+
+    for (const step of ["cancel", "cancel_request", "address", "edit"]) {
+      const response = await run(post({ step, token: "signed-grant", shop: "victim-shop.myshopify.com" }));
+      expect(await response.json()).toMatchObject({ ok: true, message: "Order #1005 is cancelled." });
+    }
+
+    expect(handleOrderAction).toHaveBeenCalledTimes(4);
+    expect(handleChatOrder).not.toHaveBeenCalled();
+    const input = handleOrderAction.mock.calls[0][0];
+    expect(input.shop).toBe(SHOP);
+    expect(input.body.token).toBe("signed-grant");
+    expect(typeof input.admin).toBe("function");
+  });
+
+  it("sends an expired grant's message through as readable JSON", async () => {
+    handleOrderAction
+      .mockReset()
+      .mockRejectedValue(new OrderError("invalid_request", 410, "This has expired. Please ask the assistant again."));
+    const response = await run(post({ step: "cancel", token: "old" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: "invalid_request", status: 410, message: "This has expired. Please ask the assistant again." },
+    });
   });
 });
 

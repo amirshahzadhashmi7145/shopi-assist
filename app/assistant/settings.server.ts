@@ -28,6 +28,7 @@ export const settingsSchema = z.object({
   enabled: z.boolean(),
   instructions: text(2000, "instructions"),
   orderLookupEnabled: z.boolean(),
+  orderLookupByNumber: z.boolean(),
   retentionDays: z
     .number()
     .int("Use a whole number of days.")
@@ -47,6 +48,10 @@ export const settingsSchema = z.object({
   allowCheckout: z.boolean(),
   allowReturns: z.boolean(),
   allowChatOrders: z.boolean(),
+  allowOrderCancel: z.boolean(),
+  allowAddressChange: z.boolean(),
+  allowOrderEdit: z.boolean(),
+  recogniseCustomers: z.boolean(),
   // Quick policy picks.
   returnWindow: choice(POLICY_CHOICES.returnWindow),
   returnShipping: choice(POLICY_CHOICES.returnShipping),
@@ -63,6 +68,7 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   enabled: true,
   instructions: "",
   orderLookupEnabled: false,
+  orderLookupByNumber: false,
   retentionDays: 30,
   businessDescription: "",
   returnPolicy: "",
@@ -75,6 +81,10 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   allowCheckout: true,
   allowReturns: false,
   allowChatOrders: false,
+  allowOrderCancel: false,
+  allowAddressChange: false,
+  allowOrderEdit: false,
+  recogniseCustomers: false,
   returnWindow: "",
   returnShipping: "",
   processingTime: "",
@@ -98,6 +108,7 @@ export async function getSettings(
     enabled: row.enabled,
     instructions: row.instructions,
     orderLookupEnabled: row.orderLookupEnabled,
+    orderLookupByNumber: row.orderLookupByNumber,
     retentionDays: row.retentionDays,
     businessDescription: row.businessDescription,
     returnPolicy: row.returnPolicy,
@@ -110,6 +121,10 @@ export async function getSettings(
     allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
     allowChatOrders: row.allowChatOrders,
+    allowOrderCancel: row.allowOrderCancel,
+    allowAddressChange: row.allowAddressChange,
+    allowOrderEdit: row.allowOrderEdit,
+    recogniseCustomers: row.recogniseCustomers,
     returnWindow: pick(POLICY_CHOICES.returnWindow, row.returnWindow),
     returnShipping: pick(POLICY_CHOICES.returnShipping, row.returnShipping),
     processingTime: pick(POLICY_CHOICES.processingTime, row.processingTime),
@@ -149,10 +164,15 @@ export async function saveSettings(
 const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "enabled",
   "orderLookupEnabled",
+  "orderLookupByNumber",
   "allowAddToCart",
   "allowCheckout",
   "allowReturns",
   "allowChatOrders",
+  "allowOrderCancel",
+  "allowAddressChange",
+  "allowOrderEdit",
+  "recogniseCustomers",
 ];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
 

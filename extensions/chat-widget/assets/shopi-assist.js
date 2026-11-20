@@ -1057,6 +1057,11 @@
       });
     }
 
+    if (action.type === "order_action") {
+      this.showOrderAction(action);
+      return Promise.resolve();
+    }
+
     if (action.type === "clear_cart") {
       return this.clearCart().then(function (cleared) {
         self.pushEntry(
@@ -1279,30 +1284,89 @@
 
   // ------------------------------------------------- pay-on-delivery orders
 
+  // The same fields, in the same order, as Shopify's own checkout.
   var ORDER_FIELDS = [
-    { name: "name", label: "Full name", autocomplete: "name", required: true },
-    { name: "phone", label: "Phone", autocomplete: "tel", type: "tel", required: true },
     { name: "email", label: "Email (optional, for order updates)", autocomplete: "email", type: "email" },
+    { name: "countryCode", label: "Country / region", autocomplete: "country", kind: "country" },
+    { name: "firstName", label: "First name (optional)", autocomplete: "given-name" },
+    { name: "lastName", label: "Last name", autocomplete: "family-name", required: true },
     { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
-    { name: "address2", label: "Apartment, suite (optional)", autocomplete: "address-line2" },
+    { name: "address2", label: "Apartment, suite, etc. (optional)", autocomplete: "address-line2" },
     { name: "city", label: "City", autocomplete: "address-level2", required: true },
-    // Needed in some countries and not in others; the store says when it is.
-    { name: "province", label: "State / province", autocomplete: "address-level1" },
-    { name: "zip", label: "Postal code", autocomplete: "postal-code" },
+    // A list where Shopify knows the country's states, free text elsewhere.
+    { name: "province", label: "State / province", autocomplete: "address-level1", kind: "province" },
+    { name: "zip", label: "ZIP / postal code", autocomplete: "postal-code" },
+    { name: "phone", label: "Phone", autocomplete: "tel", type: "tel", required: true },
   ];
   var USE_CHECKOUT = " Please use the checkout instead.";
 
   // Made-up people at real, well-known addresses, offered only on development
   // stores. The phone numbers are from ranges reserved for fiction.
   var TEST_DETAILS = {
-    US: { address1: "742 Evergreen Terrace", city: "Springfield", province: "IL", zip: "62704", phone: "+1 202 555 0143" },
-    CA: { address1: "151 O'Connor Street", city: "Ottawa", province: "ON", zip: "K2P 2L8", phone: "+1 613 555 0143" },
-    GB: { address1: "221B Baker Street", city: "London", province: "", zip: "NW1 6XE", phone: "+44 20 7946 0143" },
-    AU: { address1: "42 Wallaby Way", city: "Sydney", province: "NSW", zip: "2000", phone: "+61 2 5550 0143" },
-    PK: { address1: "12 Mall Road", city: "Lahore", province: "Punjab", zip: "54000", phone: "+92 300 5550143" },
-    IN: { address1: "12 MG Road", city: "Bengaluru", province: "KA", zip: "560001", phone: "+91 80 5550 0143" },
-    AE: { address1: "12 Sheikh Zayed Road", city: "Dubai", province: "DU", zip: "", phone: "+971 4 555 0143" },
+    US: { address1: "742 Evergreen Terrace", city: "Springfield", province: "IL", provinceName: "Illinois", zip: "62704", phone: "+1 202 555 0143" },
+    CA: { address1: "151 O'Connor Street", city: "Ottawa", province: "ON", provinceName: "Ontario", zip: "K2P 2L8", phone: "+1 613 555 0143" },
+    GB: { address1: "221B Baker Street", city: "London", province: "", provinceName: "England", zip: "NW1 6XE", phone: "+44 20 7946 0143" },
+    AU: { address1: "42 Wallaby Way", city: "Sydney", province: "NSW", provinceName: "New South Wales", zip: "2000", phone: "+61 2 5550 0143" },
+    PK: { address1: "12 Mall Road", city: "Lahore", province: "Punjab", provinceName: "Punjab", zip: "54000", phone: "+92 300 5550143" },
+    IN: { address1: "12 MG Road", city: "Bengaluru", province: "KA", provinceName: "Karnataka", zip: "560001", phone: "+91 80 5550 0143" },
+    AE: { address1: "12 Sheikh Zayed Road", city: "Dubai", province: "DU", provinceName: "Dubai", zip: "", phone: "+971 4 555 0143" },
   };
+
+  /** "Côte d'Ivoire" and "cote divoire" are the same country. */
+  function regionKey(name) {
+    var text = String(name || "").toLowerCase();
+    if (text.normalize) text = text.normalize("NFD").replace(/[̀-ͯ]/g, "");
+    return text.replace(/[^a-z0-9]/g, "");
+  }
+
+  /**
+   * The states or provinces of each country the store ships to. They come
+   * from the list Shopify renders for theme address forms, which the Liquid
+   * block puts on the page in a hidden <select>. That list is keyed by
+   * country name, so it is indexed here by every name it gives. Empty when
+   * the list is not on the page; the form then asks for the state as text.
+   */
+  function readRegions() {
+    var regions = {};
+    var source = document.getElementById("shopi-assist-regions");
+    var options = source ? source.querySelectorAll("option") : [];
+    for (var i = 0; i < options.length; i += 1) {
+      var pairs = [];
+      try {
+        pairs = JSON.parse(options[i].getAttribute("data-provinces") || "[]");
+      } catch (error) {
+        pairs = [];
+      }
+      var list = (Array.isArray(pairs) ? pairs : [])
+        .filter(function (pair) {
+          return Array.isArray(pair) && typeof pair[0] === "string" && pair[0];
+        })
+        .slice(0, 300)
+        .map(function (pair) {
+          return { value: pair[0].slice(0, 60), label: String(pair[1] || pair[0]).slice(0, 60) };
+        });
+      if (!list.length) continue;
+      regions[regionKey(options[i].value)] = list;
+      regions[regionKey(options[i].textContent)] = list;
+    }
+    return regions;
+  }
+
+  /** The states of one country, or none when it has none or they are unknown. */
+  function provincesOf(regions, country) {
+    if (!country) return [];
+    var names = [country.code, country.name];
+    try {
+      names.push(new Intl.DisplayNames(["en"], { type: "region" }).of(country.code));
+    } catch (error) {
+      // Older browsers: the names above are tried on their own.
+    }
+    for (var i = 0; i < names.length; i += 1) {
+      var found = regions[regionKey(names[i])];
+      if (found) return found;
+    }
+    return [];
+  }
 
   /** Sends one step of an order to the app. Never rejects. */
   Widget.prototype.postOrder = function (payload) {
@@ -1356,6 +1420,8 @@
   /** Opens the delivery details form under the chat, once. */
   Widget.prototype.openOrderForm = function () {
     var self = this;
+    // A form for something else (a new address) makes way for this one.
+    if (this.orderForm && this.orderForm.mode) this.closeOrderForm();
     if (this.orderForm) {
       var first = this.orderForm.el.querySelector("input, button");
       if (first) first.focus();
@@ -1374,6 +1440,7 @@
       quote: null,
       key: randomId(),
       busy: false,
+      regions: readRegions(),
     };
     this.orderForm = state;
     this.messagesEl.appendChild(form);
@@ -1423,43 +1490,71 @@
     var form = state.el;
     form.textContent = "";
     state.inputs = {};
-    form.appendChild(el("h3", "sa-order-title", "Delivery details"));
-
-    if (this.testMode && state.countries.length) {
-      var fillTest = el("button", "sa-order-test", "Fill test details");
-      fillTest.type = "button";
-      fillTest.title = "Shown on development stores only";
-      fillTest.addEventListener("click", function () {
-        var country = state.inputs.countryCode.value;
-        var sample = TEST_DETAILS[country] || {
-          address1: "1 Test Street",
-          city: "Test City",
-          province: "",
-          zip: "",
-          phone: "+1 202 555 0143",
-        };
-        var values = {
-          name: "Test Buyer",
-          email: "test.buyer@example.com",
-          phone: sample.phone,
-          address1: sample.address1,
-          address2: "",
-          city: sample.city,
-          province: sample.province,
-          zip: sample.zip,
-        };
-        Object.keys(values).forEach(function (name) {
-          state.inputs[name].value = values[name];
-        });
-      });
-      form.appendChild(fillTest);
-    }
+    var forAddress = state.mode === "address";
+    form.appendChild(
+      el("h3", "sa-order-title", forAddress ? "New delivery address" : "Delivery details"),
+    );
 
     if (!state.countries.length) {
       form.appendChild(
         el("p", "sa-order-status sa-order-status-error", "Ordering here isn't available right now." + USE_CHECKOUT),
       );
       return;
+    }
+
+    var country =
+      state.countries.filter(function (entry) {
+        return entry.code === state.values.countryCode;
+      })[0] || state.countries[0];
+    state.values.countryCode = country.code;
+    var provinces = provincesOf(state.regions, country);
+
+    /** Keeps what has been typed, so the form can be drawn again. */
+    var keepValues = function () {
+      Object.keys(state.inputs).forEach(function (name) {
+        state.values[name] = state.inputs[name].value.trim();
+      });
+    };
+
+    if (this.testMode) {
+      var fillTest = el("button", "sa-order-test", "Fill test details");
+      fillTest.type = "button";
+      fillTest.title = "Shown on development stores only";
+      fillTest.addEventListener("click", function () {
+        keepValues();
+        var sample = TEST_DETAILS[state.values.countryCode] || {
+          address1: "1 Test Street",
+          city: "Test City",
+          province: "",
+          provinceName: "",
+          zip: "",
+          phone: "+1 202 555 0143",
+        };
+        // In a list of states the sample's state is picked by name.
+        var listed = provincesOf(
+          state.regions,
+          state.countries.filter(function (entry) {
+            return entry.code === state.values.countryCode;
+          })[0],
+        ).filter(function (province) {
+          return regionKey(province.label) === regionKey(sample.provinceName);
+        })[0];
+        state.values = {
+          countryCode: state.values.countryCode,
+          email: "test.buyer@example.com",
+          firstName: "Test",
+          lastName: "Buyer",
+          phone: sample.phone,
+          address1: sample.address1,
+          address2: "",
+          city: sample.city,
+          province: listed ? listed.value : sample.province,
+          zip: sample.zip,
+        };
+        state.errors = {};
+        self.renderOrderDetails();
+      });
+      form.appendChild(fillTest);
     }
 
     var addField = function (spec, control) {
@@ -1483,32 +1578,67 @@
       }
       state.inputs[spec.name] = control;
       form.appendChild(wrap);
+      return wrap;
     };
 
     ORDER_FIELDS.forEach(function (spec) {
+      // A new address for an existing order: the store already has the email.
+      if (forAddress && spec.name === "email") return;
+      if (spec.kind === "country") {
+        var countries = el("select");
+        state.countries.forEach(function (entry) {
+          var option = el("option", null, entry.name);
+          option.value = entry.code;
+          option.selected = entry.code === country.code;
+          countries.appendChild(option);
+        });
+        // Another country has other states: draw the form again for it.
+        countries.addEventListener("change", function () {
+          keepValues();
+          state.values.province = "";
+          delete state.errors.province;
+          self.renderOrderDetails();
+          state.inputs.countryCode.focus();
+        });
+        // One country to deliver to needs no choice.
+        addField(spec, countries).hidden = state.countries.length === 1;
+        return;
+      }
+
+      if (spec.kind === "province" && provinces.length) {
+        var states = el("select");
+        var prompt = el("option", null, "Select…");
+        prompt.value = "";
+        states.appendChild(prompt);
+        var chosen = regionKey(state.values.province);
+        provinces.forEach(function (province) {
+          var option = el("option", null, province.label);
+          option.value = province.value;
+          option.selected =
+            Boolean(chosen) &&
+            (regionKey(province.value) === chosen || regionKey(province.label) === chosen);
+          states.appendChild(option);
+        });
+        addField({ name: spec.name, label: spec.label, autocomplete: spec.autocomplete, required: true }, states);
+        return;
+      }
+
       var input = el("input");
       input.type = spec.type || "text";
       input.value = state.values[spec.name] || "";
       addField(spec, input);
     });
 
-    var country = el("select");
-    state.countries.forEach(function (entry) {
-      var option = el("option", null, entry.name);
-      option.value = entry.code;
-      option.selected = entry.code === state.values.countryCode;
-      country.appendChild(option);
-    });
-    addField({ name: "countryCode", label: "Country", autocomplete: "country" }, country);
-    // One country to deliver to needs no choice.
-    if (state.countries.length === 1) country.parentNode.hidden = true;
-
     state.statusEl = el("p", "sa-order-status");
     state.statusEl.hidden = true;
     form.appendChild(state.statusEl);
 
     var actions = el("div", "sa-order-actions");
-    var review = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Review order");
+    var review = el(
+      "button",
+      "sa-card-button sa-card-button-primary sa-order-checkout",
+      forAddress ? "Save address" : "Review order",
+    );
     review.type = "submit";
     var cancel = el("button", "sa-card-button", "Cancel");
     cancel.type = "button";
@@ -1522,16 +1652,208 @@
     form.onsubmit = function (event) {
       event.preventDefault();
       if (state.busy) return;
-      Object.keys(state.inputs).forEach(function (name) {
-        state.values[name] = state.inputs[name].value.trim();
-      });
+      keepValues();
       state.errors = {};
-      self.quoteOrder();
+      if (forAddress) self.saveAddress();
+      else self.quoteOrder();
     };
 
     var firstInvalid = form.querySelector('[aria-invalid="true"]');
-    (firstInvalid || state.inputs.name).focus();
+    (firstInvalid || state.inputs.email || state.inputs.firstName).focus();
     this.scrollToEnd();
+  };
+
+  // ------------------------------------------- changes to an existing order
+
+  var ORDER_ACTION_KINDS = { cancel: true, cancel_request: true, address: true, edit: true };
+
+  /** Takes any confirmation card off the screen. Cards are never saved. */
+  Widget.prototype.dropActionCards = function () {
+    var cards = this.messagesEl.querySelectorAll(".sa-action");
+    for (var i = 0; i < cards.length; i += 1) cards[i].parentNode.removeChild(cards[i]);
+  };
+
+  /**
+   * A card asking the shopper to confirm a change to their own order: cancel
+   * it, change its items, or send it somewhere else. The assistant only
+   * proposes; nothing happens to the order until the button here is pressed,
+   * and then it is the store's server, not this page, that decides.
+   */
+  Widget.prototype.showOrderAction = function (action) {
+    var self = this;
+    if (
+      !ORDER_ACTION_KINDS[action.kind] ||
+      typeof action.token !== "string" ||
+      typeof action.title !== "string"
+    ) {
+      return;
+    }
+    // One at a time: an older card may describe an order that has since changed.
+    this.dropActionCards();
+    if (this.orderForm && this.orderForm.mode) this.closeOrderForm();
+
+    var card = el("section", "sa-action");
+    card.setAttribute("aria-label", action.title.slice(0, 200));
+    card.appendChild(el("h3", "sa-order-title", action.title.slice(0, 200)));
+
+    var lines = (Array.isArray(action.lines) ? action.lines : []).filter(function (line) {
+      return typeof line === "string";
+    });
+    if (lines.length) {
+      var list = el("ul", "sa-order-lines");
+      lines.slice(0, 20).forEach(function (line) {
+        list.appendChild(el("li", "sa-order-line", line.slice(0, 200)));
+      });
+      card.appendChild(list);
+    }
+    if (typeof action.note === "string" && action.note) {
+      card.appendChild(el("p", "sa-order-note", action.note.slice(0, 300)));
+    }
+
+    var status = el("p", "sa-order-status");
+    status.hidden = true;
+    card.appendChild(status);
+    var say = function (text, isError) {
+      status.textContent = text;
+      status.hidden = !text;
+      status.className = "sa-order-status" + (isError ? " sa-order-status-error" : "");
+      if (isError) status.setAttribute("role", "alert");
+      else status.removeAttribute("role");
+    };
+
+    var actions = el("div", "sa-order-actions");
+    var confirm = el(
+      "button",
+      "sa-card-button sa-order-checkout " +
+        (action.kind === "cancel" ? "sa-card-button-danger" : "sa-card-button-primary"),
+      typeof action.confirmLabel === "string" ? action.confirmLabel.slice(0, 40) : "Confirm",
+    );
+    confirm.type = "button";
+    var dismiss = el("button", "sa-card-button", action.kind === "cancel" ? "Keep my order" : "Not now");
+    dismiss.type = "button";
+    dismiss.addEventListener("click", function () {
+      if (self.orderForm && self.orderForm.card === card) self.closeOrderForm();
+      if (card.parentNode) card.parentNode.removeChild(card);
+    });
+
+    confirm.addEventListener("click", function () {
+      if (action.kind === "address") {
+        self.openAddressForm(action, card);
+        return;
+      }
+      confirm.disabled = true;
+      dismiss.disabled = true;
+      say("One moment…", false);
+      self.postOrder({ step: action.kind, token: action.token }).then(function (result) {
+        if (result.ok && typeof result.body.message === "string") {
+          if (card.parentNode) card.parentNode.removeChild(card);
+          self.pushEntry({ role: "notice", tone: "success", text: result.body.message });
+          return;
+        }
+        var error = result.body.error || {};
+        say(
+          typeof error.message === "string"
+            ? error.message
+            : "We couldn't reach the store. Check your connection and try again.",
+          true,
+        );
+        dismiss.disabled = false;
+        // An expired or refused request will not succeed on a second press.
+        confirm.disabled = error.code === "invalid_request" || error.code === "unavailable";
+      });
+    });
+
+    actions.appendChild(confirm);
+    actions.appendChild(dismiss);
+    card.appendChild(actions);
+    this.messagesEl.appendChild(card);
+    this.scrollToEnd();
+  };
+
+  /** Opens the address form for an order whose delivery address may change. */
+  Widget.prototype.openAddressForm = function (action, card) {
+    var self = this;
+    if (this.orderForm && this.orderForm.card === card) {
+      var first = this.orderForm.el.querySelector("input, select");
+      if (first) first.focus();
+      return Promise.resolve();
+    }
+    this.closeOrderForm();
+
+    var form = el("form", "sa-order sa-order-form");
+    form.noValidate = true;
+    form.setAttribute("aria-label", "New delivery address");
+    var locked = /^[A-Z]{2}$/.test(action.countryCode || "") ? action.countryCode : "";
+    var state = {
+      el: form,
+      mode: "address",
+      token: action.token,
+      card: card,
+      values: { countryCode: locked },
+      inputs: {},
+      errors: {},
+      busy: false,
+      regions: readRegions(),
+    };
+    this.orderForm = state;
+    this.messagesEl.appendChild(form);
+
+    return this.loadCountries().then(function (countries) {
+      if (self.orderForm !== state) return;
+      // The address may change, the country may not: offer only that one.
+      var same = countries.filter(function (country) {
+        return country.code === locked;
+      });
+      if (!same.length && locked) {
+        var name = locked;
+        try {
+          name = new Intl.DisplayNames([self.config.locale || "en"], { type: "region" }).of(locked) || locked;
+        } catch (error) {
+          name = locked;
+        }
+        same = [{ code: locked, name: name }];
+      }
+      state.countries = same.length ? same : countries;
+      self.renderOrderDetails();
+    });
+  };
+
+  /** Sends the new address for the order the form was opened for. */
+  Widget.prototype.saveAddress = function () {
+    var self = this;
+    var state = this.orderForm;
+    var values = state.values;
+    this.setOrderBusy(true);
+    this.setOrderStatus("Saving your new address…");
+
+    return this.postOrder({
+      step: "address",
+      token: state.token,
+      contact: {
+        firstName: values.firstName || "",
+        lastName: values.lastName,
+        phone: values.phone,
+        email: "",
+      },
+      address: {
+        address1: values.address1,
+        address2: values.address2 || "",
+        city: values.city,
+        province: values.province || "",
+        zip: values.zip || "",
+        countryCode: values.countryCode,
+      },
+    }).then(function (result) {
+      if (self.orderForm !== state) return;
+      self.setOrderBusy(false);
+      if (result.ok && typeof result.body.message === "string") {
+        self.closeOrderForm();
+        if (state.card && state.card.parentNode) state.card.parentNode.removeChild(state.card);
+        self.pushEntry({ role: "notice", tone: "success", text: result.body.message });
+        return;
+      }
+      self.showOrderError(result.body);
+    });
   };
 
   /** What the app needs to price or place the order. */
@@ -1541,7 +1863,12 @@
     return {
       step: step,
       items: state.items,
-      contact: { name: values.name, phone: values.phone, email: values.email || "" },
+      contact: {
+        firstName: values.firstName || "",
+        lastName: values.lastName,
+        phone: values.phone,
+        email: values.email || "",
+      },
       address: {
         address1: values.address1,
         address2: values.address2 || "",
@@ -1685,7 +2012,14 @@
         "p",
         "sa-order-note",
         "Deliver to " +
-          [values.name, values.address1, values.address2, values.city, values.province, values.zip]
+          [
+            [values.firstName, values.lastName].filter(Boolean).join(" "),
+            values.address1,
+            values.address2,
+            values.city,
+            values.province,
+            values.zip,
+          ]
             .filter(Boolean)
             .join(", ") +
           ". Phone " +

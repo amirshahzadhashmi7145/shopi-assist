@@ -4,8 +4,10 @@
  * Everything here is reachable by anonymous visitors, so each tool must only
  * expose what a visitor could already see on the storefront. Catalog data
  * comes from the Storefront API, which only returns published products. The
- * single exception is `get_order_status`, which is opt-in per shop and gated
- * on the shopper proving they know both the order number and checkout email.
+ * single exception is `get_order_status`, which is opt-in per shop. It is gated
+ * on the shopper proving the order is theirs (order number plus the checkout
+ * email or the phone number on the order), unless the merchant has also opted
+ * in to giving the bare basics for an order number alone.
  */
 import { z } from "zod";
 
@@ -57,6 +59,35 @@ export const ORDER_STATUS_QUERY = `#graphql
   }
 `;
 
+/**
+ * Admin API. The same order fields plus the phone numbers on the order, used
+ * only to check a shopper who proves an order with its phone number instead
+ * of an email. Kept apart from the query above so that lookups by email keep
+ * working on a store where the app may not read phone numbers.
+ */
+export const ORDER_STATUS_WITH_PHONE_QUERY = `#graphql
+  query ShopiAssistOrderStatusWithPhone($query: String!) {
+    orders(first: 5, query: $query) {
+      nodes {
+        name
+        email
+        phone
+        shippingAddress { phone }
+        processedAt
+        cancelledAt
+        displayFinancialStatus
+        displayFulfillmentStatus
+        id
+        fulfillments(first: 5) {
+          status
+          estimatedDeliveryAt
+          trackingInfo(first: 3) { company number url }
+        }
+      }
+    }
+  }
+`;
+
 /** Admin API. What on an order can still be returned. */
 export const RETURNABLE_ITEMS_QUERY = `#graphql
   query ShopiAssistReturnableItems($orderId: ID!) {
@@ -75,6 +106,30 @@ export const RETURNABLE_ITEMS_QUERY = `#graphql
     }
   }
 `;
+
+/**
+ * Admin API. Shopify's own reason categories: a return request must name one
+ * ("Return reason can't be blank" otherwise).
+ */
+export const RETURN_REASONS_QUERY = `#graphql
+  query ShopiAssistReturnReasons($handles: [String!]) {
+    returnReasonDefinitions(first: 5, handles: $handles) {
+      nodes { id handle }
+    }
+  }
+`;
+
+/** The categories the assistant may choose from, and Shopify's handle for each. */
+const RETURN_REASON_HANDLES = {
+  changed_my_mind: "changed-my-mind",
+  not_as_described: "item-not-as-described",
+  wrong_item: "received-the-wrong-item",
+  damaged_or_defective: "damaged-or-defective",
+  too_small: "too-small",
+  too_big: "too-big",
+  other: "other-reason",
+} as const;
+type ReturnReasonKind = keyof typeof RETURN_REASON_HANDLES;
 
 /** Admin API. Creates a return request for the merchant to approve or decline. */
 export const RETURN_REQUEST_MUTATION = `#graphql
@@ -769,7 +824,8 @@ const startCheckout = defineTool({
 // Order lookup limits. Guessing an order number for a known email must stay
 // impractical even for someone rotating addresses, so the address is only one
 // of four independent keys. Return requests count against the same limits.
-const ORDER_LOOKUPS_PER_TURN = 2;
+const ORDER_LOOKUPS_PER_TURN = 2; // different orders in one message
+const ORDER_CALLS_PER_TURN = 6; // lookups in one message, the same order included
 const ORDER_LOOKUPS_PER_ADDRESS = 5; // per 15 minutes
 const ORDER_LOOKUPS_PER_EMAIL = 5; // per hour, whoever is asking
 const ORDER_LOOKUPS_PER_SHOP = 60; // per hour, all visitors together
@@ -778,8 +834,62 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const ORDER_LOOKUP_THROTTLED =
   "Too many order lookups. Ask the shopper to try again later or contact the store.";
+/** How much looser the lookup limits are on a development store. */
+const TEST_STORE_ROOM = 50;
+
+/**
+ * One message may look into a couple of orders, and into the same order a few
+ * times: its status, then its items, then the change.
+ */
+function countTurnLookup(context: ToolContext, wantedName: string): void {
+  context.turn.orderLookups += 1;
+  const names = (context.turn.orderNames ??= []);
+  if (!names.includes(wantedName)) names.push(wantedName);
+  if (names.length > ORDER_LOOKUPS_PER_TURN || context.turn.orderLookups > ORDER_CALLS_PER_TURN) {
+    throw new ToolError(
+      "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
+    );
+  }
+}
+
+type LookupLimit = [key: string, max: number, windowMs: number];
+
+/**
+ * Counts one order lookup against each limit, or throws when one is used up.
+ * A development store then gets a second, much larger allowance, so that
+ * someone testing the chat is not locked out after a handful of orders.
+ * Whether the store is one is asked only when a limit is reached.
+ */
+async function countLookup(context: ToolContext, limits: LookupLimit[]): Promise<void> {
+  const nowMs = context.now().getTime();
+  for (const [key, max, windowMs] of limits) {
+    if (context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) continue;
+    const extra =
+      (await context.isTestStore?.()) &&
+      context.rateLimiter.hit(`${key}:test`, max * TEST_STORE_ROOM, windowMs, nowMs).allowed;
+    if (!extra) throw new ToolError(ORDER_LOOKUP_THROTTLED);
+  }
+}
 const ORDER_NOT_FOUND =
-  "No order matches that order number and email. Ask the shopper to double-check both, or to contact the store.";
+  "No order matches that order number with that email or phone number. Ask the shopper to double-check both, or to contact the store.";
+
+/** A phone number as digits only, without the zeros people put in front. */
+function phoneDigits(value: string | null | undefined): string {
+  return (value ?? "").replace(/\D/g, "").replace(/^0+/, "");
+}
+
+/**
+ * Whether two phone numbers are the same line. People write the same number
+ * with or without the country code ("+92 319 875 4964" and "0319 8754964"),
+ * so one may be the tail of the other, as long as that tail is a full local
+ * number and not just a few digits.
+ */
+export function samePhone(a: string | null | undefined, b: string | null | undefined): boolean {
+  const [shorter, longer] = [phoneDigits(a), phoneDigits(b)].sort(
+    (left, right) => left.length - right.length,
+  );
+  return shorter.length >= 7 && longer.endsWith(shorter);
+}
 
 /** Short non-reversible key, so email addresses are not held in the limiter. */
 export function fingerprint(value: string): string {
@@ -806,23 +916,41 @@ interface VerifiedOrder {
   }>;
 }
 
-const orderProofSchema = {
+export const orderProofSchema = {
   orderNumber: z
     .string()
     .trim()
     .min(1)
     .max(40)
     .regex(/^#?[A-Za-z0-9\-_.]+$/, "Order number like 1001 or #1001."),
+  // Anything that is not an email address counts as "none given" instead of
+  // failing the call. The model sometimes passes the "[email removed]"
+  // placeholder it sees in the transcript; for an order this chat already
+  // knows that must not matter, and for any other the tool asks for proof.
   email: z
-    .union([z.literal(""), z.email().max(254)])
+    .preprocess(
+      (value) =>
+        typeof value === "string" && z.email().max(254).safeParse(value.trim()).success
+          ? value.trim()
+          : undefined,
+      z.string().optional(),
+    )
+    .describe("The email used at checkout, when the shopper gives one."),
+  phone: z
+    .string()
+    .trim()
+    .max(30)
     .optional()
     .describe(
-      "The email used at checkout. Leave it out only for an order listed as already known in this chat.",
+      "The phone number used on the order. Proves the order just as the email does, for shoppers who gave no email.",
     ),
 };
 
+const ORDER_NUMBER_NOT_FOUND =
+  "No order has that number. Ask the shopper to check it, or to contact the store.";
+
 const ORDER_NEEDS_EMAIL =
-  "This order is not one already known in this chat, so the email address used at checkout is needed too. Ask the shopper for it, then call again with both.";
+  "This order has not been proved in this chat yet, so the email address or the phone number used on the order is needed too. Ask the shopper for either one, then call again with it.";
 
 /**
  * Finds the order only if it is the shopper's: either the server already tied
@@ -832,20 +960,17 @@ const ORDER_NEEDS_EMAIL =
  * used to guess. It throws the same error for "no such order" and "wrong
  * email", so it cannot be used to discover which order numbers exist.
  */
-async function findVerifiedOrder(
+export async function findVerifiedOrder(
   context: ToolContext,
   orderNumber: string,
   email: string | undefined,
+  phone?: string,
 ): Promise<VerifiedOrder> {
   const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
   const wantedEmail = (email ?? "").trim().toLowerCase();
+  const wantedPhone = phoneDigits(phone);
 
-  context.turn.orderLookups += 1;
-  if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
-    throw new ToolError(
-      "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
-    );
-  }
+  countTurnLookup(context, wantedName);
 
   const known = context.knownOrders?.find(
     (order) => order.name.replace(/^#/, "").toLowerCase() === wantedName,
@@ -860,56 +985,127 @@ async function findVerifiedOrder(
     if (!order) throw new ToolError(ORDER_NOT_FOUND);
     return order;
   }
-  if (!wantedEmail) throw new ToolError(ORDER_NEEDS_EMAIL);
+  if (!wantedEmail && !wantedPhone) throw new ToolError(ORDER_NEEDS_EMAIL);
+  if (!wantedEmail && wantedPhone.length < 7) {
+    throw new ToolError("That phone number looks incomplete. Ask the shopper for the full number.");
+  }
+  // An email, when given, is what is checked; the phone is the fallback.
+  const proof = wantedEmail || wantedPhone;
 
-  const nowMs = context.now().getTime();
-  const limits: Array<[key: string, max: number, windowMs: number]> = [
+  await countLookup(context, [
     [
       `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
       ORDER_LOOKUPS_PER_ADDRESS,
       FIFTEEN_MINUTES_MS,
     ],
     [
-      `order-lookup:email:${context.shop}:${fingerprint(wantedEmail)}`,
+      `order-lookup:email:${context.shop}:${fingerprint(proof)}`,
       ORDER_LOOKUPS_PER_EMAIL,
       ONE_HOUR_MS,
     ],
     [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
-  ];
-  for (const [key, max, windowMs] of limits) {
-    if (!context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) {
-      throw new ToolError(ORDER_LOOKUP_THROTTLED);
-    }
-  }
+  ]);
 
-  const data = await context.admin!<{ orders: { nodes: VerifiedOrder[] } }>(
-    ORDER_STATUS_QUERY,
-    { query: `name:${wantedName}` },
-  );
+  const data = await context.admin!<{
+    orders: {
+      nodes: Array<VerifiedOrder & { phone?: string | null; shippingAddress?: { phone: string | null } | null }>;
+    };
+  }>(wantedEmail ? ORDER_STATUS_QUERY : ORDER_STATUS_WITH_PHONE_QUERY, {
+    query: `name:${wantedName}`,
+  });
 
   // The search is fuzzy, so require an exact match on both fields here.
   const order = data.orders.nodes.find(
     (candidate) =>
       candidate.name.replace(/^#/, "").toLowerCase() === wantedName &&
-      (candidate.email ?? "").toLowerCase() === wantedEmail,
+      (wantedEmail
+        ? (candidate.email ?? "").toLowerCase() === wantedEmail
+        : samePhone(candidate.phone, wantedPhone) ||
+          samePhone(candidate.shippingAddress?.phone, wantedPhone)),
   );
   if (!order) throw new ToolError(ORDER_NOT_FOUND);
-  // Proved once: follow-up questions in this chat need no email again.
+  // Proved once: follow-up questions in this chat need no proof again.
   await context.rememberOrder?.({ id: order.id, name: order.name });
+  return order;
+}
+
+/**
+ * Finds an order by its number alone. Only used when the merchant has opted
+ * in, and only for the basics: an order number proves nothing about who is
+ * asking, so the caller must not hand back anything personal. The per-address
+ * and per-shop throttles still apply, which slows down walking through order
+ * numbers but does not prevent it. That trade-off is the merchant's choice.
+ */
+async function findOrderByNumber(
+  context: ToolContext,
+  orderNumber: string,
+): Promise<VerifiedOrder> {
+  const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
+
+  countTurnLookup(context, wantedName);
+  await countLookup(context, [
+    [
+      `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
+      ORDER_LOOKUPS_PER_ADDRESS,
+      FIFTEEN_MINUTES_MS,
+    ],
+    [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
+  ]);
+
+  const data = await context.admin!<{ orders: { nodes: VerifiedOrder[] } }>(
+    ORDER_STATUS_QUERY,
+    { query: `name:${wantedName}` },
+  );
+  // The search is fuzzy, so require an exact match on the number.
+  const order = data.orders.nodes.find(
+    (candidate) => candidate.name.replace(/^#/, "").toLowerCase() === wantedName,
+  );
+  if (!order) throw new ToolError(ORDER_NUMBER_NOT_FOUND);
   return order;
 }
 
 const getOrderStatus = defineTool({
   name: "get_order_status",
   description:
-    "Check the status and tracking of the shopper's own order. Requires BOTH the order number and the email address used at checkout; ask for whichever is missing before calling. The one exception is an order listed as already known in this chat: for those the order number alone is enough, so do not ask for the email.",
+    "Check the status of the shopper's order by its order number. Whether proof is also needed (the email address or the phone number used on the order, either one) depends on the store, and your instructions say which. Proof is never needed for an order placed or already proved earlier in this chat. The tracking number and link are only returned for such an order or when proof is given.",
   audiences: ["shopper"],
   schema: z.object(orderProofSchema),
   // Off unless the merchant turned it on in the app settings.
   isAvailable: (context) =>
     Boolean(context.admin) && context.settings.orderLookupEnabled,
-  async run({ orderNumber, email }, context) {
-    const order = await findVerifiedOrder(context, orderNumber, email);
+  async run({ orderNumber, email, phone }, context) {
+    const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
+    const proved =
+      Boolean(email) ||
+      Boolean(phone) ||
+      Boolean(
+        context.knownOrders?.some(
+          (known) => known.name.replace(/^#/, "").toLowerCase() === wantedName,
+        ),
+      );
+
+    // The merchant's opt-in: the basics from the number alone. No tracking
+    // number or link, since those lead to where the parcel is going.
+    if (!proved && context.settings.orderLookupByNumber) {
+      const order = await findOrderByNumber(context, orderNumber);
+      return {
+        output: {
+          order: order.name,
+          placedOn: order.processedAt.slice(0, 10),
+          cancelled: Boolean(order.cancelledAt),
+          paymentStatus: order.displayFinancialStatus,
+          fulfillmentStatus: order.displayFulfillmentStatus,
+          shipments: order.fulfillments.map((fulfillment) => ({
+            status: fulfillment.status,
+            estimatedDelivery: fulfillment.estimatedDeliveryAt?.slice(0, 10),
+            carrier: fulfillment.trackingInfo[0]?.company ?? undefined,
+          })),
+          note: "Basic status only. The tracking number and link are shared when the shopper also gives the email address or the phone number used on the order: offer that if they want to track the parcel.",
+        },
+      };
+    }
+
+    const order = await findVerifiedOrder(context, orderNumber, email, phone);
 
     return {
       output: {
@@ -941,7 +1137,7 @@ interface ReturnableItem {
 const requestReturn = defineTool({
   name: "request_return",
   description:
-    "Ask the store to accept a return for the shopper's own order. Requires BOTH the order number and the checkout email (the email can be left out for an order already known in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
+    "Ask the store to accept a return for the shopper's own order. Requires the order number, proof that it is theirs (the email address or the phone number used on the order; neither is needed for an order placed or already proved earlier in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,
@@ -951,6 +1147,10 @@ const requestReturn = defineTool({
       .min(3)
       .max(300)
       .describe("Why the shopper wants to return it, in their words."),
+    reasonKind: z
+      .enum(Object.keys(RETURN_REASON_HANDLES) as [ReturnReasonKind, ...ReturnReasonKind[]])
+      .default("other")
+      .describe("The category closest to their reason. Use 'other' when none fits."),
     itemTitle: z
       .string()
       .trim()
@@ -961,8 +1161,8 @@ const requestReturn = defineTool({
   }),
   // Off unless the merchant turned it on in the app settings.
   isAvailable: (context) => Boolean(context.admin) && context.settings.allowReturns,
-  async run({ orderNumber, email, reason, itemTitle, quantity }, context) {
-    const order = await findVerifiedOrder(context, orderNumber, email);
+  async run({ orderNumber, email, phone, reason, reasonKind, itemTitle, quantity }, context) {
+    const order = await findVerifiedOrder(context, orderNumber, email, phone);
 
     const data = await context.admin!<{
       returnableFulfillments: {
@@ -1012,14 +1212,21 @@ const requestReturn = defineTool({
     }
     const item = matches[0];
 
+    // Shopify wants one of its own reason categories with every request.
+    const handle = RETURN_REASON_HANDLES[reasonKind];
+    const reasons = await context.admin!<{
+      returnReasonDefinitions: { nodes: Array<{ id: string; handle: string }> };
+    }>(RETURN_REASONS_QUERY, { handles: [...new Set([handle, RETURN_REASON_HANDLES.other])] });
+    const definitions = reasons.returnReasonDefinitions?.nodes ?? [];
+    const definition =
+      definitions.find((candidate) => candidate.handle === handle) ??
+      definitions.find((candidate) => candidate.handle === RETURN_REASON_HANDLES.other);
+
     // One request per order per day, so a repeated message cannot pile up
-    // duplicate requests in the merchant's admin.
-    const once = context.rateLimiter.hit(
-      `return-request:${context.shop}:${order.id}`,
-      1,
-      ONE_DAY_MS,
-      context.now().getTime(),
-    );
+    // duplicate requests in the merchant's admin. A request that Shopify
+    // turns down does not count.
+    const onceKey = `return-requested:${context.shop}:${order.id}`;
+    const once = context.rateLimiter.hit(onceKey, 1, ONE_DAY_MS, context.now().getTime());
     if (!once.allowed) {
       throw new ToolError(
         "A return was already requested for this order today. The store will be in touch by email.",
@@ -1039,13 +1246,18 @@ const requestReturn = defineTool({
             fulfillmentLineItemId: item.fulfillmentLineItemId,
             quantity: Math.min(quantity, item.quantity),
             customerNote: reason,
+            ...(definition ? { returnReasonDefinitionId: definition.id } : {}),
           },
         ],
       },
+    }).catch((error: unknown) => {
+      context.rateLimiter.forget(onceKey);
+      throw error;
     });
 
     const created = result.returnRequest?.return;
     if (!created) {
+      context.rateLimiter.forget(onceKey);
       throw new ToolError(
         `The store's system did not accept the return request${
           result.returnRequest?.userErrors[0]

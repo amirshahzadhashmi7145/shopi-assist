@@ -17,7 +17,7 @@
   browser never keeps running an older cached copy after an update. Written by
   `npm run widget:stamp`; a test fails when it is out of date.
 {%- endcomment -%}
-{%- assign shopi_assist_build = '7e326d8718eb' -%}
+{%- assign shopi_assist_build = 'ac4fdebce359' -%}
 {%- assign shopi_assist_js = 'shopi-assist.js' | asset_url -%}
 {%- assign shopi_assist_css = 'shopi-assist.css' | asset_url -%}
 {%- if shopi_assist_js contains '?' -%}
@@ -42,6 +42,16 @@
   data-cart-url="{{ routes.cart_url | escape }}"
   data-cart-add-url="{{ routes.cart_add_url | escape }}"
 ></div>
+{%- if block.settings.order_form_regions -%}
+  {%- comment -%}
+    The countries the store ships to, each with its states or provinces: the
+    same list themes use for address forms. The pay-on-delivery order form
+    reads it to offer states as a list, as the checkout does. Never shown.
+  {%- endcomment -%}
+  <select id="shopi-assist-regions" hidden aria-hidden="true" tabindex="-1" style="display: none !important;">
+    {{ country_option_tags }}
+  </select>
+{%- endif -%}
 <script src="{{ shopi_assist_js | append: shopi_assist_stamp }}" defer></script>
 
 {% schema %}
@@ -76,6 +86,17 @@
         { "value": "left", "label": "Bottom left" }
       ],
       "default": "right"
+    },
+    {
+      "type": "header",
+      "content": "Order form"
+    },
+    {
+      "type": "checkbox",
+      "id": "order_form_regions",
+      "label": "Offer states and provinces as a list",
+      "info": "For pay-on-delivery orders in the chat. Puts the countries and states you ship to on each page. Untick it if you do not take orders in the chat.",
+      "default": true
     },
     {
       "type": "header",

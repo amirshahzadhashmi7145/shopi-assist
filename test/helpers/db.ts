@@ -13,7 +13,12 @@ export async function createTestDb(): Promise<{
   cleanup: () => Promise<void>;
 }> {
   const dir = mkdtempSync(join(tmpdir(), "shopi-assist-test-"));
-  const db = new PrismaClient({ datasourceUrl: `file:${join(dir, "test.sqlite")}` });
+  // One connection only. With several, a migration that drops and re-creates a
+  // table can run its next statement on a connection that still remembers the
+  // old table, and fail with "there is already another table with this name".
+  const db = new PrismaClient({
+    datasourceUrl: `file:${join(dir, "test.sqlite")}?connection_limit=1`,
+  });
 
   const migrationsDir = join(process.cwd(), "prisma", "migrations");
   const migrations = readdirSync(migrationsDir, { withFileTypes: true })

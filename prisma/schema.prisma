@@ -42,6 +42,10 @@ model ShopSettings {
   instructions       String   @default("")
   // Opt-in: lets shoppers check an order's status with order number + checkout email.
   orderLookupEnabled Boolean  @default(false)
+  // Opt-in on top of the above: basic status from the order number alone.
+  // Less private, since order numbers can be guessed; tracking details and
+  // return requests still need the checkout email.
+  orderLookupByNumber Boolean @default(false)
   // Conversations older than this are deleted.
   retentionDays      Int      @default(30)
 
@@ -65,6 +69,15 @@ model ShopSettings {
   // Opt-in: lets shoppers ask for a return with order number + checkout email.
   // It creates a return REQUEST that the merchant approves or declines.
   allowReturns        Boolean @default(false)
+  // Opt-in changes to an existing order, each one only before the order starts
+  // shipping, only for an order proved to be the shopper's, and only when the
+  // shopper presses a confirm button in the chat.
+  allowOrderCancel    Boolean @default(false)
+  allowAddressChange  Boolean @default(false)
+  allowOrderEdit      Boolean @default(false)
+  // Opt-in: a shopper signed in to their store account gets their own recent
+  // orders without giving an order number or email.
+  recogniseCustomers  Boolean @default(false)
   // Opt-in: lets shoppers place a pay-on-delivery order from a form in the
   // chat. The app creates a real, unpaid order in the store.
   allowChatOrders     Boolean @default(false)
