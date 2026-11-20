@@ -97,7 +97,9 @@ async function admin(query, variables) {
       `Shopify refused a request: ${reason}` +
         (/not approved to access/i.test(reason)
           ? "\nGive the app protected customer data access first: Dev Dashboard > your app > Settings > Access requests."
-          : ""),
+          : /invalid api key or access token/i.test(reason)
+            ? "\nThe app's access to the store lasts an hour and has run out. With `npm run dev` running, open the chat on your storefront once, then run this again."
+            : ""),
     );
   }
   return body.data;
