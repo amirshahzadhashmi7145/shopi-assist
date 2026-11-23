@@ -85,6 +85,38 @@ export const COLLECTION_BEST_SELLERS_QUERY = `#graphql
   ${PRODUCT_CARD_FRAGMENT}
 `;
 
+/** The products added to the store most recently, newest first. */
+export const NEWEST_PRODUCTS_QUERY = `#graphql
+  query ShopiAssistNewestProducts(
+    $first: Int!
+    $country: CountryCode
+    $language: LanguageCode
+  ) @inContext(country: $country, language: $language) {
+    products(first: $first, sortKey: CREATED_AT, reverse: true) {
+      nodes { ...ShopiAssistProductCard }
+    }
+  }
+  ${PRODUCT_CARD_FRAGMENT}
+`;
+
+export const COLLECTION_NEWEST_QUERY = `#graphql
+  query ShopiAssistCollectionNewest(
+    $handle: String!
+    $first: Int!
+    $country: CountryCode
+    $language: LanguageCode
+  ) @inContext(country: $country, language: $language) {
+    collection(handle: $handle) {
+      title
+      handle
+      products(first: $first, sortKey: CREATED, reverse: true) {
+        nodes { ...ShopiAssistProductCard }
+      }
+    }
+  }
+  ${PRODUCT_CARD_FRAGMENT}
+`;
+
 /** In-stock products ordered by price. `reverse` puts the dearest first. */
 export const PRODUCTS_BY_PRICE_QUERY = `#graphql
   query ShopiAssistProductsByPrice(

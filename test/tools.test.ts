@@ -86,6 +86,36 @@ describe("audience boundary", () => {
 });
 
 describe("shopper tools", () => {
+  it("get_newest_products lists the latest products, newest first, in the store or one collection", async () => {
+    const storefront = fakeGraphql({ products: { nodes: [storefrontProduct()] } });
+    const result = await run("get_newest_products", { limit: 3 }, toolContext({ storefront }));
+
+    expect(result.ok).toBe(true);
+    expect(storefront.calls[0].query).toContain("sortKey: CREATED_AT, reverse: true");
+    expect(storefront.calls[0].variables).toMatchObject({ first: 3 });
+    expect(result.json).toMatchObject({ count: 1, rankedBy: "newest first" });
+    expect(result.cards).toHaveLength(1);
+
+    const inCollection = fakeGraphql({
+      collection: { title: "Boards", products: { nodes: [storefrontProduct()] } },
+    });
+    const boards = await run(
+      "get_newest_products",
+      { collectionHandle: "boards" },
+      toolContext({ storefront: inCollection }),
+    );
+    expect(inCollection.calls[0].query).toContain("sortKey: CREATED, reverse: true");
+    expect(inCollection.calls[0].variables).toMatchObject({ handle: "boards" });
+    expect(boards.json).toMatchObject({ collection: "Boards", rankedBy: "newest first" });
+
+    const missing = await run(
+      "get_newest_products",
+      { collectionHandle: "nope" },
+      toolContext({ storefront: fakeGraphql({ collection: null }) }),
+    );
+    expect(missing.ok).toBe(false);
+  });
+
   it("get_best_sellers sorts by best selling and returns cards", async () => {
     const storefront = fakeGraphql({
       products: {

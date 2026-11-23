@@ -23,7 +23,9 @@ import {
   BEST_SELLERS_QUERY,
   COLLECTION_BEST_SELLERS_QUERY,
   COLLECTION_BY_PRICE_QUERY,
+  COLLECTION_NEWEST_QUERY,
   COLLECTIONS_QUERY,
+  NEWEST_PRODUCTS_QUERY,
   PRODUCT_DETAILS_QUERY,
   PRODUCTS_BY_PRICE_QUERY,
   SEARCH_BY_PRICE_QUERY,
@@ -377,7 +379,7 @@ const searchProducts = defineTool({
 const getBestSellers = defineTool({
   name: "get_best_sellers",
   description:
-    "List the store's best-selling (most popular) products, optionally within one collection. Use for 'top sellers', 'most popular', 'what do people buy' questions.",
+    "List the store's best-selling (most popular) products, optionally within one collection. Use for 'top sellers', 'most popular', 'what do people buy' questions. Not for 'latest' or 'new' products: get_newest_products answers those.",
   audiences: ["shopper"],
   schema: z.object({
     limit: limitSchema,
@@ -412,6 +414,48 @@ const getBestSellers = defineTool({
     }>(BEST_SELLERS_QUERY, { first: limit, ...buyerVariables(context) });
     return productListResult(data.products.nodes, {
       rankedBy: "best selling",
+    });
+  },
+});
+
+const getNewestProducts = defineTool({
+  name: "get_newest_products",
+  description:
+    "List the products added to the store most recently, newest first, optionally within one collection. Use for every 'latest', 'newest', 'new arrivals', 'what's new' or 'just in' question, and call them the newest products, not best sellers.",
+  audiences: ["shopper"],
+  schema: z.object({
+    limit: limitSchema,
+    collectionHandle: handleSchema
+      .optional()
+      .describe("Limit to one collection, using its handle from list_collections."),
+  }),
+  isAvailable: (context) => Boolean(context.storefront),
+  async run({ limit, collectionHandle }, context) {
+    if (collectionHandle) {
+      const data = await context.storefront!<{
+        collection: {
+          title: string;
+          products: { nodes: Array<Partial<StorefrontProduct>> };
+        } | null;
+      }>(COLLECTION_NEWEST_QUERY, {
+        handle: collectionHandle,
+        first: limit,
+        ...buyerVariables(context),
+      });
+      if (!data.collection) {
+        throw new ToolError(`No collection with handle "${collectionHandle}".`);
+      }
+      return productListResult(data.collection.products.nodes, {
+        collection: data.collection.title,
+        rankedBy: "newest first",
+      });
+    }
+
+    const data = await context.storefront!<{
+      products: { nodes: Array<Partial<StorefrontProduct>> };
+    }>(NEWEST_PRODUCTS_QUERY, { first: limit, ...buyerVariables(context) });
+    return productListResult(data.products.nodes, {
+      rankedBy: "newest first",
     });
   },
 });
@@ -1323,6 +1367,7 @@ const requestReturn = defineTool({
 export const shopperTools: ToolDefinition[] = [
   searchProducts,
   getBestSellers,
+  getNewestProducts,
   getProductsByPrice,
   getProductDetails,
   listCollections,
