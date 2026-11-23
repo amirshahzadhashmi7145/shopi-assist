@@ -34,6 +34,7 @@ import { isDevelopmentStore } from "./shopify-clients.server";
 import { appendExchange, findConversation, rememberOrder } from "./store.server";
 import { fingerprint } from "./tools/shopper";
 import {
+  CHECKOUT_CART_MUTATION,
   DELIVERY_COUNTRIES_QUERY,
   PAYMENT_SETTINGS_QUERY,
   VARIANTS_FOR_ORDER_QUERY,
@@ -175,7 +176,9 @@ export class OrderError extends Error {
 
 export type ChatOrderResult =
   | { ok: true; step: "quote"; quote: OrderQuote }
-  | { ok: true; step: "place"; order: { name: string; total: Money } };
+  | { ok: true; step: "place"; order: { name: string; total: Money } }
+  /** Where to pay for some of the cart's items on the store's own checkout. */
+  | { ok: true; step: "checkout"; checkoutUrl: string };
 
 export interface ChatOrderInput {
   /** Shop domain from the authenticated request. Never from the request body. */
@@ -774,6 +777,107 @@ async function placeOrder(
 }
 
 // ---------------------------------------------------------------------------
+// Checkout for part of the cart
+// ---------------------------------------------------------------------------
+
+// A cart, not an order: nothing is created in the store, so the limits are
+// those of a cart rather than of a pay-on-delivery order.
+const checkoutSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        variantId: z.string().regex(/^\d{1,20}$/),
+        quantity: z.number().int().min(1).max(999),
+        /** A subscription the line was added with. */
+        sellingPlanId: z.string().regex(/^\d{1,20}$/).optional(),
+        /** What the shopper chose or typed for the line, such as an engraving. */
+        properties: z.record(z.string().min(1).max(100), z.string().max(500)).optional(),
+      }),
+    )
+    .min(1)
+    .max(50),
+  country: z
+    .string()
+    .regex(/^[A-Za-z]{2}$/)
+    .optional(),
+  discountCodes: z.array(z.string().min(1).max(100)).max(5).optional(),
+});
+
+/**
+ * The store's checkout for just the items the shopper ticked. Shopify's
+ * checkout always takes a whole cart, so these go into a cart of their own;
+ * the cart on the storefront, with whatever was not ticked, stays as it is.
+ * Everything else (delivery, tax, how to pay) is the checkout's business.
+ */
+async function checkoutLink(
+  input: ChatOrderInput,
+  deps: ChatOrderDeps,
+): Promise<Extract<ChatOrderResult, { step: "checkout" }>> {
+  const parsed = checkoutSchema.safeParse(input.body);
+  if (!parsed.success) {
+    throw new OrderError("invalid_request", 400, "Something went wrong. Please try again.");
+  }
+  enforce(deps, [
+    {
+      key: `order:checkout:ip:${input.shop}:${clientKey(input.ip)}`,
+      max: 30,
+      windowMs: 10 * MINUTE_MS,
+    },
+    { key: `order:checkout:shop:${input.shop}`, max: 1200, windowMs: HOUR_MS },
+  ]);
+
+  const { items, country, discountCodes } = parsed.data;
+  const unavailable = new OrderError(
+    "unavailable",
+    409,
+    "The checkout couldn't be opened for these items. Please try again.",
+  );
+  let created: {
+    cart: { checkoutUrl: string; totalQuantity: number } | null;
+    userErrors: Array<{ code: string | null }>;
+  } | null;
+  try {
+    const data = await input.storefront<{ cartCreate: typeof created }>(CHECKOUT_CART_MUTATION, {
+      country: country?.toUpperCase() ?? null,
+      input: {
+        lines: items.map((item) => ({
+          merchandiseId: `gid://shopify/ProductVariant/${item.variantId}`,
+          quantity: item.quantity,
+          ...(item.sellingPlanId
+            ? { sellingPlanId: `gid://shopify/SellingPlan/${item.sellingPlanId}` }
+            : {}),
+          ...(item.properties && Object.keys(item.properties).length
+            ? {
+                attributes: Object.entries(item.properties)
+                  .slice(0, 25)
+                  .map(([key, value]) => ({ key, value })),
+              }
+            : {}),
+        })),
+        ...(discountCodes?.length ? { discountCodes } : {}),
+      },
+    });
+    created = data.cartCreate;
+  } catch (error) {
+    console.error(
+      `[shopi-assist] checkout cart failed shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    throw unavailable;
+  }
+
+  const cart = created?.cart;
+  if (!cart || created?.userErrors.length || !/^https:\/\/[^\s]+$/.test(cart.checkoutUrl)) {
+    const codes = (created?.userErrors ?? []).map((error) => error.code ?? "unknown").join(",");
+    console.error(`[shopi-assist] checkout cart refused shop=${input.shop} codes=${codes || "none"}`);
+    throw unavailable;
+  }
+  if (cart.totalQuantity < 1) {
+    throw new OrderError("unavailable", 409, "These items are sold out, so they can't be bought right now.");
+  }
+  return { ok: true, step: "checkout", checkoutUrl: cart.checkoutUrl };
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -793,11 +897,18 @@ export async function handleChatOrder(
   const now = deps.now().getTime();
 
   const settings = await getSettings(input.shop, deps.db);
+  const step = input.body.step;
+  // Paying at the store's checkout needs only the assistant's help with orders.
+  if (step === "checkout") {
+    if (!settings.enabled || !settings.allowCheckout) {
+      throw new OrderError("disabled", 403, "Ordering in the chat is not available for this store.");
+    }
+    return checkoutLink(input, deps);
+  }
   if (!settings.enabled || !settings.allowChatOrders || !settings.allowCheckout) {
     throw new OrderError("disabled", 403, "Ordering in the chat is not available for this store.");
   }
 
-  const step = input.body.step;
   if (step !== "quote" && step !== "place") {
     throw new OrderError("invalid_request", 400, "Something went wrong. Please reload the page.");
   }

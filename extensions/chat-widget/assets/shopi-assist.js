@@ -771,19 +771,18 @@
         : "";
     };
 
-    // Where the store takes orders in the chat, the shopper ticks which of
-    // the cart's lines this order holds: what they just asked for is ticked,
-    // what was in the cart before waits underneath. Anywhere else the
-    // checkout takes the whole cart, so there is nothing to tick.
-    var selectable = this.chatOrders;
+    // The shopper ticks which of the cart's lines this order holds: what
+    // they just asked for is ticked, what was in the cart before waits
+    // underneath. Ordering here or paying at the checkout, only the ticked
+    // lines are bought; the rest stay in the cart.
     var isOn = function (line) {
-      return !selectable || !line.key || line.on !== false;
+      return !line.key || line.on !== false;
     };
     var chosen = lines.filter(isOn);
     var waiting = lines.filter(function (line) {
       return !isOn(line);
     });
-    var ticks = selectable && (lines.length > 1 || waiting.length > 0);
+    var ticks = lines.length > 1 || waiting.length > 0;
 
     var box = el("section", "sa-order");
     box.setAttribute("aria-label", "Order summary");
@@ -926,30 +925,127 @@
       box.appendChild(here);
 
       var online = el("p", "sa-order-note sa-order-online-note");
-      // The store's checkout always takes the whole cart.
-      var link = el(
-        "a",
-        "sa-order-online",
-        waiting.length
-          ? "Pay online at checkout instead (takes your whole cart)"
-          : "Pay online at checkout instead",
+      online.appendChild(
+        this.checkoutControl("sa-order-online", "Pay online at checkout instead", {
+          partial: waiting.length > 0,
+          newTab: true,
+        }),
       );
-      link.href = this.config.checkoutUrl;
-      link.target = "_blank";
-      link.rel = "noopener";
-      online.appendChild(link);
       box.appendChild(online);
     } else {
       box.appendChild(el("p", "sa-order-note", "Shipping and taxes are added at checkout."));
       var actions = el("div", "sa-order-actions");
-      var pay = el("a", "sa-card-button sa-card-button-primary sa-order-checkout", "Go to checkout");
-      pay.href = this.config.checkoutUrl;
+      var pay = this.checkoutControl(
+        "sa-card-button sa-card-button-primary sa-order-checkout",
+        "Go to checkout",
+        { partial: waiting.length > 0, newTab: false },
+      );
+      if (!chosen.length) pay.disabled = true;
       actions.appendChild(pay);
       box.appendChild(actions);
     }
 
     this.messagesEl.appendChild(box);
     return box;
+  };
+
+  /**
+   * The way to the store's checkout. With everything in the cart ticked it
+   * is a plain link to the checkout. With some lines left unticked it is a
+   * button: Shopify's checkout always takes a whole cart, so the app is
+   * asked for a checkout holding just the ticked lines.
+   */
+  Widget.prototype.checkoutControl = function (className, label, options) {
+    var self = this;
+    if (!options.partial) {
+      var link = el("a", className, label);
+      link.href = this.config.checkoutUrl;
+      if (options.newTab) {
+        link.target = "_blank";
+        link.rel = "noopener";
+      }
+      return link;
+    }
+    var button = el("button", className + " sa-order-partial", label);
+    button.type = "button";
+    button.addEventListener("click", function () {
+      if (button.disabled) return;
+      button.disabled = true;
+      var enable = function () {
+        button.disabled = false;
+      };
+      self.checkoutTicked(options.newTab).then(enable, enable);
+    });
+    return button;
+  };
+
+  /**
+   * Opens the store's checkout for the ticked lines only. In a new tab the
+   * tab is opened at once, while the press still counts as the shopper's
+   * own, and pointed at the checkout when the app has answered.
+   */
+  Widget.prototype.checkoutTicked = function (newTab) {
+    var self = this;
+    var tab = newTab ? window.open("", "_blank") : null;
+    if (tab) tab.opener = null;
+    var fail = function (message) {
+      if (tab) tab.close();
+      self.pushEntry({
+        role: "notice",
+        tone: "error",
+        text: message || "The checkout couldn't be opened. Please try again.",
+      });
+    };
+
+    return this.fetchCart()
+      .then(function (cart) {
+        var ticked = self.tickedLines();
+        var lines = !cart
+          ? []
+          : !ticked
+            ? cart.items
+            : cart.items.filter(function (line) {
+                return ticked[line.key] === true;
+              });
+        if (!lines.length) return null;
+        var codes = (Array.isArray(cart.discount_codes) ? cart.discount_codes : [])
+          .filter(function (entry) {
+            return entry && entry.applicable !== false && typeof entry.code === "string" && entry.code;
+          })
+          .map(function (entry) {
+            return entry.code;
+          })
+          .slice(0, 5);
+        var payload = {
+          step: "checkout",
+          items: lines.map(function (line) {
+            var item = { variantId: String(line.variant_id), quantity: Number(line.quantity) };
+            // A subscription or a personalisation goes with its line.
+            var plan = line.selling_plan_allocation && line.selling_plan_allocation.selling_plan;
+            if (plan && plan.id) item.sellingPlanId = String(plan.id);
+            if (line.properties && Object.keys(line.properties).length) {
+              item.properties = {};
+              Object.keys(line.properties).forEach(function (name) {
+                item.properties[name] = String(line.properties[name]);
+              });
+            }
+            return item;
+          }),
+        };
+        if (/^[A-Za-z]{2}$/.test(self.config.country || "")) payload.country = self.config.country;
+        if (codes.length) payload.discountCodes = codes;
+        return self.postOrder(payload);
+      })
+      .then(function (result) {
+        if (!result) return fail("Tick what you want to buy first.");
+        var url = result.ok && typeof result.body.checkoutUrl === "string" ? result.body.checkoutUrl : "";
+        if (!/^https:\/\/[^\s]+$/.test(url)) {
+          var error = result.body && result.body.error;
+          return fail(error && typeof error.message === "string" ? error.message : "");
+        }
+        if (tab) tab.location.replace(url);
+        else window.open(url, "_self");
+      });
   };
 
   /** A − / count / + control for one quantity. `change` hears every new value. */
@@ -1673,7 +1769,6 @@
    * the whole cart: nothing is unticked, or there is nothing to tick.
    */
   Widget.prototype.tickedLines = function () {
-    if (!this.chatOrders) return null;
     var ticked = null;
     this.state.messages.forEach(function (message) {
       if (message.role !== "order" || !Array.isArray(message.lines)) return;
@@ -2715,18 +2810,11 @@
     if (pay.note) payment.appendChild(el("span", "sa-order-pay-note", pay.note));
     form.appendChild(payment);
     if (pay.online.length) {
-      var online = el("a", "sa-order-pay sa-order-pay-online");
-      online.href = this.config.checkoutUrl;
-      online.target = "_blank";
-      online.rel = "noopener";
-      online.appendChild(
-        el(
-          "strong",
-          null,
-          // The store's checkout always takes the whole cart.
-          this.tickedLines() ? "Pay online at checkout (takes your whole cart)" : "Pay online at checkout",
-        ),
-      );
+      var online = this.checkoutControl("sa-order-pay sa-order-pay-online", "", {
+        partial: Boolean(this.tickedLines()),
+        newTab: true,
+      });
+      online.appendChild(el("strong", null, "Pay online at checkout"));
       online.appendChild(el("span", null, pay.online.join(", ")));
       form.appendChild(online);
     }

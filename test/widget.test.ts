@@ -1148,6 +1148,98 @@ describe("chat widget", () => {
       expect(widget.root.querySelector(".sa-order-here")).toBeNull();
     });
 
+    it("sends only the ticked lines to the store's checkout, wherever orders are taken", async () => {
+      const opened = vi.spyOn(window, "open");
+      try {
+        for (const chatOrders of [false, true]) {
+          document.body.textContent = "";
+          window.localStorage.clear();
+          configMock.mockImplementation(() => appConfig({ chatOrders, buyNow: true }));
+          const lines = [
+            { ...cartLine(101, 2, "Trail Mug", 1800), key: "101:k", properties: { Engraving: "Ada" } },
+            {
+              ...cartLine(103, 1, "Camp Blanket", 8950),
+              key: "103:k",
+              selling_plan_allocation: { selling_plan: { id: 77 } },
+            },
+          ];
+          cartMock.mockImplementation(() =>
+            jsonResponse({ ...cartJson(...lines), discount_codes: [{ code: "WELCOME", applicable: true }] }),
+          );
+          fetchMock.mockImplementation(() => reply("Here.", { actions: [{ type: "checkout" }] }));
+          orderMock.mockReset().mockImplementation((_url: string, init?: RequestInit) =>
+            init?.method === "POST"
+              ? jsonResponse({ ok: true, step: "checkout", checkoutUrl: "https://shop.example/cart/c/abc?key=1" })
+              : jsonResponse({ ok: true, countries: [] }),
+          );
+          const tab = { opener: {} as unknown, close: vi.fn(), location: { replace: vi.fn() } };
+          opened.mockReset().mockImplementation(() => tab as unknown as Window);
+
+          const widget = mountWidget();
+          await flush();
+          widget.launcher.click();
+          widget.send("checkout");
+          await flush();
+
+          const control = () => widget.$(chatOrders ? ".sa-order-online" : ".sa-order-checkout");
+          // The whole cart is ticked: a plain link to the checkout, and both lines can be unticked.
+          expect(control().getAttribute("href")).toBe("/checkout");
+          const ticks = widget.all(".sa-order-pick") as HTMLInputElement[];
+          expect(ticks.map((tick) => tick.checked)).toEqual([true, true]);
+
+          ticks[1].checked = false;
+          ticks[1].dispatchEvent(new Event("change", { bubbles: true }));
+          expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
+          expect(control().tagName).toBe("BUTTON");
+          expect(control().textContent).toBe(chatOrders ? "Pay online at checkout instead" : "Go to checkout");
+
+          control().click();
+          await flush();
+          expect(orderPosts()).toEqual([
+            {
+              step: "checkout",
+              items: [{ variantId: "101", quantity: 2, properties: { Engraving: "Ada" } }],
+              country: "US",
+              discountCodes: ["WELCOME"],
+            },
+          ]);
+          if (chatOrders) {
+            // A new tab, opened with the press and then sent to the checkout.
+            expect(opened.mock.calls).toEqual([["", "_blank"]]);
+            expect(tab.opener).toBeNull();
+            expect(tab.location.replace).toHaveBeenCalledWith("https://shop.example/cart/c/abc?key=1");
+          } else {
+            expect(opened.mock.calls).toEqual([["https://shop.example/cart/c/abc?key=1", "_self"]]);
+          }
+          // The cart on the storefront is not touched.
+          expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("/cart/"))).toBe(false);
+
+          // Refused, or an address that is not a checkout: say so and go nowhere.
+          opened.mockClear();
+          tab.close.mockClear();
+          orderMock.mockImplementation(() =>
+            jsonResponse({ ok: false, error: { code: "unavailable", message: "These items are sold out." } }),
+          );
+          control().click();
+          await flush();
+          expect(widget.all(".sa-notice").at(-1)!.textContent).toBe("These items are sold out.");
+          if (chatOrders) expect(tab.close).toHaveBeenCalled();
+          else expect(opened).not.toHaveBeenCalled();
+          orderMock.mockImplementation(() =>
+            jsonResponse({ ok: true, step: "checkout", checkoutUrl: "javascript:alert(1)" }),
+          );
+          control().click();
+          await flush();
+          expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+            "The checkout couldn't be opened. Please try again.",
+          );
+          expect(opened.mock.calls.every((call) => call[0] === "")).toBe(true);
+        }
+      } finally {
+        opened.mockRestore();
+      }
+    });
+
     it("takes the details, shows the total and places the order", async () => {
       const { widget, field, fill, submit } = await openForm((body) =>
         body.step === "quote"
@@ -1351,9 +1443,8 @@ describe("chat widget", () => {
       // Only what is ticked is counted, and has a quantity to change.
       expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
       expect(widget.all(".sa-order-waiting .sa-stepper")).toHaveLength(0);
-      expect(widget.$(".sa-order-online").textContent).toBe(
-        "Pay online at checkout instead (takes your whole cart)",
-      );
+      // Paying online takes only the ticked lines too: a button, not a plain link.
+      expect(widget.$(".sa-order-online").tagName).toBe("BUTTON");
 
       const tick = (title: string, on: boolean) => {
         const box = ticks().find((entry) => entry.getAttribute("aria-label")!.endsWith(title))!;
@@ -1364,7 +1455,8 @@ describe("chat widget", () => {
       expect(widget.all(".sa-order")).toHaveLength(1);
       expect(widget.all(".sa-order-waiting")).toHaveLength(0);
       expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$152.50");
-      expect(widget.$(".sa-order-online").textContent).toBe("Pay online at checkout instead");
+      // Everything ticked is the whole cart: the plain link to the checkout.
+      expect(widget.$(".sa-order-online").getAttribute("href")).toBe("/checkout");
       tick("Camp Blanket", false);
       expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
 

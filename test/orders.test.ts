@@ -674,6 +674,89 @@ describe("placing an order", () => {
   });
 });
 
+describe("checkout for the ticked items", () => {
+  const SHOP_C = "shop-c.myshopify.com";
+  const cartApi = (handler: Handler) => routedGraphql({ ShopiAssistCheckoutCart: handler });
+  const created = (overrides: Record<string, unknown> = {}) => ({
+    cartCreate: {
+      cart: { checkoutUrl: "https://shop-c.example/cart/c/abc?key=1", totalQuantity: 3 },
+      userErrors: [],
+      ...overrides,
+    },
+  });
+  const body = {
+    step: "checkout",
+    country: "ca",
+    discountCodes: ["WELCOME"],
+    items: [
+      { variantId: "101", quantity: 2, properties: { Engraving: "Ada" } },
+      { variantId: "103", quantity: 1, sellingPlanId: "77" },
+    ],
+  };
+  const checkout = (
+    store: ReturnType<typeof cartApi>,
+    request: Record<string, unknown> = body,
+    shop = SHOP_C,
+  ) => handleChatOrder({ shop, body: request, ip: "203.0.113.9", admin: adminApi(), storefront: store }, deps);
+
+  it("makes a cart of its own for them, on a store that takes no orders in the chat", async () => {
+    const store = cartApi(() => created());
+    expect(await checkout(store)).toEqual({
+      ok: true,
+      step: "checkout",
+      checkoutUrl: "https://shop-c.example/cart/c/abc?key=1",
+    });
+    expect(store.calls).toHaveLength(1);
+    expect(store.calls[0].variables).toEqual({
+      country: "CA",
+      input: {
+        lines: [
+          {
+            merchandiseId: "gid://shopify/ProductVariant/101",
+            quantity: 2,
+            attributes: [{ key: "Engraving", value: "Ada" }],
+          },
+          {
+            merchandiseId: "gid://shopify/ProductVariant/103",
+            quantity: 1,
+            sellingPlanId: "gid://shopify/SellingPlan/77",
+          },
+        ],
+        discountCodes: ["WELCOME"],
+      },
+    });
+  });
+
+  it("says so when Shopify will not make the cart, and never passes on a link that is not a checkout", async () => {
+    const refused = await failure(
+      checkout(cartApi(() => created({ cart: null, userErrors: [{ code: "INVALID", field: null, message: "No" }] }))),
+    );
+    expect([refused.code, refused.status]).toEqual(["unavailable", 409]);
+
+    const odd = cartApi(() => created({ cart: { checkoutUrl: "javascript:alert(1)", totalQuantity: 1 } }));
+    expect((await failure(checkout(odd))).code).toBe("unavailable");
+
+    const soldOut = cartApi(() => created({ cart: { checkoutUrl: "https://shop-c.example/cart/c/x", totalQuantity: 0 } }));
+    expect((await failure(checkout(soldOut))).message).toMatch(/sold out/);
+
+    const offline = cartApi(() => {
+      throw new Error("offline");
+    });
+    expect((await failure(checkout(offline))).code).toBe("unavailable");
+  });
+
+  it("refuses a malformed request, and a store where the assistant does not help with orders", async () => {
+    const store = cartApi(() => created());
+    for (const items of [[], [{ variantId: "abc", quantity: 1 }], [{ variantId: "101", quantity: 0 }]]) {
+      expect((await failure(checkout(store, { step: "checkout", items }))).code).toBe("invalid_request");
+    }
+    expect(store.calls).toHaveLength(0);
+
+    await saveSettings(SHOP_C, { allowCheckout: false }, db);
+    expect((await failure(checkout(store))).code).toBe("disabled");
+  });
+});
+
 describe("who may order", () => {
   it("is off until the merchant switches it on, and needs checkout help on too", async () => {
     const off = await failure(order({ step: "quote", ...details() }, {}, SHOP_B).result);

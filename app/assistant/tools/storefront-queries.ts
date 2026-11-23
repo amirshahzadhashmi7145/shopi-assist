@@ -257,6 +257,23 @@ export const DELIVERY_COUNTRIES_QUERY = `#graphql
   }
 `;
 
+/**
+ * A cart of its own for some of the shopper's items, to pay for at the
+ * store's checkout. The cart on the storefront is left as it is.
+ */
+export const CHECKOUT_CART_MUTATION = `#graphql
+  mutation ShopiAssistCheckoutCart($input: CartInput!, $country: CountryCode)
+  @inContext(country: $country) {
+    cartCreate(input: $input) {
+      cart {
+        checkoutUrl
+        totalQuantity
+      }
+      userErrors { code field message }
+    }
+  }
+`;
+
 /** The cards and wallets the store's checkout takes. */
 export const PAYMENT_SETTINGS_QUERY = `#graphql
   query ShopiAssistPaymentSettings {
