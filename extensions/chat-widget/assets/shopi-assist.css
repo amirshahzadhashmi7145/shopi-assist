@@ -410,53 +410,119 @@ a.sa-card-title:hover {
   margin-top: 5px;
 }
 
-/* The versions of a product to pick between, one button each. */
-.sa-card-variants {
-  display: flex;
+/* The versions of a product to pick between: a numbered list under the
+   picture and title, each with its own quantity. */
+.sa-card-choices {
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 5px;
+}
+
+.sa-card-choices .sa-card-body {
+  flex: 1 1 0;
+}
+
+.sa-card-pick {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.sa-card-variants {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--sa-line);
 }
 
 .sa-variant {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  column-gap: 6px;
-  min-height: 32px;
-  padding: 5px 10px;
-  border: 1px solid var(--sa-line);
-  border-radius: 10px;
-  background: var(--sa-surface);
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--sa-line);
+  font-size: 13.5px;
   line-height: 1.3;
-  text-align: left;
 }
 
-.sa-variant:hover {
-  border-color: var(--sa-ink);
+.sa-variant-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
 }
 
-.sa-variant[aria-pressed="true"] {
-  border-color: var(--sa-accent);
-  box-shadow: inset 0 0 0 1px var(--sa-accent);
+.sa-variant-number {
+  flex: 0 0 auto;
+  color: var(--sa-ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.sa-variant-on .sa-variant-name {
   font-weight: 600;
 }
 
 .sa-variant-note {
+  flex: 0 0 auto;
   color: var(--sa-ink-soft);
   font-variant-numeric: tabular-nums;
-  font-weight: 400;
   white-space: nowrap;
 }
 
-.sa-variant:disabled {
-  cursor: default;
-  opacity: 0.6;
+.sa-variant-off .sa-variant-name {
+  color: var(--sa-ink-soft);
+  text-decoration: line-through;
 }
 
-.sa-variant:disabled span:first-child {
-  text-decoration: line-through;
+.sa-stepper {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--sa-line);
+  border-radius: 999px;
+  background: var(--sa-surface);
+}
+
+.sa-variant-on .sa-stepper {
+  border-color: var(--sa-accent);
+}
+
+.sa-stepper-button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.sa-stepper-button:hover {
+  background: var(--sa-surface-soft);
+}
+
+.sa-stepper-button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.sa-stepper-count {
+  min-width: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.sa-card-pick .sa-card-actions {
+  margin-top: 8px;
+}
+
+.sa-card-total {
+  margin-top: 8px;
+  color: var(--sa-ink-soft);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .sa-card-button {

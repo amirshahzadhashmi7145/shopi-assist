@@ -271,25 +271,26 @@ describe("chat widget", () => {
     expect((window as unknown as { hacked?: number }).hacked).toBeUndefined();
   });
 
-  it("lets the shopper pick a version on the card, then add it or buy it", async () => {
+  it("lets the shopper set a quantity for each version on the card, then buy them", async () => {
     const variants = [
       { id: "201", title: "Regular", price: { amount: "24.95", currencyCode: "USD" }, available: true },
       { id: "202", title: "Special", price: { amount: "49.95", currencyCode: "USD" }, available: false },
       { id: "203", title: "Sample", price: { amount: "9.95", currencyCode: "USD" }, available: true },
     ];
     configMock.mockImplementation(() => appConfig({ buyNow: true }));
-    liveCart({ 203: ["Ski Wax - Sample", 995] }, () =>
-      reply("Ski Wax comes in three versions.", {
-        cards: [
-          card({
-            title: "Ski Wax",
-            price: { amount: "9.95", currencyCode: "USD" },
-            compareAtPrice: { amount: "60.0", currencyCode: "USD" },
-            variantId: null,
-            variants,
-          }),
-        ],
-      }),
+    const { adds } = liveCart(
+      { 201: ["Ski Wax - Regular", 2495], 203: ["Ski Wax - Sample", 995] },
+      () =>
+        reply("Ski Wax comes in three versions.", {
+          cards: [
+            card({
+              title: "Ski Wax",
+              price: { amount: "9.95", currencyCode: "USD" },
+              variantId: null,
+              variants,
+            }),
+          ],
+        }),
     );
     const widget = mountWidget();
     await flush();
@@ -298,46 +299,77 @@ describe("chat widget", () => {
     await flush();
 
     const item = widget.$(".sa-card");
-    const chips = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-variant"));
-    expect(chips.map((chip) => chip.textContent)).toEqual(["Regular$24.95", "SpecialSold out", "Sample$9.95"]);
-    expect(chips.map((chip) => chip.disabled)).toEqual([false, true, false]);
-    expect(item.querySelector(".sa-card-price")!.textContent).toContain("From $9.95");
+    const rows = Array.from(item.querySelectorAll<HTMLElement>(".sa-variant"));
+    expect(rows.map((row) => row.querySelector(".sa-variant-name")!.textContent)).toEqual([
+      "1.Regular",
+      "2.Special",
+      "3.Sample",
+    ]);
+    expect(rows.map((row) => row.querySelector(".sa-variant-note")!.textContent)).toEqual([
+      "$24.95",
+      "Sold out",
+      "$9.95",
+    ]);
+    // A sold-out version has no quantity to set.
+    expect(rows.map((row) => row.querySelectorAll(".sa-stepper-button").length)).toEqual([2, 0, 2]);
+    expect(item.querySelector(".sa-card-price")!.textContent).toBe("From $9.95");
     expect(item.textContent).not.toContain("Choose options");
 
-    // Nothing can be added until a version is picked.
+    // Nothing can be added until something has a quantity.
     const [add, buy] = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-card-actions button"));
     expect([add.textContent, buy.textContent]).toEqual(["Add to cart", "Buy now"]);
     expect([add.disabled, buy.disabled]).toEqual([true, true]);
+    expect(item.querySelector(".sa-card-total")!.textContent).toBe("Set how many you want of each.");
 
-    chips[2].click();
-    expect(chips.map((chip) => chip.getAttribute("aria-pressed"))).toEqual(["false", "false", "true"]);
-    expect(item.querySelector(".sa-card-price")!.textContent).toBe("$9.95");
+    const step = (row: HTMLElement, label: "+" | "−") =>
+      Array.from(row.querySelectorAll<HTMLButtonElement>(".sa-stepper-button"))
+        .find((button) => button.textContent === label)!
+        .click();
+    step(rows[0], "+");
+    step(rows[2], "+");
+    step(rows[2], "+");
+    step(rows[2], "+");
+    step(rows[2], "−");
+    expect(rows.map((row) => row.querySelector(".sa-stepper-count")?.textContent)).toEqual(["1", undefined, "2"]);
+    expect(item.querySelector(".sa-card-total")!.textContent).toBe("3 items · $44.85");
     expect([add.disabled, buy.disabled]).toEqual([false, false]);
 
     buy.click();
     await flush();
-    const cartCall = fetchMock.mock.calls.find((call) => call[0] === "/cart/add.js")!;
-    expect(JSON.parse((cartCall[1] as RequestInit).body as string)).toEqual({
-      items: [{ id: 203, quantity: 1 }],
-    });
-    expect(widget.$(".sa-order").textContent).toContain("Ski Wax - Sample");
+    expect(adds).toEqual([
+      [
+        { id: 201, quantity: 1 },
+        { id: 203, quantity: 2 },
+      ],
+    ]);
+    const summary = widget.$(".sa-order").textContent;
+    expect(summary).toContain("Ski Wax - Regular");
+    expect(summary).toContain("Ski Wax - Sample");
+
+    // Back to none: the buttons switch off again.
+    step(rows[0], "−");
+    step(rows[2], "−");
+    step(rows[2], "−");
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
   });
 
-  it("offers no Buy now on cards unless the store allows it, and picks the only version in stock", async () => {
-    fetchMock.mockImplementation(() =>
-      reply("Ski Wax.", {
-        cards: [
-          card({
-            title: "Ski Wax",
-            variantId: null,
-            variants: [
-              { id: "201", title: "Regular", price: { amount: "18.0", currencyCode: "USD" }, available: false },
-              { id: "202", title: "Sample", price: { amount: "18.0", currencyCode: "USD" }, available: true },
-              { id: "javascript:alert(1)", title: "Bad", price: null, available: true },
+  it("adds the picked versions to the cart, starts the only one in stock at one, and offers Buy now only when allowed", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url === "/cart/add.js"
+        ? jsonResponse({ items: [] })
+        : reply("Ski Wax.", {
+            cards: [
+              card({
+                title: "Ski Wax",
+                variantId: null,
+                variants: [
+                  { id: "201", title: "Regular", price: { amount: "18.0", currencyCode: "USD" }, available: false },
+                  { id: "202", title: "Sample", price: { amount: "18.0", currencyCode: "USD" }, available: true },
+                  { id: "javascript:alert(1)", title: "Bad", price: null, available: true },
+                ],
+              }),
             ],
           }),
-        ],
-      }),
     );
     const widget = mountWidget();
     widget.launcher.click();
@@ -345,14 +377,24 @@ describe("chat widget", () => {
     await flush();
 
     const item = widget.$(".sa-card");
-    const chips = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-variant"));
-    // Same price for every version: no price on the buttons, no "From".
-    expect(chips.map((chip) => chip.textContent)).toEqual(["RegularSold out", "Sample"]);
+    const rows = Array.from(item.querySelectorAll<HTMLElement>(".sa-variant"));
+    // The malformed version is dropped. Same price for both: no "From".
+    expect(rows.map((row) => row.querySelector(".sa-variant-name")!.textContent)).toEqual(["1.Regular", "2.Sample"]);
     expect(item.querySelector(".sa-card-price")!.textContent).toBe("$18.00");
-    expect(chips[1].getAttribute("aria-pressed")).toBe("true");
+    expect(rows[1].querySelector(".sa-stepper-count")!.textContent).toBe("1");
+    expect(item.querySelector(".sa-card-total")!.textContent).toBe("1 item · $18.00");
+
     const buttons = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-card-actions button"));
     expect(buttons.map((button) => button.textContent)).toEqual(["Add to cart"]);
     expect(buttons[0].disabled).toBe(false);
+    buttons[0].click();
+    await flush();
+
+    const cartCall = fetchMock.mock.calls.find((call) => call[0] === "/cart/add.js")!;
+    expect(JSON.parse((cartCall[1] as RequestInit).body as string)).toEqual({
+      items: [{ id: 202, quantity: 1 }],
+    });
+    expect(buttons[0].textContent).toBe("Added");
   });
 
   it("shows the shopper's own message as plain text", async () => {

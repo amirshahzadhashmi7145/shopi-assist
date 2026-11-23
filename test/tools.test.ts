@@ -179,9 +179,9 @@ describe("shopper tools", () => {
       variant(203, "Sample", "9.95"),
     ]);
     expect(few.json.products[0].versions).toEqual([
-      "Regular: 24.95 USD",
-      "Special: 49.95 USD (sold out)",
-      "Sample: 9.95 USD",
+      { number: 1, title: "Regular", price: "24.95 USD", variantId: "201" },
+      { number: 2, title: "Special", price: "49.95 USD", variantId: "202", soldOut: true },
+      { number: 3, title: "Sample", price: "9.95 USD", variantId: "203" },
     ]);
     expect(few.cards[0].variantId).toBeNull();
     expect(few.cards[0].variants).toEqual([

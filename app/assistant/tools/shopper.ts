@@ -276,12 +276,16 @@ function toProductSummary(product: StorefrontProduct) {
     vendor: product.vendor || undefined,
     type: product.productType || undefined,
     summary: product.description || undefined,
-    // The same versions the product's card lets the shopper pick from.
+    // The same versions, with the same numbers, as the product's card lets
+    // the shopper pick from.
     versions: choices.length > 1
-      ? choices.map(
-          (choice) =>
-            `${choice.title}: ${formatMoney(choice.price)}${choice.available ? "" : " (sold out)"}`,
-        )
+      ? choices.map((choice, index) => ({
+          number: index + 1,
+          title: choice.title,
+          price: formatMoney(choice.price),
+          variantId: choice.id,
+          soldOut: choice.available ? undefined : true,
+        }))
       : undefined,
   };
 }
@@ -602,13 +606,13 @@ const getStorePolicy = defineTool({
 const addToCart = defineTool({
   name: "add_to_cart",
   description:
-    "Add one product variant to the shopper's cart, for a shopper who wants to keep shopping. Only call this when the shopper asks to add an item to the cart. When they say they want to buy or order it, start the order instead. Needs a variantId from get_product_details.",
+    "Add one product variant to the shopper's cart, for a shopper who wants to keep shopping. Only call this when the shopper asks to add an item to the cart. When they say they want to buy or order it, start the order instead. Needs a variantId: one given with a product's versions, or from get_product_details.",
   audiences: ["shopper"],
   schema: z.object({
     variantId: z
       .string()
       .trim()
-      .regex(/^\d{1,20}$/, "Use the numeric variantId from get_product_details."),
+      .regex(/^\d{1,20}$/, "Use a numeric variantId given with a product's versions or by get_product_details."),
     quantity: z.number().int().min(1).max(10).default(1),
   }),
   isAvailable: (context) => Boolean(context.storefront) && context.settings.allowAddToCart,
@@ -689,7 +693,7 @@ const placeOrder = defineTool({
           variantId: z
             .string()
             .trim()
-            .regex(/^\d{1,20}$/, "Use the numeric variantId from get_product_details."),
+            .regex(/^\d{1,20}$/, "Use a numeric variantId given with a product's versions or by get_product_details."),
           quantity: z.number().int().min(1).max(MAX_LINE_QUANTITY).default(1),
         }),
       )

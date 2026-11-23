@@ -840,24 +840,33 @@
       if (href) title.href = href;
       body.appendChild(title);
 
-      // The versions to pick between, and the one the buttons act on: the
-      // only one there is, or the one the shopper picks below.
+      // The versions to pick between, each with its own quantity. A product
+      // that comes in one version has just that one to buy.
       var choices = card.available ? cardVariants(card) : [];
-      var chosen =
+      var single =
         !choices.length && card.available && /^\d+$/.test(String(card.variantId))
-          ? { id: String(card.variantId) }
+          ? String(card.variantId)
           : null;
+      var quantities = {};
+      /** What the buttons act on: every version the shopper gave a quantity. */
+      var picked = function () {
+        if (single) return [{ variantId: single, quantity: 1 }];
+        return choices
+          .filter(function (choice) {
+            return quantities[choice.id] > 0;
+          })
+          .map(function (choice) {
+            return { variantId: choice.id, quantity: quantities[choice.id] };
+          });
+      };
       var pricesDiffer = choices.some(function (choice) {
         return !choice.price || !choices[0].price || choice.price.amount !== choices[0].price.amount;
       });
 
       var price = el("div", "sa-card-price");
-      var amount = el(
-        "span",
-        null,
-        (pricesDiffer ? "From " : "") + formatMoney(card.price, self.config.locale),
+      price.appendChild(
+        el("span", null, (pricesDiffer ? "From " : "") + formatMoney(card.price, self.config.locale)),
       );
-      price.appendChild(amount);
       if (card.compareAtPrice) {
         var was = el("s", null, formatMoney(card.compareAtPrice, self.config.locale));
         was.setAttribute("aria-label", "Was " + was.textContent);
@@ -868,44 +877,50 @@
 
       var actions = el("div", "sa-card-actions");
       var buyButtons = [];
-      if (chosen || choices.length) {
+      if (single || choices.length) {
         var add = el("button", "sa-card-button sa-card-button-primary", "Add to cart");
         add.type = "button";
         add.addEventListener("click", function () {
-          if (!chosen) return;
+          var items = picked();
+          if (!items.length) return;
           add.disabled = true;
           add.textContent = "Adding…";
-          self.addToCart(chosen.id, 1).then(function (result) {
-            add.textContent = result.ok ? "Added" : "Add to cart";
-            add.disabled = result.ok;
-            if (result.ok) {
-              window.setTimeout(function () {
-                add.textContent = "Add to cart";
-                add.disabled = false;
-              }, 2500);
-            } else {
-              self.appendNotice(result.message, "error");
-              self.scrollToEnd();
-            }
-          });
+          self
+            .addItems(
+              items.map(function (entry) {
+                return { id: Number(entry.variantId), quantity: entry.quantity };
+              }),
+            )
+            .then(function (result) {
+              add.textContent = result.ok ? "Added" : "Add to cart";
+              add.disabled = result.ok;
+              if (result.ok) {
+                window.setTimeout(function () {
+                  add.textContent = "Add to cart";
+                  add.disabled = picked().length === 0;
+                }, 2500);
+              } else {
+                self.appendNotice(result.message, "error");
+                self.scrollToEnd();
+              }
+            });
         });
         actions.appendChild(add);
         buyButtons.push(add);
 
         if (self.buyNow) {
-          // The same as asking the assistant to order it: the item goes in
+          // The same as asking the assistant to order it: the items go in
           // the cart and the order summary appears.
           var buy = el("button", "sa-card-button", "Buy now");
           buy.type = "button";
           buy.addEventListener("click", function () {
-            if (!chosen) return;
+            var items = picked();
+            if (!items.length) return;
             buy.disabled = true;
             var done = function () {
-              buy.disabled = false;
+              buy.disabled = picked().length === 0;
             };
-            self
-              .runAction({ type: "order", items: [{ variantId: chosen.id, quantity: 1 }] })
-              .then(done, done);
+            self.runAction({ type: "order", items: items }).then(done, done);
           });
           actions.appendChild(buy);
           buyButtons.push(buy);
@@ -916,53 +931,106 @@
         actions.appendChild(choose);
       }
 
+      // The picker takes the card's full width, under the picture and title.
+      var picker = null;
       if (choices.length) {
-        var group = el("div", "sa-card-variants");
-        group.setAttribute("role", "group");
-        group.setAttribute("aria-label", "Options for " + card.title);
-        var chips = [];
-        var pick = function (choice, chip) {
-          chosen = choice;
-          chips.forEach(function (other) {
-            other.setAttribute("aria-pressed", other === chip ? "true" : "false");
+        picker = el("div", "sa-card-pick");
+        var options = el("ol", "sa-card-variants");
+        options.setAttribute("aria-label", "Options for " + card.title);
+        var total = el("div", "sa-card-total");
+        total.setAttribute("role", "status");
+
+        var refresh = function () {
+          var count = 0;
+          var sum = 0;
+          var priced = true;
+          choices.forEach(function (choice) {
+            var quantity = quantities[choice.id] || 0;
+            count += quantity;
+            if (choice.price) sum += quantity * Number(choice.price.amount);
+            else if (quantity) priced = false;
           });
-          if (choice.price) amount.textContent = formatMoney(choice.price, self.config.locale);
-          // The "was" price is the product's, not this version's.
-          if (was && was.parentNode) was.parentNode.removeChild(was);
           buyButtons.forEach(function (button) {
-            button.disabled = false;
+            button.disabled = count === 0;
           });
+          total.textContent = !count
+            ? "Set how many you want of each."
+            : count +
+              (count === 1 ? " item" : " items") +
+              (priced && choices[0].price
+                ? " · " +
+                  formatMoney(
+                    { amount: String(sum), currencyCode: choices[0].price.currencyCode },
+                    self.config.locale,
+                  )
+                : "");
         };
-        choices.forEach(function (choice) {
-          var chip = el("button", "sa-variant");
-          chip.type = "button";
-          chip.setAttribute("aria-pressed", "false");
-          chip.appendChild(el("span", null, choice.title));
+
+        choices.forEach(function (choice, index) {
+          var row = el("li", "sa-variant");
+          var label = el("span", "sa-variant-name");
+          label.appendChild(el("span", "sa-variant-number", index + 1 + "."));
+          label.appendChild(el("span", null, choice.title));
+          row.appendChild(label);
+
           if (!choice.available) {
-            chip.disabled = true;
-            chip.appendChild(el("span", "sa-variant-note", "Sold out"));
-          } else if (pricesDiffer && choice.price) {
-            chip.appendChild(
+            row.classList.add("sa-variant-off");
+            row.appendChild(el("span", "sa-variant-note", "Sold out"));
+            options.appendChild(row);
+            return;
+          }
+          if (choice.price) {
+            row.appendChild(
               el("span", "sa-variant-note", formatMoney(choice.price, self.config.locale)),
             );
           }
-          chip.addEventListener("click", function () {
-            pick(choice, chip);
-          });
-          chips.push(chip);
-          group.appendChild(chip);
-        });
-        body.appendChild(group);
 
-        // Nothing to add until one is picked. With one left in stock, that
-        // one is picked already.
-        buyButtons.forEach(function (button) {
-          button.disabled = true;
+          var stepper = el("div", "sa-stepper");
+          var less = el("button", "sa-stepper-button", "−");
+          less.type = "button";
+          less.setAttribute("aria-label", "One less: " + choice.title);
+          var count = el("span", "sa-stepper-count", "0");
+          count.setAttribute("aria-label", "Quantity of " + choice.title);
+          var more = el("button", "sa-stepper-button", "+");
+          more.type = "button";
+          more.setAttribute("aria-label", "One more: " + choice.title);
+
+          var set = function (quantity) {
+            quantities[choice.id] = Math.max(0, Math.min(MAX_ITEM_QUANTITY, quantity));
+            count.textContent = String(quantities[choice.id]);
+            less.disabled = quantities[choice.id] === 0;
+            more.disabled = quantities[choice.id] === MAX_ITEM_QUANTITY;
+            row.classList.toggle("sa-variant-on", quantities[choice.id] > 0);
+            refresh();
+          };
+          less.addEventListener("click", function () {
+            set(quantities[choice.id] - 1);
+          });
+          more.addEventListener("click", function () {
+            set(quantities[choice.id] + 1);
+          });
+          choice.set = set;
+
+          stepper.appendChild(less);
+          stepper.appendChild(count);
+          stepper.appendChild(more);
+          row.appendChild(stepper);
+          options.appendChild(row);
         });
+
+        // With one version left in stock there is nothing to choose: start
+        // it at one. Otherwise everything starts at none.
         var inStock = choices.filter(function (choice) {
           return choice.available;
         });
-        if (inStock.length === 1) pick(inStock[0], chips[choices.indexOf(inStock[0])]);
+        inStock.forEach(function (choice) {
+          choice.set(inStock.length === 1 ? 1 : 0);
+        });
+        refresh();
+
+        picker.appendChild(options);
+        picker.appendChild(total);
+        item.classList.add("sa-card-choices");
       }
 
       if (href) {
@@ -971,9 +1039,10 @@
         view.setAttribute("aria-label", "View " + card.title);
         actions.appendChild(view);
       }
-      body.appendChild(actions);
+      (picker || body).appendChild(actions);
 
       item.appendChild(body);
+      if (picker) item.appendChild(picker);
       list.appendChild(item);
     });
 
