@@ -1135,16 +1135,28 @@ describe("chat widget", () => {
       // The form asks for what a delivery needs, with the browsing country chosen.
       expect(widget.all(".sa-order-form label").map((label) => label.textContent)).toEqual([
         "Email (optional, for order updates)",
-        "Country / region",
+        "Country/Region",
         "First name (optional)",
         "Last name",
         "Address",
         "Apartment, suite, etc. (optional)",
         "City",
-        "State / province",
-        "ZIP / postal code",
+        "State",
+        "ZIP code",
         "Phone",
       ]);
+      // Laid out under the checkout's own headings, names and state/ZIP side by side.
+      expect(widget.all(".sa-order-form .sa-order-title").map((title) => title.textContent)).toEqual([
+        "Contact",
+        "Delivery",
+      ]);
+      expect(widget.all(".sa-field-half label").map((label) => label.textContent)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "State",
+        "ZIP code",
+      ]);
+      expect(widget.$('.sa-order-form button[type="submit"]').textContent).toBe("Continue to shipping");
       expect(field("countryCode").value).toBe("US");
       expect(field("phone").getAttribute("autocomplete")).toBe("tel");
 
@@ -1171,16 +1183,22 @@ describe("chat widget", () => {
       });
 
       // Review: lines, delivery options and what will be paid on delivery.
-      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("Review your order");
+      expect(widget.all(".sa-order-form .sa-order-title").map((title) => title.textContent)).toEqual([
+        "Shipping method",
+        "Payment",
+        "Order summary",
+      ]);
+      expect(widget.all(".sa-order-recap-row").map((row) => row.textContent)).toEqual([
+        "Contactada@example.com · +1 613 555 0111Change",
+        "Ship toAda Lovelace, 12 Analytical Way, Ottawa, ON, K1A 0B1, CanadaChange",
+      ]);
       expect(widget.$(".sa-order-totals").textContent).toBe(
-        "Subtotal$36.00Delivery$5.00Tax$3.60Total$44.60",
+        "Subtotal$36.00Shipping$5.00Tax$3.60Total$44.60",
       );
-      expect(widget.$(".sa-order-form").textContent).toContain(
-        "You pay $44.60 when your order arrives.",
+      expect(widget.$(".sa-order-pay").textContent).toBe(
+        "Pay on deliveryYou pay $44.60 when your order arrives.",
       );
-      expect(widget.$(".sa-order-form").textContent).toContain(
-        "Deliver to Ada Lovelace, 12 Analytical Way, Ottawa, ON, K1A 0B1. Phone +1 613 555 0111.",
-      );
+      expect(widget.$('.sa-order-form button[type="submit"]').textContent).toBe("Complete order");
 
       // Picking faster delivery asks for a new total.
       const express = widget.all(".sa-order-rate input")[1] as HTMLInputElement;
@@ -1235,7 +1253,7 @@ describe("chat widget", () => {
       fill({ ...DETAILS, phone: "12" });
       await submit();
 
-      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("Delivery details");
+      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("Contact");
       expect(field("phone").getAttribute("aria-invalid")).toBe("true");
       expect(widget.$(".sa-field-error").textContent).toBe("Enter a phone number with 7 to 15 digits.");
       expect(field("phone").getAttribute("aria-describedby")).toBe(widget.$(".sa-field-error").id);

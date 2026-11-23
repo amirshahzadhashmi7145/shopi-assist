@@ -1654,20 +1654,24 @@
 
   // ------------------------------------------------- pay-on-delivery orders
 
-  // The same fields, in the same order, as Shopify's own checkout.
+  // The same fields, in the same order and under the same headings, as
+  // Shopify's own checkout. `half` fields sit two to a row, as they do there.
   var ORDER_FIELDS = [
     { name: "email", label: "Email (optional, for order updates)", autocomplete: "email", type: "email" },
-    { name: "countryCode", label: "Country / region", autocomplete: "country", kind: "country" },
-    { name: "firstName", label: "First name (optional)", autocomplete: "given-name" },
-    { name: "lastName", label: "Last name", autocomplete: "family-name", required: true },
+    { name: "countryCode", label: "Country/Region", autocomplete: "country", kind: "country" },
+    { name: "firstName", label: "First name (optional)", autocomplete: "given-name", half: true },
+    { name: "lastName", label: "Last name", autocomplete: "family-name", required: true, half: true },
     { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
     { name: "address2", label: "Apartment, suite, etc. (optional)", autocomplete: "address-line2" },
     { name: "city", label: "City", autocomplete: "address-level2", required: true },
     // A list where Shopify knows the country's states, free text elsewhere.
-    { name: "province", label: "State / province", autocomplete: "address-level1", kind: "province" },
-    { name: "zip", label: "ZIP / postal code", autocomplete: "postal-code" },
+    { name: "province", label: "State / province", autocomplete: "address-level1", kind: "province", half: true },
+    { name: "zip", label: "Postal code", autocomplete: "postal-code", half: true },
     { name: "phone", label: "Phone", autocomplete: "tel", type: "tel", required: true },
   ];
+  // What the checkout calls a state and a postal code in some countries.
+  var PROVINCE_LABELS = { US: "State", IN: "State", AU: "State/territory", CA: "Province", AE: "Emirate" };
+  var ZIP_LABELS = { US: "ZIP code", IN: "PIN code", GB: "Postcode", AU: "Postcode" };
   var USE_CHECKOUT = " Please use the checkout instead.";
 
   // Made-up people at real, well-known addresses, offered only on development
@@ -1861,11 +1865,10 @@
     form.textContent = "";
     state.inputs = {};
     var forAddress = state.mode === "address";
-    form.appendChild(
-      el("h3", "sa-order-title", forAddress ? "New delivery address" : "Delivery details"),
-    );
+    var deliveryTitle = forAddress ? "New delivery address" : "Delivery";
 
     if (!state.countries.length) {
+      form.appendChild(el("h3", "sa-order-title", deliveryTitle));
       form.appendChild(
         el("p", "sa-order-status sa-order-status-error", "Ordering here isn't available right now." + USE_CHECKOUT),
       );
@@ -1927,8 +1930,16 @@
       form.appendChild(fillTest);
     }
 
+    // Each part of the form has a heading and its fields in a two-column grid.
+    var fields = null;
+    var section = function (title) {
+      form.appendChild(el("h3", "sa-order-title", title));
+      fields = el("div", "sa-fields");
+      form.appendChild(fields);
+    };
+
     var addField = function (spec, control) {
-      var wrap = el("div", "sa-field");
+      var wrap = el("div", spec.half ? "sa-field sa-field-half" : "sa-field");
       var id = "sa-order-" + spec.name;
       var label = el("label", null, spec.label);
       label.htmlFor = id;
@@ -1947,13 +1958,23 @@
         wrap.appendChild(error);
       }
       state.inputs[spec.name] = control;
-      form.appendChild(wrap);
+      fields.appendChild(wrap);
       return wrap;
     };
 
     ORDER_FIELDS.forEach(function (spec) {
-      // A new address for an existing order: the store already has the email.
-      if (forAddress && spec.name === "email") return;
+      if (spec.name === "email") {
+        // A new address for an existing order: the store already has the email.
+        if (forAddress) return;
+        section("Contact");
+      }
+      if (spec.kind === "country") section(deliveryTitle);
+      if (spec.name === "province" || spec.name === "zip") {
+        var named = (spec.name === "zip" ? ZIP_LABELS : PROVINCE_LABELS)[country.code];
+        if (named) {
+          spec = { name: spec.name, label: named, autocomplete: spec.autocomplete, kind: spec.kind, half: true };
+        }
+      }
       if (spec.kind === "country") {
         var countries = el("select");
         state.countries.forEach(function (entry) {
@@ -1989,7 +2010,10 @@
             (regionKey(province.value) === chosen || regionKey(province.label) === chosen);
           states.appendChild(option);
         });
-        addField({ name: spec.name, label: spec.label, autocomplete: spec.autocomplete, required: true }, states);
+        addField(
+          { name: spec.name, label: spec.label, autocomplete: spec.autocomplete, required: true, half: true },
+          states,
+        );
         return;
       }
 
@@ -2007,7 +2031,7 @@
     var review = el(
       "button",
       "sa-card-button sa-card-button-primary sa-order-checkout",
-      forAddress ? "Save address" : "Review order",
+      forAddress ? "Save address" : "Continue to shipping",
     );
     review.type = "submit";
     var cancel = el("button", "sa-card-button", "Cancel");
@@ -2330,22 +2354,47 @@
     state.shippingRateHandle = quote.shippingRateHandle;
 
     form.textContent = "";
-    form.appendChild(el("h3", "sa-order-title", "Review your order"));
 
-    var list = el("ul", "sa-order-lines");
-    (Array.isArray(quote.lines) ? quote.lines : []).forEach(function (line) {
-      var item = el("li", "sa-order-line");
-      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " ×"));
-      item.appendChild(el("span", "sa-order-item", String(line.title || "Item")));
-      item.appendChild(el("span", "sa-order-amount", money(line.total)));
-      list.appendChild(item);
-    });
-    form.appendChild(list);
+    // Who the order is for and where it goes, each with a way back to change it.
+    var values = state.values;
+    var country = state.countries.filter(function (entry) {
+      return entry.code === values.countryCode;
+    })[0];
+    var recap = el("div", "sa-order-recap");
+    var addRecap = function (label, text) {
+      var row = el("div", "sa-order-recap-row");
+      row.appendChild(el("span", "sa-order-recap-label", label));
+      row.appendChild(el("span", "sa-order-recap-value", text));
+      var change = el("button", "sa-order-change", "Change");
+      change.type = "button";
+      change.setAttribute("aria-label", "Change: " + label);
+      change.addEventListener("click", function () {
+        self.renderOrderDetails();
+      });
+      row.appendChild(change);
+      recap.appendChild(row);
+    };
+    addRecap("Contact", [values.email, values.phone].filter(Boolean).join(" · "));
+    addRecap(
+      "Ship to",
+      [
+        [values.firstName, values.lastName].filter(Boolean).join(" "),
+        values.address1,
+        values.address2,
+        values.city,
+        values.province,
+        values.zip,
+        country && country.name,
+      ]
+        .filter(Boolean)
+        .join(", "),
+    );
+    form.appendChild(recap);
 
     var rates = Array.isArray(quote.shippingRates) ? quote.shippingRates : [];
-    if (rates.length > 1) {
+    if (rates.length) {
       var options = el("fieldset", "sa-order-rates");
-      options.appendChild(el("legend", null, "Delivery"));
+      options.appendChild(el("legend", "sa-order-title", "Shipping method"));
       rates.forEach(function (rate, index) {
         var label = el("label", "sa-order-rate");
         var radio = el("input");
@@ -2365,50 +2414,44 @@
       form.appendChild(options);
     }
 
+    form.appendChild(el("h3", "sa-order-title", "Payment"));
+    var payment = el("div", "sa-order-pay");
+    payment.appendChild(el("strong", null, "Pay on delivery"));
+    payment.appendChild(
+      el("span", null, "You pay " + money(quote.total) + " when your order arrives."),
+    );
+    form.appendChild(payment);
+
+    form.appendChild(el("h3", "sa-order-title", "Order summary"));
+    var list = el("ul", "sa-order-lines");
+    (Array.isArray(quote.lines) ? quote.lines : []).forEach(function (line) {
+      var item = el("li", "sa-order-line");
+      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " ×"));
+      item.appendChild(el("span", "sa-order-item", String(line.title || "Item")));
+      item.appendChild(el("span", "sa-order-amount", money(line.total)));
+      list.appendChild(item);
+    });
+    form.appendChild(list);
+
     var totals = el("dl", "sa-order-totals");
     var addTotal = function (label, value, strong) {
       totals.appendChild(el("dt", strong ? "sa-order-grand" : null, label));
       totals.appendChild(el("dd", strong ? "sa-order-grand" : null, money(value)));
     };
     addTotal("Subtotal", quote.subtotal);
-    addTotal("Delivery", quote.shipping);
+    addTotal("Shipping", quote.shipping);
     if (quote.tax) addTotal("Tax", quote.tax);
     addTotal("Total", quote.total, true);
     form.appendChild(totals);
-
-    var values = state.values;
-    form.appendChild(
-      el(
-        "p",
-        "sa-order-note",
-        "Deliver to " +
-          [
-            [values.firstName, values.lastName].filter(Boolean).join(" "),
-            values.address1,
-            values.address2,
-            values.city,
-            values.province,
-            values.zip,
-          ]
-            .filter(Boolean)
-            .join(", ") +
-          ". Phone " +
-          values.phone +
-          ".",
-      ),
-    );
-    form.appendChild(
-      el("p", "sa-order-note", "You pay " + money(quote.total) + " when your order arrives."),
-    );
 
     state.statusEl = el("p", "sa-order-status");
     state.statusEl.hidden = true;
     form.appendChild(state.statusEl);
 
     var actions = el("div", "sa-order-actions");
-    var place = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Place order");
+    var place = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Complete order");
     place.type = "submit";
-    var edit = el("button", "sa-card-button", "Edit details");
+    var edit = el("button", "sa-card-button", "Back");
     edit.type = "button";
     edit.addEventListener("click", function () {
       self.renderOrderDetails();
