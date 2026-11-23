@@ -397,6 +397,65 @@ describe("chat widget", () => {
     expect(buttons[0].textContent).toBe("Added");
   });
 
+  it("folds the picker away in a list of products until it is asked for", async () => {
+    const variants = ["Ice", "Dawn", "Powder"].map((title, index) => ({
+      id: String(301 + index),
+      title,
+      price: { amount: "699.95", currencyCode: "USD" },
+      available: true,
+    }));
+    fetchMock.mockImplementation(() =>
+      reply("Trail Mug and The Complete Snowboard.", {
+        cards: [
+          card(),
+          card({ title: "The Complete Snowboard", handle: "complete", variantId: null, variants }),
+        ],
+      }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("cheapest?");
+    await flush();
+
+    const board = widget.all(".sa-card")[1];
+    const picker = board.querySelector<HTMLElement>(".sa-card-pick")!;
+    expect(picker.hidden).toBe(true);
+    const unfold = board.querySelector<HTMLButtonElement>(".sa-card-body button")!;
+    expect(unfold.textContent).toBe("Choose from 3 options");
+    expect(board.querySelector(".sa-card-body")!.textContent).toContain("View");
+
+    unfold.click();
+    expect(picker.hidden).toBe(false);
+    expect(board.querySelector(".sa-card-body button")).toBeNull();
+    // Every version costs the same, so the price stays on the card only.
+    expect(picker.querySelector(".sa-variant-note")).toBeNull();
+    expect(Array.from(picker.querySelectorAll(".sa-variant-name")).map((name) => name.textContent)).toEqual([
+      "1.Ice",
+      "2.Dawn",
+      "3.Powder",
+    ]);
+    expect(picker.querySelector(".sa-card-actions")!.textContent).toBe("Add to cart");
+  });
+
+  it("asks for the app's settings again after a reply when the page loaded without them", async () => {
+    // The app could not be reached when the page loaded.
+    configMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
+    configMock.mockImplementation(() => appConfig({ buyNow: true }));
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("mugs?");
+    await flush();
+    expect(widget.all(".sa-card")).toHaveLength(0);
+
+    fetchMock.mockImplementation(() => reply("Try the Trail Mug.", { cards: [card()] }));
+    widget.send("mugs?");
+    await flush();
+
+    expect(configMock).toHaveBeenCalledTimes(2);
+    expect(widget.$(".sa-card .sa-card-actions").textContent).toBe("Add to cartBuy nowView");
+  });
+
   it("shows the shopper's own message as plain text", async () => {
     const widget = mountWidget();
     widget.launcher.click();

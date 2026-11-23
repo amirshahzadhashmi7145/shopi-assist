@@ -325,6 +325,9 @@
     this.chatOrders = false;
     // True when product cards may start an order with "Buy now".
     this.buyNow = false;
+    // False until the app's settings have arrived. A page that loaded while
+    // the app was unreachable asks again once a reply shows it is back.
+    this.remoteLoaded = false;
     // The open order form, if any. Its contents are never stored.
     this.orderForm = null;
     // True on a development store: the order form offers to fill in test details.
@@ -589,6 +592,7 @@
       })
       .then(function (remote) {
         if (!remote || remote.ok !== true) return;
+        self.remoteLoaded = true;
         try {
           writeJson(window.sessionStorage, CONFIG_KEY, remote);
         } catch (error) {
@@ -818,8 +822,12 @@
     var list = el("ul", "sa-cards");
     list.setAttribute("aria-label", "Suggested products");
 
-    cards.slice(0, 6).forEach(function (card) {
-      if (!card || typeof card.title !== "string") return;
+    var shown = cards.slice(0, 6).filter(function (card) {
+      return card && typeof card.title === "string";
+    });
+    var several = shown.length > 1;
+
+    shown.forEach(function (card) {
       var item = el("li", "sa-card");
       var href = safeHref(card.url);
 
@@ -979,7 +987,8 @@
             options.appendChild(row);
             return;
           }
-          if (choice.price) {
+          // One price for every version is on the card already.
+          if (pricesDiffer && choice.price) {
             row.appendChild(
               el("span", "sa-variant-note", formatMoney(choice.price, self.config.locale)),
             );
@@ -1033,13 +1042,37 @@
         item.classList.add("sa-card-choices");
       }
 
+      var view = null;
       if (href) {
-        var view = el("a", "sa-card-button", "View");
+        view = el("a", "sa-card-button", "View");
         view.href = href;
         view.setAttribute("aria-label", "View " + card.title);
-        actions.appendChild(view);
       }
-      (picker || body).appendChild(actions);
+      if (picker && several) {
+        // In a list of products the picker stays folded away until it is
+        // asked for, so the list stays short enough to scan.
+        var bar = el("div", "sa-card-actions");
+        var unfold = el(
+          "button",
+          "sa-card-button sa-card-button-primary",
+          "Choose from " + choices.length + " options",
+        );
+        unfold.type = "button";
+        unfold.addEventListener("click", function () {
+          picker.hidden = false;
+          bar.removeChild(unfold);
+          var first = picker.querySelector("button:not([disabled])");
+          if (first) first.focus();
+        });
+        bar.appendChild(unfold);
+        if (view) bar.appendChild(view);
+        body.appendChild(bar);
+        picker.hidden = true;
+        picker.appendChild(actions);
+      } else {
+        if (view) actions.appendChild(view);
+        (picker || body).appendChild(actions);
+      }
 
       item.appendChild(body);
       if (picker) item.appendChild(picker);
@@ -1162,6 +1195,7 @@
         // A failed action reports itself in the chat. It must never look like
         // the reply failed, so nothing here reaches the handler below.
         self.runActions(Array.isArray(body.actions) ? body.actions : []).catch(function () {});
+        if (!self.remoteLoaded) self.loadRemoteConfig();
       })
       .catch(function () {
         window.clearTimeout(timer);

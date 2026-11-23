@@ -194,8 +194,14 @@ export function numericId(gid: string): string | null {
   return match ? match[1] : null;
 }
 
+/** "$24.95", as the cards show it, or "24.95 XYZ" for a currency this server cannot format. */
 function formatMoney(money: Money): string {
-  return `${money.amount} ${money.currencyCode}`;
+  const amount = Number(money.amount);
+  try {
+    return new Intl.NumberFormat("en", { style: "currency", currency: money.currencyCode }).format(amount);
+  } catch {
+    return `${money.amount} ${money.currencyCode}`;
+  }
 }
 
 /**

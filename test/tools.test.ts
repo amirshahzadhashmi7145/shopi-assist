@@ -112,7 +112,7 @@ describe("shopper tools", () => {
     expect(storefront.calls[0].variables).toEqual({ first: 4, country: "CA", language: "FR" });
     expect(result.json.count).toBe(2);
     expect(result.json.products).toEqual([
-      expect.objectContaining({ title: "Trail Mug", price: "18.0 USD", inStock: true }),
+      expect.objectContaining({ title: "Trail Mug", price: "$18.00", inStock: true }),
       expect.objectContaining({ title: "Camp Kettle" }),
     ]);
     expect(result.cards).toEqual([
@@ -150,7 +150,7 @@ describe("shopper tools", () => {
 
     const result = await run("search_products", { query: "mug" }, toolContext({ storefront }));
 
-    expect(result.json.products[0].price).toBe("from 18.0 USD");
+    expect(result.json.products[0].price).toBe("from $18.00");
     expect(result.cards[0].variantId).toBeNull();
     expect(result.cards[0].compareAtPrice).toEqual({ amount: "30.0", currencyCode: "USD" });
   });
@@ -179,9 +179,9 @@ describe("shopper tools", () => {
       variant(203, "Sample", "9.95"),
     ]);
     expect(few.json.products[0].versions).toEqual([
-      { number: 1, title: "Regular", price: "24.95 USD", variantId: "201" },
-      { number: 2, title: "Special", price: "49.95 USD", variantId: "202", soldOut: true },
-      { number: 3, title: "Sample", price: "9.95 USD", variantId: "203" },
+      { number: 1, title: "Regular", price: "$24.95", variantId: "201" },
+      { number: 2, title: "Special", price: "$49.95", variantId: "202", soldOut: true },
+      { number: 3, title: "Sample", price: "$9.95", variantId: "203" },
     ]);
     expect(few.cards[0].variantId).toBeNull();
     expect(few.cards[0].variants).toEqual([
@@ -289,7 +289,7 @@ describe("shopper tools", () => {
     );
     expect(single.json.options).toBeUndefined();
     expect(single.json.choices).toMatch(/one version only/);
-    expect(single.json.variants).toEqual([{ variantId: "101", price: "18.0 USD", inStock: true }]);
+    expect(single.json.variants).toEqual([{ variantId: "101", price: "$18.00", inStock: true }]);
     expect(single.content).not.toContain("Default Title");
 
     const sized = await run(
@@ -849,10 +849,10 @@ describe("place_order", () => {
       },
     ]);
     expect(result.json.items).toEqual([
-      { item: "Trail Mug", quantity: 3, unitPrice: "18.0 USD", lineTotal: "54.0 USD" },
-      { item: "Camp Blanket (Large)", quantity: 1, unitPrice: "89.50 USD", lineTotal: "89.50 USD" },
+      { item: "Trail Mug", quantity: 3, unitPrice: "$18.00", lineTotal: "$54.00" },
+      { item: "Camp Blanket (Large)", quantity: 1, unitPrice: "$89.50", lineTotal: "$89.50" },
     ]);
-    expect(result.json.itemsTotal).toBe("143.50 USD");
+    expect(result.json.itemsTotal).toBe("$143.50");
     // The model is told the order is not placed yet.
     expect(result.json.note).toMatch(/not placed until they complete it/);
     expect(result.json.note).toMatch(/lists everything in the cart/);
