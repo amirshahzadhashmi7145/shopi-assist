@@ -86,6 +86,11 @@ model ShopSettings {
   orderFirstName      String  @default("optional") // "optional" | "required"
   orderCompany        String  @default("hidden")   // "hidden" | "optional" | "required"
   orderAddress2       String  @default("optional") // "hidden" | "optional" | "required"
+  // What the store calls paying on delivery, and anything it tells the buyer
+  // about it. Shopify keeps both with its manual payment methods, which apps
+  // cannot read. Empty means Shopify's own name, "Cash on Delivery (COD)".
+  orderPaymentName    String  @default("")
+  orderPaymentNote    String  @default("")
 
   // Quick policy picks from dropdowns. "" means "not set".
   returnWindow        String  @default("") // "none" | "7" | "14" | "30" | "60" | "90"

@@ -257,6 +257,18 @@ export const DELIVERY_COUNTRIES_QUERY = `#graphql
   }
 `;
 
+/** The cards and wallets the store's checkout takes. */
+export const PAYMENT_SETTINGS_QUERY = `#graphql
+  query ShopiAssistPaymentSettings {
+    shop {
+      paymentSettings {
+        acceptedCardBrands
+        supportedDigitalWallets
+      }
+    }
+  }
+`;
+
 /** Every line of an order in one request, priced for the buyer's country. */
 export const VARIANTS_FOR_ORDER_QUERY = `#graphql
   query ShopiAssistVariantsForOrder($ids: [ID!]!, $country: CountryCode)

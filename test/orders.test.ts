@@ -693,8 +693,11 @@ describe("who may order", () => {
 });
 
 describe("delivery countries", () => {
-  const countries = (handler: Handler) =>
-    routedGraphql({ ShopiAssistDeliveryCountries: handler });
+  const countries = (handler: Handler, payments?: Handler) =>
+    routedGraphql({
+      ShopiAssistDeliveryCountries: handler,
+      ...(payments ? { ShopiAssistPaymentSettings: payments } : {}),
+    });
 
   it("lists the countries the store sells to, by name", async () => {
     const store = countries(() => ({
@@ -738,7 +741,44 @@ describe("delivery countries", () => {
       "firstName",
       "address2",
     ]);
-    expect(store.calls[0].variables).toEqual({ language: "FR" });
+    expect(
+      store.calls.find((call) => call.operation === "ShopiAssistDeliveryCountries")!.variables,
+    ).toEqual({ language: "FR" });
+  });
+
+  it("says how the store is paid: its own name for paying on delivery, and what its checkout takes", async () => {
+    const store = countries(
+      () => ({ localization: { availableCountries: [{ isoCode: "US", name: "United States" }] } }),
+      () => ({
+        shop: {
+          paymentSettings: {
+            acceptedCardBrands: ["VISA", "MASTERCARD", "AMERICAN_EXPRESS", "NEW_BRAND"],
+            supportedDigitalWallets: ["SHOPIFY_PAY", "ANDROID_PAY", "GOOGLE_PAY", "<img>"],
+          },
+        },
+      }),
+    );
+    const byDefault = await listDeliveryCountries({ shop: SHOP_A, storefront: store }, deps);
+    expect(byDefault.payment).toEqual({
+      name: "Cash on Delivery (COD)",
+      note: "",
+      // Named as people know them, each once; anything odd is left out.
+      online: ["Visa", "Mastercard", "American Express", "New Brand", "Shop Pay", "Google Pay"],
+    });
+    // The countries are still listed when Shopify will not say how it is paid.
+    expect(byDefault.countries).toHaveLength(1);
+
+    await saveSettings(
+      SHOP_A,
+      { orderPaymentName: " Pay the courier ", orderPaymentNote: "Cash only." },
+      db,
+    );
+    try {
+      const named = await listDeliveryCountries({ shop: SHOP_A, storefront: store }, deps);
+      expect(named.payment).toMatchObject({ name: "Pay the courier", note: "Cash only." });
+    } finally {
+      await saveSettings(SHOP_A, { orderPaymentName: "", orderPaymentNote: "" }, db);
+    }
   });
 
   it("returns an empty list when Shopify cannot be asked, and nothing when switched off", async () => {
@@ -748,6 +788,8 @@ describe("delivery countries", () => {
     expect(await listDeliveryCountries({ shop: SHOP_A, storefront: broken }, deps)).toEqual({
       countries: [],
       forms: [],
+      // Shopify's own name for it, and nothing known about paying online.
+      payment: { name: "Cash on Delivery (COD)", note: "", online: [] },
     });
 
     const error = await failure(

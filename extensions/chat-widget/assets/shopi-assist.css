@@ -930,6 +930,29 @@ a.sa-card-title:hover {
   font-size: 13px;
 }
 
+.sa-order-pay-on {
+  border-color: var(--sa-accent);
+}
+
+.sa-order-pay-note {
+  white-space: pre-line;
+}
+
+a.sa-order-pay-online {
+  color: inherit;
+  text-decoration: none;
+}
+
+a.sa-order-pay-online:hover {
+  border-color: var(--sa-ink);
+}
+
+a.sa-order-pay-online strong {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .sa-order-rate input {
   flex: 0 0 auto;
   margin: 0;

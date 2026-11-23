@@ -1092,6 +1092,11 @@ describe("chat widget", () => {
                 { code: "US", name: "United States", form: 1 },
               ],
               forms: [formFor("Province", "Postal code"), formFor("State", "ZIP code")],
+              payment: {
+                name: "COD (cash or card at the door)",
+                note: "Have the exact amount ready.",
+                online: ["Visa", "Mastercard", "Shop Pay"],
+              },
             }),
       );
       const widget = mountWidget();
@@ -1214,9 +1219,13 @@ describe("chat widget", () => {
       expect(widget.$(".sa-order-totals").textContent).toBe(
         "Subtotal$36.00Shipping$5.00Tax$3.60Total$44.60",
       );
-      expect(widget.$(".sa-order-pay").textContent).toBe(
-        "Pay on deliveryYou pay $44.60 when your order arrives.",
-      );
+      // What the store calls it and tells buyers, then what its checkout takes.
+      expect(widget.all(".sa-order-pay").map((option) => option.textContent)).toEqual([
+        "COD (cash or card at the door)You pay $44.60 when your order arrives.Have the exact amount ready.",
+        "Pay online at checkoutVisa, Mastercard, Shop Pay",
+      ]);
+      const online = widget.$<HTMLAnchorElement>("a.sa-order-pay-online");
+      expect([online.getAttribute("href"), online.target]).toEqual(["/checkout", "_blank"]);
       expect(widget.$('.sa-order-form button[type="submit"]').textContent).toBe("Complete order");
 
       // Picking faster delivery asks for a new total.

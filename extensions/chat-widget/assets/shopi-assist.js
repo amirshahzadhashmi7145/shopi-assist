@@ -1861,6 +1861,30 @@
     [{ name: "phone", label: "Phone", required: true }],
   ];
 
+  /**
+   * How the order is paid for, as the app sent it: what the store calls
+   * paying on delivery, its instructions, and the cards and wallets its
+   * checkout takes. Shopify's own name stands in until the app has said.
+   */
+  function cleanPayment(payment) {
+    var given = payment && typeof payment === "object" ? payment : {};
+    return {
+      name:
+        typeof given.name === "string" && given.name.trim()
+          ? given.name.trim().slice(0, 60)
+          : "Cash on Delivery (COD)",
+      note: typeof given.note === "string" ? given.note.trim().slice(0, 300) : "",
+      online: (Array.isArray(given.online) ? given.online : [])
+        .filter(function (name) {
+          return typeof name === "string" && name;
+        })
+        .slice(0, 12)
+        .map(function (name) {
+          return name.slice(0, 40);
+        }),
+    };
+  }
+
   /** A layout as the app sent it, kept only if it is well formed. */
   function cleanLayout(rows) {
     if (!Array.isArray(rows)) return null;
@@ -1985,6 +2009,7 @@
 
   /** The countries the store sells to, for the form's country list. */
   Widget.prototype.loadCountries = function () {
+    var self = this;
     var fallback = /^[A-Za-z]{2}$/.test(this.config.country)
       ? [{ code: this.config.country.toUpperCase(), name: this.config.country.toUpperCase() }]
       : [];
@@ -1996,6 +2021,7 @@
         return response.ok ? response.json() : null;
       })
       .then(function (body) {
+        self.orderPayment = cleanPayment(body && body.payment);
         var forms = body && Array.isArray(body.forms) ? body.forms : [];
         var countries = (body && Array.isArray(body.countries) ? body.countries : [])
           .filter(function (country) {
@@ -2677,13 +2703,33 @@
       form.appendChild(options);
     }
 
+    // The store's own name and instructions for paying on delivery, then
+    // what its checkout takes for paying online.
+    var pay = this.orderPayment || cleanPayment(null);
     form.appendChild(el("h3", "sa-order-title", "Payment"));
-    var payment = el("div", "sa-order-pay");
-    payment.appendChild(el("strong", null, "Pay on delivery"));
+    var payment = el("div", "sa-order-pay sa-order-pay-on");
+    payment.appendChild(el("strong", null, pay.name));
     payment.appendChild(
       el("span", null, "You pay " + money(quote.total) + " when your order arrives."),
     );
+    if (pay.note) payment.appendChild(el("span", "sa-order-pay-note", pay.note));
     form.appendChild(payment);
+    if (pay.online.length) {
+      var online = el("a", "sa-order-pay sa-order-pay-online");
+      online.href = this.config.checkoutUrl;
+      online.target = "_blank";
+      online.rel = "noopener";
+      online.appendChild(
+        el(
+          "strong",
+          null,
+          // The store's checkout always takes the whole cart.
+          this.tickedLines() ? "Pay online at checkout (takes your whole cart)" : "Pay online at checkout",
+        ),
+      );
+      online.appendChild(el("span", null, pay.online.join(", ")));
+      form.appendChild(online);
+    }
 
     form.appendChild(el("h3", "sa-order-title", "Order summary"));
     var list = el("ul", "sa-order-lines");

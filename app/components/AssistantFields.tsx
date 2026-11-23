@@ -25,6 +25,8 @@ export const FIELD_GROUPS = {
     "orderFirstName",
     "orderCompany",
     "orderAddress2",
+    "orderPaymentName",
+    "orderPaymentNote",
     "orderLookupEnabled",
     "orderLookupByNumber",
     "recogniseCustomers",
@@ -44,7 +46,7 @@ export const FIELD_GROUPS = {
 const checked = (on: boolean) => (on ? { defaultChecked: true } : {});
 
 /** Step 1 of setup: what the assistant may do. All checkboxes, no typing. */
-export function AbilityFields({ settings }: FieldGroupProps) {
+export function AbilityFields({ settings, errors = {} }: FieldGroupProps) {
   return (
     <s-stack direction="block" gap="base">
       <s-checkbox
@@ -71,7 +73,7 @@ export function AbilityFields({ settings }: FieldGroupProps) {
         details="The order summary gets an 'Order here, pay on delivery' button. The shopper fills in a short form (name, phone, delivery address) and the order appears in your Shopify admin as unpaid, tagged shopi-assist. Tick this only if you offer cash on delivery, and check these orders before you ship them. Needs 'Help shoppers place an order'."
         {...checked(settings.allowChatOrders)}
       />
-      <OrderFormFields settings={settings} />
+      <OrderFormFields settings={settings} errors={errors} />
       <s-checkbox
         name="orderLookupEnabled"
         label="Check order status"
@@ -123,7 +125,7 @@ export function AbilityFields({ settings }: FieldGroupProps) {
  * names and the postal code rules follow the delivery country by themselves;
  * these three are the store's own choice.
  */
-function OrderFormFields({ settings }: FieldGroupProps) {
+function OrderFormFields({ settings, errors = {} }: FieldGroupProps) {
   return (
     <s-box paddingInlineStart="large-200">
       <s-stack direction="block" gap="small-200">
@@ -146,6 +148,30 @@ function OrderFormFields({ settings }: FieldGroupProps) {
           <s-option value="optional">Optional</s-option>
           <s-option value="required">Required</s-option>
         </s-select>
+        <s-paragraph color="subdued">
+          The delivery countries, states, shipping rates, prices and tax come from your store. So
+          do the cards and wallets shown for paying online. Shopify does not tell apps which
+          manual payment methods you have set up, so say here what your store calls paying on
+          delivery.
+        </s-paragraph>
+        <s-text-field
+          name="orderPaymentName"
+          label="Name of your pay-on-delivery method"
+          placeholder="Cash on Delivery (COD)"
+          details="As it is named under Settings > Payments > Manual payment methods. Leave empty for Shopify's own name."
+          defaultValue={settings.orderPaymentName}
+          maxLength={60}
+          {...errorProp(errors.orderPaymentName)}
+        />
+        <s-text-area
+          name="orderPaymentNote"
+          label="Payment instructions (optional)"
+          details="Shown to the shopper under the payment method before they complete the order, for example 'Please have the exact amount ready'."
+          defaultValue={settings.orderPaymentNote}
+          maxLength={300}
+          rows={2}
+          {...errorProp(errors.orderPaymentNote)}
+        />
       </s-stack>
     </s-box>
   );

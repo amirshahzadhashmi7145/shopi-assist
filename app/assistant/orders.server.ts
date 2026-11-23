@@ -35,6 +35,7 @@ import { appendExchange, findConversation, rememberOrder } from "./store.server"
 import { fingerprint } from "./tools/shopper";
 import {
   DELIVERY_COUNTRIES_QUERY,
+  PAYMENT_SETTINGS_QUERY,
   VARIANTS_FOR_ORDER_QUERY,
 } from "./tools/storefront-queries";
 import type { GraphqlFn, Money } from "./types";
@@ -878,11 +879,71 @@ export interface DeliveryCountry {
   form: number;
 }
 
+/** How the order is paid for, as the form's payment step shows it. */
+export interface PaymentOptions {
+  /** What the store calls paying on delivery. */
+  name: string;
+  /** The store's instructions for it, or "". */
+  note: string;
+  /** The cards and wallets the store's checkout takes, by name. */
+  online: string[];
+}
+
 /** What the order form needs before it can be drawn. */
 export interface DeliveryOptions {
   countries: DeliveryCountry[];
   /** Each distinct layout once; a country points at its own by position. */
   forms: FormLayout[];
+  payment: PaymentOptions;
+}
+
+/** Shopify's own name for the manual payment method, used until the store gives its own. */
+export const DEFAULT_PAYMENT_NAME = "Cash on Delivery (COD)";
+
+// Brand names for what Shopify reports in capitals.
+const PAYMENT_NAMES: Record<string, string> = {
+  AMERICAN_EXPRESS: "American Express",
+  DINERS_CLUB: "Diners Club",
+  DISCOVER: "Discover",
+  JCB: "JCB",
+  MASTERCARD: "Mastercard",
+  VISA: "Visa",
+  ANDROID_PAY: "Google Pay",
+  APPLE_PAY: "Apple Pay",
+  GOOGLE_PAY: "Google Pay",
+  SHOPIFY_PAY: "Shop Pay",
+};
+
+/** The cards and wallets the store's checkout takes. Empty when Shopify will not say. */
+async function onlinePaymentMethods(shop: string, storefront: GraphqlFn): Promise<string[]> {
+  try {
+    const data = await storefront<{
+      shop: {
+        paymentSettings: {
+          acceptedCardBrands?: string[] | null;
+          supportedDigitalWallets?: string[] | null;
+        } | null;
+      } | null;
+    }>(PAYMENT_SETTINGS_QUERY);
+    const settings = data.shop?.paymentSettings;
+    const names = [...(settings?.acceptedCardBrands ?? []), ...(settings?.supportedDigitalWallets ?? [])]
+      .filter((value): value is string => typeof value === "string" && /^[A-Z_]{2,40}$/.test(value))
+      .map(
+        (value) =>
+          PAYMENT_NAMES[value] ??
+          value
+            .toLowerCase()
+            .split("_")
+            .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(" "),
+      );
+    return [...new Set(names)].slice(0, 12);
+  } catch (error) {
+    console.error(
+      `[shopi-assist] payment settings failed shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    return [];
+  }
 }
 
 /**
@@ -914,6 +975,11 @@ export async function listDeliveryCountries(
   ]);
 
   const language = /^[A-Za-z]{2}$/.test(input.language ?? "") ? input.language!.toUpperCase() : null;
+  const payment: PaymentOptions = {
+    name: settings.orderPaymentName || DEFAULT_PAYMENT_NAME,
+    note: settings.orderPaymentNote,
+    online: await onlinePaymentMethods(input.shop, input.storefront),
+  };
   try {
     const data = await input.storefront<{
       localization: { availableCountries: Array<{ isoCode: string; name: string }> } | null;
@@ -929,12 +995,13 @@ export async function listDeliveryCountries(
     return {
       countries: countries.map((country) => ({ ...country, form: index[country.code] })),
       forms,
+      payment,
     };
   } catch (error) {
     console.error(
       `[shopi-assist] delivery countries failed shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
     );
-    return { countries: [], forms: [] };
+    return { countries: [], forms: [], payment };
   }
 }
 
