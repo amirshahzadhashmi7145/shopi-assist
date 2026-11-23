@@ -763,21 +763,56 @@
     box.setAttribute("aria-label", "Order summary");
     box.appendChild(el("h3", "sa-order-title", "Your order"));
 
+    // One change to the cart at a time: the summary is drawn again from the
+    // cart once Shopify has answered.
+    var busy = function () {
+      var buttons = box.querySelectorAll("button");
+      for (var i = 0; i < buttons.length; i += 1) buttons[i].disabled = true;
+    };
+
     var list = el("ul", "sa-order-lines");
     lines.forEach(function (line) {
+      var quantity = parseInt(line.quantity, 10) || 1;
       var item = el("li", "sa-order-line");
-      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " \u00d7"));
+      // A line that cannot be changed from here just says how many.
+      if (!line.key) item.appendChild(el("span", "sa-order-quantity", quantity + " ×"));
       item.appendChild(el("span", "sa-order-item", line.title));
       item.appendChild(el("span", "sa-order-amount", money(line.total)));
       if (line.key) {
+        var edit = el("div", "sa-order-edit");
+        var stepper = el("div", "sa-stepper sa-stepper-small");
+        var less = el("button", "sa-stepper-button", "−");
+        less.type = "button";
+        less.setAttribute("aria-label", "One less: " + line.title);
+        less.disabled = quantity <= 1;
+        var count = el("span", "sa-stepper-count", String(quantity));
+        count.setAttribute("aria-label", "Quantity of " + line.title);
+        var more = el("button", "sa-stepper-button", "+");
+        more.type = "button";
+        more.setAttribute("aria-label", "One more: " + line.title);
+        more.disabled = quantity >= MAX_ITEM_QUANTITY;
+        less.addEventListener("click", function () {
+          busy();
+          self.setCartQuantity(line.key, quantity - 1);
+        });
+        more.addEventListener("click", function () {
+          busy();
+          self.setCartQuantity(line.key, quantity + 1);
+        });
+        stepper.appendChild(less);
+        stepper.appendChild(count);
+        stepper.appendChild(more);
+        edit.appendChild(stepper);
+
         var remove = el("button", "sa-order-remove", "Remove");
         remove.type = "button";
         remove.setAttribute("aria-label", "Remove " + line.title);
         remove.addEventListener("click", function () {
-          remove.disabled = true;
+          busy();
           self.removeFromCart(line.key);
         });
-        item.appendChild(remove);
+        edit.appendChild(remove);
+        item.appendChild(edit);
       }
       list.appendChild(item);
     });
@@ -790,27 +825,37 @@
     total.appendChild(el("span", null, "Subtotal"));
     total.appendChild(el("strong", null, money(entry.subtotal)));
     box.appendChild(total);
-    box.appendChild(el("p", "sa-order-note", "Shipping and taxes are added at checkout."));
-
-    var actions = el("div", "sa-order-actions");
-    var pay = el("a", "sa-card-button sa-card-button-primary sa-order-checkout", "Go to checkout");
-    pay.href = this.config.checkoutUrl;
-    actions.appendChild(pay);
-    var cartHref = safeHref(this.config.cartUrl);
-    if (cartHref) {
-      var edit = el("a", "sa-card-button", "Edit cart");
-      edit.href = cartHref;
-      actions.appendChild(edit);
-    }
-    box.appendChild(actions);
 
     if (this.chatOrders) {
-      var here = el("button", "sa-card-button sa-order-here", "Order here, pay on delivery");
+      // The order is finished here in the chat. Paying by card is only
+      // possible on the store's checkout page, so that stays a quiet link
+      // that opens beside the chat instead of replacing it.
+      box.appendChild(el("p", "sa-order-note", "Delivery and taxes are added in the next step."));
+      var here = el(
+        "button",
+        "sa-card-button sa-card-button-primary sa-order-here",
+        "Order here, pay on delivery",
+      );
       here.type = "button";
       here.addEventListener("click", function () {
         self.openOrderForm();
       });
       box.appendChild(here);
+
+      var online = el("p", "sa-order-note sa-order-online-note");
+      var link = el("a", "sa-order-online", "Pay online at checkout instead");
+      link.href = this.config.checkoutUrl;
+      link.target = "_blank";
+      link.rel = "noopener";
+      online.appendChild(link);
+      box.appendChild(online);
+    } else {
+      box.appendChild(el("p", "sa-order-note", "Shipping and taxes are added at checkout."));
+      var actions = el("div", "sa-order-actions");
+      var pay = el("a", "sa-card-button sa-card-button-primary sa-order-checkout", "Go to checkout");
+      pay.href = this.config.checkoutUrl;
+      actions.appendChild(pay);
+      box.appendChild(actions);
     }
 
     this.messagesEl.appendChild(box);
@@ -1415,14 +1460,17 @@
     for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
   };
 
-  /** Sets one cart line's quantity to zero. Resolves true when Shopify agreed. */
-  Widget.prototype.changeCartLine = function (key) {
+  /**
+   * Sets one cart line's quantity; none given takes the line out. Resolves
+   * true when Shopify agreed.
+   */
+  Widget.prototype.changeCartLine = function (key, quantity) {
     return window
       .fetch(this.config.cartUrl + "/change.js", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ id: key, quantity: 0 }),
+        body: JSON.stringify({ id: key, quantity: quantity > 0 ? quantity : 0 }),
       })
       .then(function (response) {
         return response.ok ? response.json() : null;
@@ -1444,6 +1492,23 @@
     // The summary is read from the cart again, so it shows the truth either way.
     return this.changeCartLine(key).then(function () {
       return self.showOrderSummary();
+    });
+  };
+
+  /** Changes how many of one line the cart holds, then shows the summary again. */
+  Widget.prototype.setCartQuantity = function (key, quantity) {
+    var self = this;
+    return this.changeCartLine(key, quantity).then(function (changed) {
+      return self.showOrderSummary().then(function () {
+        // Shopify says no when, for one, there is not that much in stock.
+        if (!changed) {
+          self.pushEntry({
+            role: "notice",
+            tone: "error",
+            text: "That quantity couldn't be set. Your order is as shown above.",
+          });
+        }
+      });
     });
   };
 

@@ -603,8 +603,29 @@ a.sa-card-title:hover {
 
 .sa-order-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
+  gap: 4px 8px;
+}
+
+/* Under a line's name and price: how many, and a way to take it out. */
+.sa-order-edit {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+}
+
+.sa-stepper-small .sa-stepper-button {
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+}
+
+.sa-order-lines .sa-order-line + .sa-order-line {
+  padding-top: 8px;
+  border-top: 1px solid var(--sa-line);
 }
 
 .sa-order-quantity {
@@ -678,8 +699,18 @@ a.sa-card-title:hover {
 
 .sa-order-here {
   width: 100%;
-  min-height: 38px;
+  min-height: 40px;
+  font-size: 14px;
   white-space: normal;
+}
+
+.sa-order-online-note {
+  text-align: center;
+}
+
+.sa-order-online {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* Pay-on-delivery order form ---------------------------------------------- */

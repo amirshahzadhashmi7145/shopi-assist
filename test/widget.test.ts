@@ -584,7 +584,6 @@ describe("chat widget", () => {
     const links = Array.from(order.querySelectorAll("a"));
     expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
       ["Go to checkout", "/checkout"],
-      ["Edit cart", "/cart"],
     ]);
   });
 
@@ -858,6 +857,62 @@ describe("chat widget", () => {
     );
   });
 
+  it("changes how many of a line the order holds, without leaving the chat", async () => {
+    const lines = [{ ...cartLine(101, 2, "Trail Mug", 1800), key: "101:abc" }];
+    let refuse = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url !== "/cart/change.js") return reply("Here.", { actions: [{ type: "checkout" }] });
+      if (refuse) return jsonResponse({ status: 422, description: "Sold out" }, 422);
+      const change = JSON.parse(init!.body as string);
+      lines[0] = { ...cartLine(101, change.quantity, "Trail Mug", 1800), key: "101:abc" };
+      return jsonResponse(cartJson(...lines));
+    });
+    cartMock.mockImplementation(() => jsonResponse(cartJson(...lines)));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("checkout");
+    await flush();
+
+    const step = (label: string) =>
+      widget.all(".sa-order .sa-stepper-button").find((button) => button.textContent === label) as HTMLButtonElement;
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("2");
+    expect(step("+").getAttribute("aria-label")).toBe("One more: Trail Mug");
+    // No link out to the cart page.
+    expect(widget.$(".sa-order").textContent).not.toContain("Edit cart");
+
+    step("+").click();
+    await flush();
+    const changes = () =>
+      fetchMock.mock.calls
+        .filter((call) => call[0] === "/cart/change.js")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+    expect(changes()).toEqual([{ id: "101:abc", quantity: 3 }]);
+    expect(widget.all(".sa-order")).toHaveLength(1);
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("3");
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$54.00");
+
+    step("\u2212").click();
+    step("\u2212").click();
+    await flush();
+    // The second press landed on a disabled button: one change at a time.
+    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 2 });
+    expect(changes()).toHaveLength(2);
+
+    step("\u2212").click();
+    await flush();
+    // At one, less is off: Remove is the way to take the line out.
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
+    expect(step("\u2212").disabled).toBe(true);
+
+    refuse = true;
+    step("+").click();
+    await flush();
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
+    expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+      "That quantity couldn't be set. Your order is as shown above.",
+    );
+  });
+
   it("shows the app's message when an order step is refused, even as a 200", async () => {
     configMock.mockImplementation(() => appConfig({ chatOrders: true }));
     liveCart({ 101: ["Trail Mug", 1800] }, () => reply("Here.", { actions: [{ type: "checkout" }] }), {
@@ -930,7 +985,7 @@ describe("chat widget", () => {
     await flush();
 
     expect(cartMock.mock.calls[0][0]).toBe("/fr/cart.js");
-    expect(widget.$(".sa-order a:last-child").getAttribute("href")).toBe("/fr/cart");
+    expect(widget.$(".sa-order-item").textContent).toBe("Tasse");
   });
 
   describe("pay-on-delivery order form", () => {
@@ -1337,8 +1392,12 @@ describe("chat widget", () => {
       const cancel = widget.all(".sa-order-form button").find((button) => button.textContent === "Cancel")!;
       cancel.click();
       expect(widget.root.querySelector(".sa-order-form")).toBeNull();
-      // The summary with its checkout button is still there.
-      expect(widget.$(".sa-order-checkout").getAttribute("href")).toBe("/checkout");
+      // The summary is still there, with paying online as the quiet second way.
+      expect(widget.$(".sa-order-here").textContent).toBe("Order here, pay on delivery");
+      const online = widget.$<HTMLAnchorElement>(".sa-order-online");
+      expect(online.getAttribute("href")).toBe("/checkout");
+      expect(online.target).toBe("_blank");
+      expect(widget.root.querySelector(".sa-order-checkout")).toBeNull();
     });
   });
 
