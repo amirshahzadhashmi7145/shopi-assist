@@ -642,6 +642,26 @@ a.sa-card-title:hover {
   gap: 4px 8px;
 }
 
+/* Ticks a line into the order, or leaves it in the cart for later. */
+.sa-order-pick {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  align-self: center;
+  accent-color: var(--sa-accent);
+}
+
+.sa-order-line-off .sa-order-item,
+.sa-order-line-off .sa-order-amount {
+  color: var(--sa-ink-soft);
+}
+
+.sa-order-also {
+  padding-top: 8px;
+  border-top: 1px solid var(--sa-line);
+}
+
 /* Under a line's name and price: how many, and a way to take it out. */
 .sa-order-edit {
   flex: 1 1 100%;
@@ -669,7 +689,8 @@ a.sa-card-title:hover {
 }
 
 .sa-order-item {
-  flex: 1 1 auto;
+  /* Grows from nothing, so a long name wraps and the price stays beside it. */
+  flex: 1 1 0;
   min-width: 0;
   line-height: 1.3;
   overflow-wrap: anywhere;

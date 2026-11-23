@@ -204,16 +204,28 @@
     return lines;
   }
 
-  /** What the order summary shows, taken from the storefront cart as it is now. */
-  function orderSummary(cart) {
+  /**
+   * What the order summary shows, taken from the storefront cart as it is now.
+   * `picked` holds the variants the shopper has just asked to buy: those lines
+   * are ticked for the order and the rest of the cart is not. Without it a
+   * line keeps the tick it had in the summary this one replaces (`before`,
+   * by line key), and a line that is new to the cart is ticked.
+   */
+  function orderSummary(cart, picked, before) {
     var lines = cart.items.slice(0, MAX_SUMMARY_LINES).map(function (line) {
       var amount = line.final_line_price !== undefined ? line.final_line_price : line.line_price;
+      var key = typeof line.key === "string" ? line.key.slice(0, 200) : "";
       return {
         title: String(line.title || line.product_title || "Item").slice(0, 120),
         quantity: Math.max(1, parseInt(line.quantity, 10) || 1),
         total: fromCents(amount),
-        // Identifies the cart line, so it can be removed from the summary.
-        key: typeof line.key === "string" ? line.key.slice(0, 200) : "",
+        // Identifies the cart line, so it can be changed from the summary.
+        key: key,
+        on: picked
+          ? picked[String(line.variant_id)] === true
+          : before && Object.prototype.hasOwnProperty.call(before, key)
+            ? before[key]
+            : true,
       };
     });
     return {
@@ -759,6 +771,20 @@
         : "";
     };
 
+    // Where the store takes orders in the chat, the shopper ticks which of
+    // the cart's lines this order holds: what they just asked for is ticked,
+    // what was in the cart before waits underneath. Anywhere else the
+    // checkout takes the whole cart, so there is nothing to tick.
+    var selectable = this.chatOrders;
+    var isOn = function (line) {
+      return !selectable || !line.key || line.on !== false;
+    };
+    var chosen = lines.filter(isOn);
+    var waiting = lines.filter(function (line) {
+      return !isOn(line);
+    });
+    var ticks = selectable && (lines.length > 1 || waiting.length > 0);
+
     var box = el("section", "sa-order");
     box.setAttribute("aria-label", "Order summary");
     box.appendChild(el("h3", "sa-order-title", "Your order"));
@@ -766,19 +792,44 @@
     // One change to the cart at a time: the summary is drawn again from the
     // cart once Shopify has answered.
     var busy = function () {
-      var buttons = box.querySelectorAll("button");
+      var buttons = box.querySelectorAll("button, input");
       for (var i = 0; i < buttons.length; i += 1) buttons[i].disabled = true;
     };
 
-    var list = el("ul", "sa-order-lines");
-    lines.forEach(function (line) {
+    /** Draws the summary again in place after a line is ticked or unticked. */
+    var redraw = function (line) {
+      // An order form opened from the summary was for the lines as they were.
+      if (self.orderForm && !self.orderForm.mode) self.closeOrderForm();
+      self.saveState();
+      var fresh = self.appendOrder(entry);
+      if (!fresh || !box.parentNode) return;
+      box.parentNode.insertBefore(fresh, box);
+      box.parentNode.removeChild(box);
+      var again = fresh.querySelector('.sa-order-pick[data-line="' + lines.indexOf(line) + '"]');
+      if (again) again.focus();
+    };
+
+    var addLine = function (list, line) {
+      var on = isOn(line);
       var quantity = parseInt(line.quantity, 10) || 1;
-      var item = el("li", "sa-order-line");
+      var item = el("li", on ? "sa-order-line" : "sa-order-line sa-order-line-off");
+      if (ticks && line.key) {
+        var tick = el("input", "sa-order-pick");
+        tick.type = "checkbox";
+        tick.checked = on;
+        tick.setAttribute("data-line", String(lines.indexOf(line)));
+        tick.setAttribute("aria-label", "Include in this order: " + line.title);
+        tick.addEventListener("change", function () {
+          line.on = tick.checked;
+          redraw(line);
+        });
+        item.appendChild(tick);
+      }
       // A line that cannot be changed from here just says how many.
-      if (!line.key) item.appendChild(el("span", "sa-order-quantity", quantity + " ×"));
+      if (!line.key || !on) item.appendChild(el("span", "sa-order-quantity", quantity + " ×"));
       item.appendChild(el("span", "sa-order-item", line.title));
       item.appendChild(el("span", "sa-order-amount", money(line.total)));
-      if (line.key) {
+      if (line.key && on) {
         var edit = el("div", "sa-order-edit");
         var stepper = el("div", "sa-stepper sa-stepper-small");
         var less = el("button", "sa-stepper-button", "−");
@@ -815,15 +866,46 @@
         item.appendChild(edit);
       }
       list.appendChild(item);
-    });
-    box.appendChild(list);
+    };
+
+    if (chosen.length) {
+      var list = el("ul", "sa-order-lines");
+      chosen.forEach(function (line) {
+        addLine(list, line);
+      });
+      box.appendChild(list);
+    } else {
+      box.appendChild(el("p", "sa-order-note", "Nothing is ticked yet."));
+    }
+    if (waiting.length) {
+      box.appendChild(
+        el("p", "sa-order-note sa-order-also", "Also in your cart. Tick anything you want in this order."),
+      );
+      var rest = el("ul", "sa-order-lines sa-order-waiting");
+      waiting.forEach(function (line) {
+        addLine(rest, line);
+      });
+      box.appendChild(rest);
+    }
     if (entry.more > 0) {
       box.appendChild(el("p", "sa-order-note", "Plus " + parseInt(entry.more, 10) + " more in your cart."));
     }
 
     var total = el("p", "sa-order-total");
     total.appendChild(el("span", null, "Subtotal"));
-    total.appendChild(el("strong", null, money(entry.subtotal)));
+    total.appendChild(
+      el(
+        "strong",
+        null,
+        money(
+          waiting.length
+            ? chosen.reduce(function (sum, line) {
+                return sum + (typeof line.total === "number" ? line.total : 0);
+              }, 0)
+            : entry.subtotal,
+        ),
+      ),
+    );
     box.appendChild(total);
 
     if (this.chatOrders) {
@@ -837,13 +919,21 @@
         "Order here, pay on delivery",
       );
       here.type = "button";
+      here.disabled = chosen.length === 0;
       here.addEventListener("click", function () {
         self.openOrderForm();
       });
       box.appendChild(here);
 
       var online = el("p", "sa-order-note sa-order-online-note");
-      var link = el("a", "sa-order-online", "Pay online at checkout instead");
+      // The store's checkout always takes the whole cart.
+      var link = el(
+        "a",
+        "sa-order-online",
+        waiting.length
+          ? "Pay online at checkout instead (takes your whole cart)"
+          : "Pay online at checkout instead",
+      );
       link.href = this.config.checkoutUrl;
       link.target = "_blank";
       link.rel = "noopener";
@@ -969,7 +1059,8 @@
       var done = function () {
         buy.disabled = picked().length === 0;
       };
-      self.runAction({ type: "order", items: items }).then(done, done);
+      // The shopper set these numbers, so the order holds exactly that many.
+      self.runAction({ type: "order", items: items, exact: true }).then(done, done);
     });
     return [add, buy];
   };
@@ -1397,13 +1488,18 @@
                 }),
               );
             })
-          : this.ensureInCart(items);
+          : this.ensureInCart(items, action.exact === true);
       return filled.then(function (result) {
         if (!result.ok) {
           self.pushEntry({ role: "notice", tone: "error", text: result.message });
           return null;
         }
-        return self.showOrderSummary();
+        // These are the order; anything else in the cart waits to be ticked.
+        return self.showOrderSummary(
+          items.map(function (item) {
+            return item.variantId;
+          }),
+        );
       });
     }
 
@@ -1478,28 +1574,59 @@
   /**
    * Makes sure the cart holds at least the quantity asked for of each item.
    * Only what is missing is added, so an order that is repeated, or that
-   * names something the shopper already added, never doubles up.
+   * names something the shopper already added, never doubles up. With
+   * `exact`, a line holding more than was asked for comes down to it.
    */
-  Widget.prototype.ensureInCart = function (items) {
+  Widget.prototype.ensureInCart = function (items, exact) {
     var self = this;
     return this.fetchCart().then(function (cart) {
       var inCart = {};
+      var keys = {};
       (cart ? cart.items : []).forEach(function (line) {
         var id = String(line.variant_id);
         inCart[id] = (inCart[id] || 0) + (parseInt(line.quantity, 10) || 0);
+        (keys[id] = keys[id] || []).push(line.key);
       });
 
       var missing = [];
+      var lower = [];
       items.forEach(function (item) {
-        var needed = item.quantity - (inCart[item.variantId] || 0);
-        if (needed > 0) missing.push({ id: Number(item.variantId), quantity: needed });
+        var have = inCart[item.variantId] || 0;
+        if (have < item.quantity) {
+          missing.push({ id: Number(item.variantId), quantity: item.quantity - have });
+        } else if (
+          exact &&
+          have > item.quantity &&
+          keys[item.variantId].length === 1 &&
+          typeof keys[item.variantId][0] === "string"
+        ) {
+          lower.push({ key: keys[item.variantId][0], quantity: item.quantity });
+        }
       });
-      return missing.length ? self.addItems(missing) : { ok: true };
+      return Promise.resolve(missing.length ? self.addItems(missing) : { ok: true }).then(
+        function (result) {
+          if (!result.ok) return result;
+          // One after another: each change answers with the whole cart.
+          return lower
+            .reduce(function (chain, change) {
+              return chain.then(function () {
+                return self.changeCartLine(change.key, change.quantity);
+              });
+            }, Promise.resolve())
+            .then(function () {
+              return { ok: true };
+            });
+        },
+      );
     });
   };
 
-  /** Shows what is in the cart with a checkout button, or says it is empty. */
-  Widget.prototype.showOrderSummary = function () {
+  /**
+   * Shows what is in the cart with the buttons to order it, or says it is
+   * empty. `picked` lists the variants just asked for: they are ticked for
+   * the order and the rest of the cart is listed unticked.
+   */
+  Widget.prototype.showOrderSummary = function (picked) {
     var self = this;
     return this.fetchCart().then(function (cart) {
       if (!cart) {
@@ -1511,6 +1638,22 @@
         });
         return;
       }
+      // What was ticked in the summary on screen stays ticked in the new one.
+      var before = null;
+      self.state.messages.forEach(function (message) {
+        if (message.role !== "order" || !Array.isArray(message.lines)) return;
+        before = {};
+        message.lines.forEach(function (line) {
+          if (line && line.key) before[line.key] = line.on !== false;
+        });
+      });
+      var chosen = null;
+      if (Array.isArray(picked)) {
+        chosen = {};
+        picked.forEach(function (variantId) {
+          chosen[String(variantId)] = true;
+        });
+      }
       // One summary at a time: an older one would show a cart that has changed.
       self.dropOrderSummary();
 
@@ -1521,8 +1664,40 @@
         });
         return;
       }
-      self.pushEntry(orderSummary(cart));
+      self.pushEntry(orderSummary(cart, chosen, before));
     });
+  };
+
+  /**
+   * The cart lines ticked for the order, by line key. Null when the order is
+   * the whole cart: nothing is unticked, or there is nothing to tick.
+   */
+  Widget.prototype.tickedLines = function () {
+    if (!this.chatOrders) return null;
+    var ticked = null;
+    this.state.messages.forEach(function (message) {
+      if (message.role !== "order" || !Array.isArray(message.lines)) return;
+      var keys = {};
+      var some = false;
+      message.lines.forEach(function (line) {
+        if (!line || !line.key) return;
+        if (line.on === false) some = true;
+        else keys[line.key] = true;
+      });
+      ticked = some ? keys : null;
+    });
+    return ticked;
+  };
+
+  /** Takes these lines out of the storefront cart, leaving the rest. */
+  Widget.prototype.removeCartLines = function (keys) {
+    var self = this;
+    // One after another: each change gives the remaining lines new positions.
+    return keys.reduce(function (chain, key) {
+      return chain.then(function () {
+        return self.changeCartLine(key);
+      });
+    }, Promise.resolve());
   };
 
   /**
@@ -2285,12 +2460,24 @@
     return this.fetchCart()
       .then(function (cart) {
         if (self.orderForm !== state) return null;
+        // The order is the lines the shopper ticked, or the whole cart.
+        var ticked = self.tickedLines();
+        var lines = !cart
+          ? []
+          : !ticked
+            ? cart.items
+            : cart.items.filter(function (line) {
+                return ticked[line.key] === true;
+              });
+        if (cart && cart.items.length && !lines.length) {
+          return { ok: false, body: { error: { message: "Tick what you want to order first." } } };
+        }
         var problem = !cart
           ? "Your cart couldn't be read."
           : !cart.items.length
             ? "Your cart is empty."
-            : cart.items.length > MAX_ORDER_ITEMS ||
-                cart.items.some(function (line) {
+            : lines.length > MAX_ORDER_ITEMS ||
+                lines.some(function (line) {
                   return (
                     line.quantity > MAX_ITEM_QUANTITY ||
                     line.selling_plan_allocation ||
@@ -2301,9 +2488,15 @@
               : "";
         if (problem) return { ok: false, body: { error: { message: problem + USE_CHECKOUT } } };
 
-        state.items = cart.items.map(function (line) {
+        state.items = lines.map(function (line) {
           return { variantId: String(line.variant_id), quantity: Number(line.quantity) };
         });
+        // What to take out of the cart once the order is placed.
+        state.lineKeys = ticked
+          ? lines.map(function (line) {
+              return line.key;
+            })
+          : null;
         return self.postOrder(self.orderPayload("quote"));
       })
       .then(function (result) {
@@ -2510,7 +2703,9 @@
           formatMoney(order.total, self.config.locale) +
           " on delivery.",
       });
-      self.clearCart();
+      // Lines that were not part of the order stay in the cart.
+      if (state.lineKeys) self.removeCartLines(state.lineKeys);
+      else self.clearCart();
     });
   };
 

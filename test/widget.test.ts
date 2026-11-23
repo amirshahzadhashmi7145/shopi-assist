@@ -1237,6 +1237,147 @@ describe("chat widget", () => {
       expect(stored).toContain("Order #1001 is placed");
     });
 
+    it("orders what was just picked and leaves the rest of the cart unticked", async () => {
+      configMock.mockImplementation(() => appConfig({ chatOrders: true, buyNow: true }));
+      const catalog: Record<number, [string, number]> = {
+        101: ["Trail Mug", 1800],
+        102: ["Camp Kettle", 4500],
+        103: ["Camp Blanket", 8950],
+      };
+      // In the cart from before: two mugs and a blanket.
+      const held = new Map<number, number>([
+        [101, 2],
+        [103, 1],
+      ]);
+      const cartNow = () =>
+        cartJson(
+          ...[...held].map(([id, quantity]) => ({
+            ...cartLine(id, quantity, catalog[id][0], catalog[id][1]),
+            key: `${id}:k`,
+          })),
+        );
+      cartMock.mockImplementation(() => jsonResponse(cartNow()));
+      const cartCalls: Array<[string, unknown]> = [];
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!url.startsWith("/cart/")) {
+          return reply("Two picks.", {
+            cards: [
+              card(),
+              card({ title: "Camp Kettle", handle: "camp-kettle", variantId: "102", price: usd("45.0") }),
+            ],
+          });
+        }
+        const body = JSON.parse(init!.body as string);
+        cartCalls.push([url, body]);
+        if (url === "/cart/add.js") {
+          for (const item of body.items) held.set(item.id, (held.get(item.id) ?? 0) + item.quantity);
+          return jsonResponse({ items: [] });
+        }
+        if (url === "/cart/change.js") {
+          const id = Number(String(body.id).split(":")[0]);
+          if (body.quantity > 0) held.set(id, body.quantity);
+          else held.delete(id);
+        }
+        return jsonResponse(cartNow());
+      });
+      orderMock.mockImplementation((_url: string, init?: RequestInit) => {
+        if (init?.method !== "POST") {
+          return jsonResponse({ ok: true, countries: [{ code: "CA", name: "Canada" }] });
+        }
+        return JSON.parse(init.body as string).step === "quote"
+          ? jsonResponse({ ok: true, step: "quote", quote: quote() })
+          : jsonResponse({ ok: true, step: "place", order: { name: "#1003", total: usd("44.6") } });
+      });
+
+      const widget = mountWidget();
+      await flush();
+      widget.launcher.click();
+      widget.send("mugs?");
+      await flush();
+
+      // One of each, where the cart already holds two mugs.
+      for (const item of widget.all(".sa-card")) {
+        Array.from(item.querySelectorAll("button"))
+          .find((button) => button.textContent === "+")!
+          .click();
+      }
+      Array.from(widget.$(".sa-cards-bar").querySelectorAll("button"))
+        .find((button) => button.textContent === "Buy now")!
+        .click();
+      await flush();
+
+      // The cart now holds exactly what was picked of each, plus the blanket.
+      expect(cartCalls).toEqual([
+        ["/cart/add.js", { items: [{ id: 102, quantity: 1 }] }],
+        ["/cart/change.js", { id: "101:k", quantity: 1 }],
+      ]);
+
+      const names = (selector: string) => widget.all(`${selector} .sa-order-item`).map((item) => item.textContent);
+      const ticks = () => widget.all(".sa-order-pick") as HTMLInputElement[];
+      expect(names(".sa-order-lines:not(.sa-order-waiting)")).toEqual(["Trail Mug", "Camp Kettle"]);
+      expect(names(".sa-order-waiting")).toEqual(["Camp Blanket"]);
+      expect(ticks().map((tick) => tick.checked)).toEqual([true, true, false]);
+      expect(widget.$(".sa-order-also").textContent).toBe(
+        "Also in your cart. Tick anything you want in this order.",
+      );
+      // Only what is ticked is counted, and has a quantity to change.
+      expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
+      expect(widget.all(".sa-order-waiting .sa-stepper")).toHaveLength(0);
+      expect(widget.$(".sa-order-online").textContent).toBe(
+        "Pay online at checkout instead (takes your whole cart)",
+      );
+
+      const tick = (title: string, on: boolean) => {
+        const box = ticks().find((entry) => entry.getAttribute("aria-label")!.endsWith(title))!;
+        box.checked = on;
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      tick("Camp Blanket", true);
+      expect(widget.all(".sa-order")).toHaveLength(1);
+      expect(widget.all(".sa-order-waiting")).toHaveLength(0);
+      expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$152.50");
+      expect(widget.$(".sa-order-online").textContent).toBe("Pay online at checkout instead");
+      tick("Camp Blanket", false);
+      expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
+
+      // The ticks are kept with the chat, for the next page.
+      const saved = JSON.parse(Object.values({ ...window.localStorage }).join("")) as {
+        messages: Array<{ role: string; lines?: Array<{ on: boolean }> }>;
+      };
+      expect(saved.messages.find((message) => message.role === "order")!.lines!.map((line) => line.on)).toEqual([
+        true,
+        false,
+        true,
+      ]);
+
+      widget.$<HTMLButtonElement>(".sa-order-here").click();
+      await flush();
+      for (const [name, value] of Object.entries(DETAILS)) {
+        widget.$<HTMLInputElement>(`.sa-order-form [name="${name}"]`).value = value;
+      }
+      const submit = async () => {
+        widget
+          .$<HTMLFormElement>(".sa-order-form")
+          .dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        await flush();
+      };
+      await submit();
+      // The blanket is not part of the order.
+      expect(orderPosts()[0].items).toEqual([
+        { variantId: "101", quantity: 1 },
+        { variantId: "102", quantity: 1 },
+      ]);
+
+      await submit();
+      expect(widget.all(".sa-notice").at(-1)!.textContent).toContain("Order #1003 is placed.");
+      // What was ordered leaves the cart; the blanket stays in it.
+      expect(cartCalls.slice(2)).toEqual([
+        ["/cart/change.js", { id: "101:k", quantity: 0 }],
+        ["/cart/change.js", { id: "102:k", quantity: 0 }],
+      ]);
+      expect([...held.keys()]).toEqual([103]);
+    });
+
     it("shows the store's field errors next to the fields and keeps what was typed", async () => {
       const { widget, field, fill, submit } = await openForm(() =>
         jsonResponse(
