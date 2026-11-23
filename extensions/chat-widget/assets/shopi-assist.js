@@ -1829,24 +1829,66 @@
 
   // ------------------------------------------------- pay-on-delivery orders
 
-  // The same fields, in the same order and under the same headings, as
-  // Shopify's own checkout. `half` fields sit two to a row, as they do there.
-  var ORDER_FIELDS = [
-    { name: "email", label: "Email (optional, for order updates)", autocomplete: "email", type: "email" },
-    { name: "countryCode", label: "Country/Region", autocomplete: "country", kind: "country" },
-    { name: "firstName", label: "First name (optional)", autocomplete: "given-name", half: true },
-    { name: "lastName", label: "Last name", autocomplete: "family-name", required: true, half: true },
-    { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
-    { name: "address2", label: "Apartment, suite, etc. (optional)", autocomplete: "address-line2" },
-    { name: "city", label: "City", autocomplete: "address-level2", required: true },
+  // How the browser should treat each field of the order form. Which of them
+  // a delivery gets, in what order and under what names, comes from the app:
+  // it follows the delivery country's address format and the store's settings.
+  var FIELD_KINDS = {
+    firstName: { autocomplete: "given-name" },
+    lastName: { autocomplete: "family-name" },
+    company: { autocomplete: "organization" },
+    address1: { autocomplete: "address-line1" },
+    address2: { autocomplete: "address-line2" },
+    city: { autocomplete: "address-level2" },
     // A list where Shopify knows the country's states, free text elsewhere.
-    { name: "province", label: "State / province", autocomplete: "address-level1", kind: "province", half: true },
-    { name: "zip", label: "Postal code", autocomplete: "postal-code", half: true },
-    { name: "phone", label: "Phone", autocomplete: "tel", type: "tel", required: true },
+    province: { autocomplete: "address-level1" },
+    zip: { autocomplete: "postal-code" },
+    phone: { autocomplete: "tel", type: "tel" },
+  };
+  // The form for a country the app sent no layout for. The app still checks
+  // what is sent against that country's rules.
+  var DEFAULT_LAYOUT = [
+    [
+      { name: "firstName", label: "First name (optional)", required: false },
+      { name: "lastName", label: "Last name", required: true },
+    ],
+    [{ name: "address1", label: "Address", required: true }],
+    [{ name: "address2", label: "Apartment, suite, etc. (optional)", required: false }],
+    [
+      { name: "city", label: "City", required: true },
+      { name: "province", label: "State / province", required: false },
+      { name: "zip", label: "Postal code", required: false },
+    ],
+    [{ name: "phone", label: "Phone", required: true }],
   ];
-  // What the checkout calls a state and a postal code in some countries.
-  var PROVINCE_LABELS = { US: "State", IN: "State", AU: "State/territory", CA: "Province", AE: "Emirate" };
-  var ZIP_LABELS = { US: "ZIP code", IN: "PIN code", GB: "Postcode", AU: "Postcode" };
+
+  /** A layout as the app sent it, kept only if it is well formed. */
+  function cleanLayout(rows) {
+    if (!Array.isArray(rows)) return null;
+    var seen = {};
+    var layout = [];
+    rows.slice(0, 12).forEach(function (row) {
+      var fields = (Array.isArray(row) ? row : []).filter(function (entry) {
+        if (
+          !entry ||
+          !Object.prototype.hasOwnProperty.call(FIELD_KINDS, entry.name) ||
+          seen[entry.name]
+        ) {
+          return false;
+        }
+        if (typeof entry.label !== "string" || !entry.label) return false;
+        seen[entry.name] = true;
+        return true;
+      });
+      if (fields.length) {
+        layout.push(
+          fields.map(function (entry) {
+            return { name: entry.name, label: entry.label.slice(0, 80), required: entry.required === true };
+          }),
+        );
+      }
+    });
+    return layout.length ? layout : null;
+  }
   var USE_CHECKOUT = " Please use the checkout instead.";
 
   // Made-up people at real, well-known addresses, offered only on development
@@ -1954,11 +1996,14 @@
         return response.ok ? response.json() : null;
       })
       .then(function (body) {
-        var countries = (body && Array.isArray(body.countries) ? body.countries : []).filter(
-          function (country) {
+        var forms = body && Array.isArray(body.forms) ? body.forms : [];
+        var countries = (body && Array.isArray(body.countries) ? body.countries : [])
+          .filter(function (country) {
             return country && /^[A-Z]{2}$/.test(country.code) && typeof country.name === "string";
-          },
-        );
+          })
+          .map(function (country) {
+            return { code: country.code, name: country.name, layout: cleanLayout(forms[country.form]) };
+          });
         return countries.length ? countries : fallback;
       })
       .catch(function () {
@@ -2056,6 +2101,17 @@
       })[0] || state.countries[0];
     state.values.countryCode = country.code;
     var provinces = provincesOf(state.regions, country);
+    var layout = country.layout || DEFAULT_LAYOUT;
+    // What was typed into a field this country's form does not have is dropped.
+    var shown = {};
+    layout.forEach(function (row) {
+      row.forEach(function (entry) {
+        shown[entry.name] = true;
+      });
+    });
+    Object.keys(FIELD_KINDS).forEach(function (name) {
+      if (!shown[name]) delete state.values[name];
+    });
 
     /** Keeps what has been typed, so the form can be drawn again. */
     var keepValues = function () {
@@ -2092,6 +2148,7 @@
           email: "test.buyer@example.com",
           firstName: "Test",
           lastName: "Buyer",
+          company: "Test Company",
           phone: sample.phone,
           address1: sample.address1,
           address2: "",
@@ -2137,65 +2194,75 @@
       return wrap;
     };
 
-    ORDER_FIELDS.forEach(function (spec) {
-      if (spec.name === "email") {
-        // A new address for an existing order: the store already has the email.
-        if (forAddress) return;
-        section("Contact");
-      }
-      if (spec.kind === "country") section(deliveryTitle);
-      if (spec.name === "province" || spec.name === "zip") {
-        var named = (spec.name === "zip" ? ZIP_LABELS : PROVINCE_LABELS)[country.code];
-        if (named) {
-          spec = { name: spec.name, label: named, autocomplete: spec.autocomplete, kind: spec.kind, half: true };
+    if (!forAddress) {
+      // A new address for an existing order: the store already has the email.
+      section("Contact");
+      var email = el("input");
+      email.type = "email";
+      email.value = state.values.email || "";
+      addField(
+        { name: "email", label: "Email (optional, for order updates)", autocomplete: "email" },
+        email,
+      );
+    }
+
+    section(deliveryTitle);
+    var countries = el("select");
+    state.countries.forEach(function (entry) {
+      var option = el("option", null, entry.name);
+      option.value = entry.code;
+      option.selected = entry.code === country.code;
+      countries.appendChild(option);
+    });
+    // Another country has another form: draw it again for that one.
+    countries.addEventListener("change", function () {
+      keepValues();
+      state.values.province = "";
+      state.errors = {};
+      self.renderOrderDetails();
+      state.inputs.countryCode.focus();
+    });
+    // One country to deliver to needs no choice.
+    addField(
+      { name: "countryCode", label: "Country/region", autocomplete: "country" },
+      countries,
+    ).hidden = state.countries.length === 1;
+
+    layout.forEach(function (row) {
+      row.forEach(function (entry, position) {
+        var kind = FIELD_KINDS[entry.name];
+        var spec = {
+          name: entry.name,
+          label: entry.label,
+          autocomplete: kind.autocomplete,
+          required: entry.required,
+          // Two to a row; in a row of three the first has a row to itself.
+          half: row.length > 1 && !(row.length % 2 === 1 && position === 0),
+        };
+
+        if (entry.name === "province" && provinces.length) {
+          var states = el("select");
+          var prompt = el("option", null, "Select…");
+          prompt.value = "";
+          states.appendChild(prompt);
+          var chosen = regionKey(state.values.province);
+          provinces.forEach(function (province) {
+            var option = el("option", null, province.label);
+            option.value = province.value;
+            option.selected =
+              Boolean(chosen) &&
+              (regionKey(province.value) === chosen || regionKey(province.label) === chosen);
+            states.appendChild(option);
+          });
+          addField(spec, states);
+          return;
         }
-      }
-      if (spec.kind === "country") {
-        var countries = el("select");
-        state.countries.forEach(function (entry) {
-          var option = el("option", null, entry.name);
-          option.value = entry.code;
-          option.selected = entry.code === country.code;
-          countries.appendChild(option);
-        });
-        // Another country has other states: draw the form again for it.
-        countries.addEventListener("change", function () {
-          keepValues();
-          state.values.province = "";
-          delete state.errors.province;
-          self.renderOrderDetails();
-          state.inputs.countryCode.focus();
-        });
-        // One country to deliver to needs no choice.
-        addField(spec, countries).hidden = state.countries.length === 1;
-        return;
-      }
 
-      if (spec.kind === "province" && provinces.length) {
-        var states = el("select");
-        var prompt = el("option", null, "Select…");
-        prompt.value = "";
-        states.appendChild(prompt);
-        var chosen = regionKey(state.values.province);
-        provinces.forEach(function (province) {
-          var option = el("option", null, province.label);
-          option.value = province.value;
-          option.selected =
-            Boolean(chosen) &&
-            (regionKey(province.value) === chosen || regionKey(province.label) === chosen);
-          states.appendChild(option);
-        });
-        addField(
-          { name: spec.name, label: spec.label, autocomplete: spec.autocomplete, required: true, half: true },
-          states,
-        );
-        return;
-      }
-
-      var input = el("input");
-      input.type = spec.type || "text";
-      input.value = state.values[spec.name] || "";
-      addField(spec, input);
+        var input = el("input");
+        input.type = kind.type || "text";
+        input.value = state.values[entry.name] || "";
+        addField(spec, input);
+      });
     });
 
     state.statusEl = el("p", "sa-order-status");
@@ -2228,7 +2295,7 @@
     };
 
     var firstInvalid = form.querySelector('[aria-invalid="true"]');
-    (firstInvalid || state.inputs.email || state.inputs.firstName).focus();
+    (firstInvalid || state.inputs.email || state.inputs.firstName || state.inputs.countryCode).focus();
     this.scrollToEnd();
   };
 
@@ -2400,14 +2467,15 @@
       token: state.token,
       contact: {
         firstName: values.firstName || "",
-        lastName: values.lastName,
-        phone: values.phone,
+        lastName: values.lastName || "",
+        phone: values.phone || "",
         email: "",
       },
       address: {
-        address1: values.address1,
+        company: values.company || "",
+        address1: values.address1 || "",
         address2: values.address2 || "",
-        city: values.city,
+        city: values.city || "",
         province: values.province || "",
         zip: values.zip || "",
         countryCode: values.countryCode,
@@ -2434,14 +2502,15 @@
       items: state.items,
       contact: {
         firstName: values.firstName || "",
-        lastName: values.lastName,
-        phone: values.phone,
+        lastName: values.lastName || "",
+        phone: values.phone || "",
         email: values.email || "",
       },
       address: {
-        address1: values.address1,
+        company: values.company || "",
+        address1: values.address1 || "",
         address2: values.address2 || "",
-        city: values.city,
+        city: values.city || "",
         province: values.province || "",
         zip: values.zip || "",
         countryCode: values.countryCode,
@@ -2572,6 +2641,7 @@
       "Ship to",
       [
         [values.firstName, values.lastName].filter(Boolean).join(" "),
+        values.company,
         values.address1,
         values.address2,
         values.city,

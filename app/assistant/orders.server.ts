@@ -19,8 +19,17 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 
 import prisma from "../db.server";
+import {
+  addressErrors,
+  DEFAULT_FORM_OPTIONS,
+  formLayout,
+  formLayouts,
+  onlyFormFields,
+  type FormLayout,
+  type FormOptions,
+} from "./address-rules";
 import { clientKey, rateLimiter as defaultRateLimiter, type RateLimiter } from "./rate-limit";
-import { getSettings } from "./settings.server";
+import { getSettings, type AssistantSettings } from "./settings.server";
 import { isDevelopmentStore } from "./shopify-clients.server";
 import { appendExchange, findConversation, rememberOrder } from "./store.server";
 import { fingerprint } from "./tools/shopper";
@@ -126,6 +135,7 @@ export type OrderField =
   | "lastName"
   | "phone"
   | "email"
+  | "company"
   | "address1"
   | "address2"
   | "city"
@@ -218,7 +228,7 @@ const orderSchema = z.object({
     .min(1)
     .max(MAX_LINES),
   contact: z.object({
-    // As in Shopify's checkout: a last name is needed, a first name is not.
+    // Whether a first name is needed is the store's choice: see checkDelivery.
     firstName: line(40, "Keep the first name under 40 characters.").default(""),
     lastName: line(40, "Keep the last name under 40 characters.").min(1, "Enter your last name."),
     phone: z
@@ -231,13 +241,16 @@ const orderSchema = z.object({
       .union([z.literal(""), z.email("Enter a valid email address.").max(254)])
       .default(""),
   }),
+  // Only the limits are checked here. What each country and store needs
+  // filled in, and what a postal code looks like, is checked by checkDelivery.
   address: z.object({
+    company: line(80, "Keep the company name under 80 characters.").default(""),
     address1: line(120, "Keep the address under 120 characters.").min(
       3,
       "Enter your street address.",
     ),
     address2: line(120, "Keep this under 120 characters.").default(""),
-    city: line(80, "Keep the city under 80 characters.").min(1, "Enter your city."),
+    city: line(80, "Keep the city under 80 characters.").default(""),
     province: line(60, "Keep this under 60 characters.").default(""),
     zip: line(16, "Keep the postal code under 16 characters.").default(""),
     countryCode: z
@@ -285,6 +298,7 @@ const FORM_FIELDS: readonly OrderField[] = [
   "lastName",
   "phone",
   "email",
+  "company",
   "address1",
   "address2",
   "city",
@@ -313,6 +327,58 @@ export function parse<Schema extends z.ZodType>(schema: Schema, body: unknown): 
     400,
     "Something went wrong with this order. Please start it again.",
   );
+}
+
+/** The store's choices for the order form, as the address rules take them. */
+export function orderFormOptions(
+  settings: Pick<AssistantSettings, "orderFirstName" | "orderCompany" | "orderAddress2">,
+): FormOptions {
+  return {
+    firstName: settings.orderFirstName,
+    company: settings.orderCompany,
+    address2: settings.orderAddress2,
+  };
+}
+
+/**
+ * Checks who and where against what the delivery country and the store ask
+ * for, the way Shopify's checkout does: every needed field filled in, and a
+ * postal code that looks like one. Returns the details with anything the
+ * form does not show for that country blanked.
+ */
+export function checkDelivery<Details extends DeliveryDetails>(
+  details: Details,
+  options: FormOptions,
+): Details {
+  const { contact, address } = details;
+  const typed = {
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    phone: contact.phone,
+    company: address.company,
+    address1: address.address1,
+    address2: address.address2,
+    city: address.city,
+    province: address.province,
+    zip: address.zip,
+  };
+  const fields = addressErrors(address.countryCode, typed, options);
+  if (Object.keys(fields).length) {
+    throw new OrderError("invalid_order", 422, "Please check the highlighted details.", { fields });
+  }
+  const kept = onlyFormFields(address.countryCode, typed, options);
+  return {
+    ...details,
+    contact: { ...contact, firstName: kept.firstName },
+    address: {
+      ...address,
+      company: kept.company,
+      address2: kept.address2,
+      city: kept.city,
+      province: kept.province,
+      zip: kept.zip,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +455,7 @@ export function shippingAddressInput({ contact, address }: DeliveryDetails): Rec
   return {
     firstName: contact.firstName || null,
     lastName: contact.lastName,
+    company: address.company || null,
     address1: address.address1,
     address2: address.address2 || null,
     city: address.city,
@@ -513,9 +580,18 @@ async function quoteOrder(input: ChatOrderInput, order: OrderDetails): Promise<O
     // Seen on a real store: Shopify returns no delivery options, and no error,
     // for an address without a state or postal code. Ask for what is missing
     // before telling the shopper the address cannot be delivered to.
+    // Only for what this country's form has: these are optional there, or
+    // they would have been asked for already.
+    const onForm = new Set(
+      formLayout(order.address.countryCode, DEFAULT_FORM_OPTIONS)
+        .flat()
+        .map((entry) => entry.name),
+    );
     const fields: Partial<Record<OrderField, string>> = {};
-    if (!order.address.zip) fields.zip = "Add your postal code so delivery can be worked out.";
-    if (!order.address.province) {
+    if (onForm.has("zip") && !order.address.zip) {
+      fields.zip = "Add your postal code so delivery can be worked out.";
+    }
+    if (onForm.has("province") && !order.address.province) {
       fields.province = "Add your state or province so delivery can be worked out.";
     }
     if (Object.keys(fields).length) {
@@ -728,7 +804,7 @@ export async function handleChatOrder(
 
   try {
     if (step === "quote") {
-      const order = parse(orderSchema, input.body);
+      const order = checkDelivery(parse(orderSchema, input.body), orderFormOptions(settings));
       enforce(deps, [
         { key: `order:quote:ip:${input.shop}:${address}`, max: 30, windowMs: 10 * MINUTE_MS },
         { key: `order:quote:shop:${input.shop}`, max: 600, windowMs: HOUR_MS },
@@ -736,7 +812,7 @@ export async function handleChatOrder(
       return { ok: true, step: "quote", quote: await quoteOrder(input, order) };
     }
 
-    const order = parse(placeSchema, input.body);
+    const order = checkDelivery(parse(placeSchema, input.body), orderFormOptions(settings));
 
     // A retry of a request that already went through gets the same answer
     // and does not count against the limits again.
@@ -798,6 +874,15 @@ export async function handleChatOrder(
 export interface DeliveryCountry {
   code: string;
   name: string;
+  /** Which of the `forms` sent with the countries this one uses. */
+  form: number;
+}
+
+/** What the order form needs before it can be drawn. */
+export interface DeliveryOptions {
+  countries: DeliveryCountry[];
+  /** Each distinct layout once; a country points at its own by position. */
+  forms: FormLayout[];
 }
 
 /**
@@ -808,7 +893,7 @@ export interface DeliveryCountry {
 export async function listDeliveryCountries(
   input: { shop: string; language?: string | null; ip?: string; storefront: GraphqlFn },
   overrides: Partial<ChatOrderDeps> = {},
-): Promise<DeliveryCountry[]> {
+): Promise<DeliveryOptions> {
   const deps: ChatOrderDeps = {
     db: overrides.db ?? prisma,
     rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
@@ -833,15 +918,23 @@ export async function listDeliveryCountries(
     const data = await input.storefront<{
       localization: { availableCountries: Array<{ isoCode: string; name: string }> } | null;
     }>(DELIVERY_COUNTRIES_QUERY, { language });
-    return (data.localization?.availableCountries ?? [])
+    const countries = (data.localization?.availableCountries ?? [])
       .filter((country) => /^[A-Z]{2}$/.test(country.isoCode) && country.name)
       .map((country) => ({ code: country.isoCode, name: country.name.slice(0, 80) }))
       .sort((a, b) => a.name.localeCompare(b.name));
+    const { forms, index } = formLayouts(
+      countries.map((country) => country.code),
+      orderFormOptions(settings),
+    );
+    return {
+      countries: countries.map((country) => ({ ...country, form: index[country.code] })),
+      forms,
+    };
   } catch (error) {
     console.error(
       `[shopi-assist] delivery countries failed shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
     );
-    return [];
+    return { countries: [], forms: [] };
   }
 }
 

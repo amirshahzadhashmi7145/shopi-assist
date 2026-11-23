@@ -81,6 +81,11 @@ model ShopSettings {
   // Opt-in: lets shoppers place a pay-on-delivery order from a form in the
   // chat. The app creates a real, unpaid order in the store.
   allowChatOrders     Boolean @default(false)
+  // What that order form asks for. Shopify has the same three options under
+  // Settings > Checkout but does not let apps read them, so they are set here.
+  orderFirstName      String  @default("optional") // "optional" | "required"
+  orderCompany        String  @default("hidden")   // "hidden" | "optional" | "required"
+  orderAddress2       String  @default("optional") // "hidden" | "optional" | "required"
 
   // Quick policy picks from dropdowns. "" means "not set".
   returnWindow        String  @default("") // "none" | "7" | "14" | "30" | "60" | "90"

@@ -202,6 +202,7 @@ describe("order quote", () => {
       shippingAddress: {
         firstName: "Ada",
         lastName: "Lovelace",
+        company: null,
         address1: "12 Analytical Way",
         address2: null,
         city: "Ottawa",
@@ -253,7 +254,7 @@ describe("order quote", () => {
   it("passes a province name through as a name and leaves an empty email out", async () => {
     const body = details({
       contact: { lastName: "Cher", phone: "03001234567", email: "" },
-      address: { address1: "5 Mall Road", city: "Lahore", province: "Punjab", countryCode: "PK" },
+      address: { address1: "5 Sheikh Zayed Road", city: "Dubai", province: "Dubai", countryCode: "AE" },
     });
     const { result, admin } = order({ step: "quote", ...body });
     await result;
@@ -263,11 +264,81 @@ describe("order quote", () => {
     expect(input.shippingAddress).toMatchObject({
       firstName: null,
       lastName: "Cher",
-      province: "Punjab",
+      company: null,
+      province: "Dubai",
       zip: null,
       phone: "03001234567",
     });
     expect(input.shippingAddress).not.toHaveProperty("provinceCode");
+  });
+
+  it("asks for what the delivery country's address needs, in Shopify's words", async () => {
+    const quoteFor = (address: Record<string, string>) =>
+      order({ step: "quote", ...details({ address: { address1: "1 High Street", ...address } }) });
+
+    // The United States: a city, a state and a ZIP code that looks like one.
+    const blank = await failure(quoteFor({ countryCode: "US" }).result);
+    expect(blank.code).toBe("invalid_order");
+    expect(blank.extra.fields).toEqual({
+      city: "Enter a city",
+      province: "Select a state",
+      zip: "Enter a ZIP code",
+    });
+    const wrongZip = quoteFor({ countryCode: "US", city: "Springfield", province: "IL", zip: "K1A 0B1" });
+    expect((await failure(wrongZip.result)).extra.fields).toEqual({
+      zip: "Enter a valid ZIP code for the United States, for example 90210",
+    });
+    expect(wrongZip.admin.calls).toHaveLength(0);
+
+    // The United Kingdom has no counties to pick, and calls it a postcode.
+    const uk = await failure(quoteFor({ countryCode: "GB", city: "London", zip: "12345" }).result);
+    expect(uk.extra.fields).toEqual({
+      zip: "Enter a valid postcode for the United Kingdom, for example SE22 8DL",
+    });
+
+    // Pakistan: no state to pick and a postal code is not needed. A state
+    // sent anyway is not on that country's form, so it does not reach Shopify.
+    const pk = quoteFor({ countryCode: "PK", city: "Lahore", province: "Punjab" });
+    await pk.result;
+    const sent = (pk.admin.calls[0].variables!.input as { shippingAddress: Record<string, unknown> })
+      .shippingAddress;
+    expect(sent).toMatchObject({ city: "Lahore", zip: null });
+    expect(sent).not.toHaveProperty("province");
+    expect(sent).not.toHaveProperty("provinceCode");
+  });
+
+  it("follows the store's choices for first name, company and the second address line", async () => {
+    await saveSettings(SHOP_A, { orderFirstName: "required", orderCompany: "required", orderAddress2: "hidden" }, db);
+    try {
+      const strict = await failure(
+        order({
+          step: "quote",
+          ...details({ contact: { lastName: "Lovelace", phone: "+1 613 555 0111", email: "" } }),
+        }).result,
+      );
+      expect(strict.extra.fields).toEqual({
+        firstName: "Enter a first name",
+        company: "Enter a company",
+      });
+
+      const base = details();
+      const { result, admin } = order({
+        step: "quote",
+        ...base,
+        address: { ...base.address, company: "Analytical Engines", address2: "Unit 4" },
+      });
+      await result;
+      const sent = (admin.calls[0].variables!.input as { shippingAddress: Record<string, unknown> })
+        .shippingAddress;
+      // The second line is not on this store's form, so it is not passed on.
+      expect(sent).toMatchObject({ company: "Analytical Engines", address2: null });
+    } finally {
+      await saveSettings(
+        SHOP_A,
+        { orderFirstName: "optional", orderCompany: "hidden", orderAddress2: "optional" },
+        db,
+      );
+    }
   });
 
   it("names the form fields that need fixing, without calling Shopify", async () => {
@@ -275,7 +346,7 @@ describe("order quote", () => {
       step: "quote",
       ...details({
         contact: { firstName: "x".repeat(41), lastName: "", phone: "12", email: "not-an-email" },
-        address: { address1: "", city: "", countryCode: "Canada" },
+        address: { address1: "", city: "", company: "x".repeat(81), countryCode: "Canada" },
       }),
     });
     const error = await failure(result);
@@ -284,7 +355,7 @@ describe("order quote", () => {
     expect(error.status).toBe(422);
     expect(Object.keys(error.extra.fields!).sort()).toEqual([
       "address1",
-      "city",
+      "company",
       "countryCode",
       "email",
       "firstName",
@@ -335,15 +406,20 @@ describe("order quote", () => {
       ShopiAssistDraftOrderCalculate: (variables) =>
         calculated(variables, { availableShippingRates: [] }),
     });
-    const address = { address1: "742 Evergreen Terrace", city: "Springfield", countryCode: "US" };
+    // New Zealand's form has a region that may be left empty, so it gets this far.
+    const address = { address1: "1 Lambton Quay", city: "Wellington", zip: "6011", countryCode: "NZ" };
 
-    const neither = await failure(order({ step: "quote", ...details({ address }) }, { admin }).result);
-    expect(neither.code).toBe("invalid_order");
-    expect(neither.message).toMatch(/a bit more of your address/);
-    expect(Object.keys(neither.extra.fields!).sort()).toEqual(["province", "zip"]);
+    const noRegion = await failure(order({ step: "quote", ...details({ address }) }, { admin }).result);
+    expect(noRegion.code).toBe("invalid_order");
+    expect(noRegion.message).toMatch(/a bit more of your address/);
+    expect(Object.keys(noRegion.extra.fields!)).toEqual(["province"]);
 
+    // Only what the country's form has is asked for: Pakistan's has no state.
     const noZip = await failure(
-      order({ step: "quote", ...details({ address: { ...address, province: "IL" } }) }, { admin }).result,
+      order(
+        { step: "quote", ...details({ address: { address1: "5 Mall Road", city: "Lahore", countryCode: "PK" } }) },
+        { admin },
+      ).result,
     );
     expect(noZip.extra.fields).toEqual({
       zip: "Add your postal code so delivery can be worked out.",
@@ -635,9 +711,32 @@ describe("delivery countries", () => {
       deps,
     );
 
-    expect(list).toEqual([
-      { code: "CA", name: "Canada" },
-      { code: "US", name: "United States" },
+    // Both countries have the same layout but name the state and the
+    // postal code differently, so each gets its own form.
+    expect(list.countries).toEqual([
+      { code: "CA", name: "Canada", form: 0 },
+      { code: "US", name: "United States", form: 1 },
+    ]);
+    const labels = list.forms.map((form) => form.map((row) => row.map((field) => field.label)));
+    expect(labels).toEqual([
+      [
+        ["First name (optional)", "Last name"],
+        ["Address"],
+        ["Apartment, suite, etc (optional)"],
+        ["City", "Province", "Postal code"],
+        ["Phone"],
+      ],
+      [
+        ["First name (optional)", "Last name"],
+        ["Address"],
+        ["Apartment, suite, etc (optional)"],
+        ["City", "State", "ZIP code"],
+        ["Phone"],
+      ],
+    ]);
+    expect(list.forms[1].flat().filter((field) => !field.required).map((field) => field.name)).toEqual([
+      "firstName",
+      "address2",
     ]);
     expect(store.calls[0].variables).toEqual({ language: "FR" });
   });
@@ -646,7 +745,10 @@ describe("delivery countries", () => {
     const broken = countries(() => {
       throw new Error("offline");
     });
-    expect(await listDeliveryCountries({ shop: SHOP_A, storefront: broken }, deps)).toEqual([]);
+    expect(await listDeliveryCountries({ shop: SHOP_A, storefront: broken }, deps)).toEqual({
+      countries: [],
+      forms: [],
+    });
 
     const error = await failure(
       listDeliveryCountries({ shop: SHOP_B, storefront: broken }, deps),

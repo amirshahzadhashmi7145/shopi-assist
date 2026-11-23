@@ -36,13 +36,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return errorJson("not_installed", "Ordering is not available for this store.", 404);
   }
   try {
-    const countries = await listDeliveryCountries({
+    const delivery = await listDeliveryCountries({
       shop: session.shop,
       language: new URL(request.url).searchParams.get("language"),
       ip: clientIp(request),
       storefront: toGraphqlFn(storefront, "Storefront"),
     });
-    return Response.json({ ok: true, countries }, { headers: NO_STORE });
+    return Response.json({ ok: true, ...delivery }, { headers: NO_STORE });
   } catch (error) {
     return throughProxy(orderErrorResponse(error));
   }

@@ -22,6 +22,9 @@ export const FIELD_GROUPS = {
     "allowAddToCart",
     "allowCheckout",
     "allowChatOrders",
+    "orderFirstName",
+    "orderCompany",
+    "orderAddress2",
     "orderLookupEnabled",
     "orderLookupByNumber",
     "recogniseCustomers",
@@ -68,6 +71,7 @@ export function AbilityFields({ settings }: FieldGroupProps) {
         details="The order summary gets an 'Order here, pay on delivery' button. The shopper fills in a short form (name, phone, delivery address) and the order appears in your Shopify admin as unpaid, tagged shopi-assist. Tick this only if you offer cash on delivery, and check these orders before you ship them. Needs 'Help shoppers place an order'."
         {...checked(settings.allowChatOrders)}
       />
+      <OrderFormFields settings={settings} />
       <s-checkbox
         name="orderLookupEnabled"
         label="Check order status"
@@ -111,6 +115,39 @@ export function AbilityFields({ settings }: FieldGroupProps) {
         {...checked(settings.allowReturns)}
       />
     </s-stack>
+  );
+}
+
+/**
+ * What the pay-on-delivery order form asks for. The address fields, their
+ * names and the postal code rules follow the delivery country by themselves;
+ * these three are the store's own choice.
+ */
+function OrderFormFields({ settings }: FieldGroupProps) {
+  return (
+    <s-box paddingInlineStart="large-200">
+      <s-stack direction="block" gap="small-200">
+        <s-paragraph color="subdued">
+          The order form follows each country&apos;s address format, the way your checkout does.
+          These three options are yours: set them to match Settings &gt; Checkout in your Shopify
+          admin, which apps are not able to read.
+        </s-paragraph>
+        <s-select name="orderFirstName" label="Full name" value={settings.orderFirstName}>
+          <s-option value="optional">Only require last name</s-option>
+          <s-option value="required">Require first and last name</s-option>
+        </s-select>
+        <s-select name="orderCompany" label="Company name" value={settings.orderCompany}>
+          <s-option value="hidden">Don&apos;t include</s-option>
+          <s-option value="optional">Optional</s-option>
+          <s-option value="required">Required</s-option>
+        </s-select>
+        <s-select name="orderAddress2" label="Address line 2 (apartment, unit, etc.)" value={settings.orderAddress2}>
+          <s-option value="hidden">Don&apos;t include</s-option>
+          <s-option value="optional">Optional</s-option>
+          <s-option value="required">Required</s-option>
+        </s-select>
+      </s-stack>
+    </s-box>
   );
 }
 

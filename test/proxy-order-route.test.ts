@@ -56,7 +56,10 @@ beforeEach(() => {
     step: "place",
     order: { name: "#1001", total: { amount: "44.6", currencyCode: "USD" } },
   });
-  listDeliveryCountries.mockReset().mockResolvedValue([{ code: "CA", name: "Canada" }]);
+  listDeliveryCountries.mockReset().mockResolvedValue({
+    countries: [{ code: "CA", name: "Canada", form: 0 }],
+    forms: [[[{ name: "lastName", label: "Last name", required: true }]]],
+  });
 });
 
 describe("POST /proxy/order", () => {
@@ -191,7 +194,11 @@ describe("GET /proxy/order", () => {
     const response = await get("&language=fr");
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, countries: [{ code: "CA", name: "Canada" }] });
+    expect(await response.json()).toEqual({
+      ok: true,
+      countries: [{ code: "CA", name: "Canada", form: 0 }],
+      forms: [[[{ name: "lastName", label: "Last name", required: true }]]],
+    });
     expect(listDeliveryCountries.mock.calls[0][0]).toMatchObject({ shop: SHOP, language: "fr" });
   });
 

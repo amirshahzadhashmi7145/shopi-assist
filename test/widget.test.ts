@@ -1052,6 +1052,23 @@ describe("chat widget", () => {
         .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
         .map((call) => JSON.parse((call[1] as RequestInit).body as string));
 
+    /** A form layout as the app sends it: fields in rows, named for the country. */
+    const formFor = (province: string | null, zip: string, extra: string[] = []) => [
+      [
+        { name: "firstName", label: "First name (optional)", required: false },
+        { name: "lastName", label: "Last name", required: true },
+      ],
+      ...extra.map((name) => [{ name, label: "Company", required: true }]),
+      [{ name: "address1", label: "Address", required: true }],
+      [{ name: "address2", label: "Apartment, suite, etc (optional)", required: false }],
+      [
+        { name: "city", label: "City", required: true },
+        ...(province ? [{ name: "province", label: province, required: true }] : []),
+        { name: "zip", label: zip, required: true },
+      ],
+      [{ name: "phone", label: "Phone", required: true }],
+    ];
+
     /** A store that takes chat orders, with two mugs in the cart and the summary on screen. */
     async function openForm(
       respond: (body: Record<string, unknown>) => Promise<Response>,
@@ -1071,9 +1088,10 @@ describe("chat widget", () => {
           : jsonResponse({
               ok: true,
               countries: [
-                { code: "CA", name: "Canada" },
-                { code: "US", name: "United States" },
+                { code: "CA", name: "Canada", form: 0 },
+                { code: "US", name: "United States", form: 1 },
               ],
+              forms: [formFor("Province", "Postal code"), formFor("State", "ZIP code")],
             }),
       );
       const widget = mountWidget();
@@ -1135,11 +1153,11 @@ describe("chat widget", () => {
       // The form asks for what a delivery needs, with the browsing country chosen.
       expect(widget.all(".sa-order-form label").map((label) => label.textContent)).toEqual([
         "Email (optional, for order updates)",
-        "Country/Region",
+        "Country/region",
         "First name (optional)",
         "Last name",
         "Address",
-        "Apartment, suite, etc. (optional)",
+        "Apartment, suite, etc (optional)",
         "City",
         "State",
         "ZIP code",
@@ -1173,6 +1191,7 @@ describe("chat widget", () => {
           email: "ada@example.com",
         },
         address: {
+          company: "",
           address1: "12 Analytical Way",
           address2: "",
           city: "Ottawa",
@@ -1376,6 +1395,108 @@ describe("chat widget", () => {
         ["/cart/change.js", { id: "102:k", quantity: 0 }],
       ]);
       expect([...held.keys()]).toEqual([103]);
+    });
+
+    it("draws the form the app sends for the delivery country and the store", async () => {
+      const { widget, field, submit } = await openForm(
+        (body) => jsonResponse({ ok: true, step: "quote", quote: quote(body.shippingRateHandle as string) }),
+        {},
+        () =>
+          orderMock.mockImplementation((_url: string, init?: RequestInit) =>
+            init?.method === "POST"
+              ? jsonResponse({ ok: true, step: "quote", quote: quote() })
+              : jsonResponse({
+                  ok: true,
+                  countries: [
+                    { code: "AE", name: "United Arab Emirates", form: 0 },
+                    { code: "GB", name: "United Kingdom", form: 1 },
+                    { code: "ZZ", name: "Elsewhere", form: 9 },
+                  ],
+                  forms: [
+                    // No postal code in the Emirates; an emirate to pick.
+                    formFor("Emirate", "unused").map((row) => row.filter((entry) => entry.name !== "zip")),
+                    // No county in the United Kingdom, and this store asks for a company.
+                    formFor(null, "Postcode", ["company"]),
+                  ],
+                }),
+          ),
+      );
+      const labels = () => widget.all(".sa-order-form label").map((label) => label.textContent);
+      const pick = (code: string) => {
+        field("countryCode").value = code;
+        field("countryCode").dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      expect(field("countryCode").value).toBe("AE");
+      expect(labels().slice(2)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "Address",
+        "Apartment, suite, etc (optional)",
+        "City",
+        "Emirate",
+        "Phone",
+      ]);
+      expect(widget.root.querySelector('.sa-order-form [name="zip"]')).toBeNull();
+      field("lastName").value = "Lovelace";
+      field("province").value = "Dubai";
+
+      pick("GB");
+      expect(labels().slice(2)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "Company",
+        "Address",
+        "Apartment, suite, etc (optional)",
+        "City",
+        "Postcode",
+        "Phone",
+      ]);
+      // What was typed stays; what this country's form does not have goes.
+      expect(field("lastName").value).toBe("Lovelace");
+      expect(widget.root.querySelector('.sa-order-form [name="province"]')).toBeNull();
+      expect(field("company").required).toBe(true);
+      expect(field("company").getAttribute("autocomplete")).toBe("organization");
+      // City and postcode share a row; the company has one to itself.
+      expect(widget.all(".sa-field-half label").map((label) => label.textContent)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "City",
+        "Postcode",
+      ]);
+
+      field("company").value = "Analytical Engines";
+      field("address1").value = "1 High Street";
+      field("city").value = "London";
+      field("zip").value = "SE22 8DL";
+      field("phone").value = "+44 20 7946 0143";
+      await submit();
+      expect(orderPosts()[0].address).toEqual({
+        company: "Analytical Engines",
+        address1: "1 High Street",
+        address2: "",
+        city: "London",
+        province: "",
+        zip: "SE22 8DL",
+        countryCode: "GB",
+      });
+      expect(widget.$(".sa-order-recap").textContent).toContain(
+        "Lovelace, Analytical Engines, 1 High Street, London, SE22 8DL, United Kingdom",
+      );
+
+      // A country the app sent no form for gets every field; the app checks them.
+      widget.all(".sa-order-change")[0].click();
+      pick("ZZ");
+      expect(labels().slice(2)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "Address",
+        "Apartment, suite, etc. (optional)",
+        "City",
+        "State / province",
+        "Postal code",
+        "Phone",
+      ]);
     });
 
     it("shows the store's field errors next to the fields and keeps what was typed", async () => {
@@ -1758,6 +1879,7 @@ describe("chat widget", () => {
           token: "signed-grant-for-1005",
           contact: { firstName: "Ada", lastName: "Lovelace", phone: "+1 202 555 0143", email: "" },
           address: {
+            company: "",
             address1: "350 Fifth Avenue",
             address2: "",
             city: "New York",

@@ -375,6 +375,7 @@ describe("a new delivery address", () => {
           shippingAddress: {
             firstName: "Ada",
             lastName: "Lovelace",
+            company: null,
             address1: "350 Fifth Avenue",
             address2: null,
             city: "New York",

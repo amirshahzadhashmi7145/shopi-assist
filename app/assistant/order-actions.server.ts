@@ -21,6 +21,7 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 
 import prisma from "../db.server";
+import type { FormOptions } from "./address-rules";
 import {
   grantSecret,
   readGrant,
@@ -28,7 +29,9 @@ import {
   type OrderActionKind,
 } from "./action-grant.server";
 import {
+  checkDelivery,
   deliverySchema,
+  orderFormOptions,
   fieldErrors,
   OrderError,
   parse,
@@ -363,11 +366,12 @@ async function changeAddress(
   order: ActionOrder,
   grant: OrderActionGrant,
   body: Record<string, unknown>,
+  options: FormOptions,
 ): Promise<string> {
-  const details = parse(addressSchema, body);
+  const typed = parse(addressSchema, body);
   // A different country means different delivery charges, duties and tax,
   // none of which this can re-work. That is a conversation with the store.
-  if (grant.countryCode && details.address.countryCode !== grant.countryCode) {
+  if (grant.countryCode && typed.address.countryCode !== grant.countryCode) {
     throw new OrderError("invalid_order", 422, "Please check the highlighted details.", {
       fields: {
         countryCode:
@@ -375,6 +379,7 @@ async function changeAddress(
       },
     });
   }
+  const details = checkDelivery(typed, options);
 
   const data = await admin<{ orderUpdate: { userErrors: UserError[] } | null }>(
     ORDER_UPDATE_MUTATION,
@@ -532,7 +537,7 @@ export async function handleOrderAction(
         : grant.kind === "cancel_request"
           ? await requestCancellation(input.admin, order, grant, now)
           : grant.kind === "address"
-            ? await changeAddress(input.admin, order, grant, input.body)
+            ? await changeAddress(input.admin, order, grant, input.body, orderFormOptions(settings))
             : await editItems(input.admin, order, grant);
 
     console.info(`[shopi-assist] order action done shop=${input.shop} kind=${grant.kind}`);
