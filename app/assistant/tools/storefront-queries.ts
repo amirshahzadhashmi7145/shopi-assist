@@ -27,8 +27,13 @@ const PRODUCT_CARD_FRAGMENT = `#graphql
     compareAtPriceRange {
       maxVariantPrice { amount currencyCode }
     }
-    variants(first: 2) {
-      nodes { id availableForSale }
+    variants(first: 13) {
+      nodes {
+        id
+        title
+        availableForSale
+        price { amount currencyCode }
+      }
     }
   }
 `;

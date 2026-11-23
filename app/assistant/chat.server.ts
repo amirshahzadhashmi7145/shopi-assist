@@ -457,11 +457,11 @@ export async function handleChatTurn(
   return {
     conversationId: conversation.id,
     reply: turn.reply,
-    // With add to cart switched off, cards link to the product but offer no
-    // one-click add.
+    // With add to cart switched off, cards link to the product but offer
+    // nothing to add or pick.
     cards: settings.allowAddToCart
       ? turn.cards
-      : turn.cards.map((card) => ({ ...card, variantId: null })),
+      : turn.cards.map((card) => ({ ...card, variantId: null, variants: undefined })),
     actions: turn.actions,
   };
 }

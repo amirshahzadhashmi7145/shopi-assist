@@ -16,6 +16,15 @@ export interface Money {
   currencyCode: string;
 }
 
+/** One version of a product (a size, a colour, a pack) the shopper can pick on its card. */
+export interface CardVariant {
+  /** Numeric variant id, as used by the storefront /cart/add.js endpoint. */
+  id: string;
+  title: string;
+  price: Money;
+  available: boolean;
+}
+
 /** A product the widget can render as a card under an assistant reply. */
 export interface ProductCard {
   id: string;
@@ -31,10 +40,14 @@ export interface ProductCard {
   available: boolean;
   /**
    * Numeric variant id for a one-click "Add to cart". Only set when the
-   * product has exactly one variant; otherwise the shopper must choose options
-   * on the product page.
+   * product has exactly one variant.
    */
   variantId: string | null;
+  /**
+   * The versions to pick from on the card, when the product has from two to
+   * a dozen of them. With more, the shopper chooses on the product page.
+   */
+  variants?: CardVariant[];
 }
 
 /** One line of an order the shopper asked for in chat. */

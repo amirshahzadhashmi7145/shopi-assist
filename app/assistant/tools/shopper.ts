@@ -12,7 +12,7 @@
 import { z } from "zod";
 
 import { clientKey } from "../rate-limit";
-import type { Money, OrderItem, ProductCard } from "../types";
+import type { CardVariant, Money, OrderItem, ProductCard } from "../types";
 import {
   defineTool,
   ToolError,
@@ -157,7 +157,9 @@ interface StorefrontProduct {
   featuredImage: { url: string; altText: string | null } | null;
   priceRange: { minVariantPrice: Money; maxVariantPrice: Money };
   compareAtPriceRange: { maxVariantPrice: Money };
-  variants: { nodes: Array<{ id: string; availableForSale: boolean }> };
+  variants: {
+    nodes: Array<{ id: string; title: string; availableForSale: boolean; price: Money }>;
+  };
 }
 
 interface StorefrontVariant {
@@ -215,11 +217,31 @@ function productUrl(product: { handle: string; onlineStoreUrl: string | null }):
   return product.onlineStoreUrl ?? `/products/${product.handle}`;
 }
 
+/** The most versions of one product a card offers to pick from. */
+const MAX_CARD_VARIANTS = 12;
+
+/**
+ * The versions a shopper can pick between, or none when the product comes in
+ * one version only or in more than a card can show. The query asks for one
+ * more than the limit, which is how "more" is known.
+ */
+function variantChoices(product: StorefrontProduct): CardVariant[] {
+  const variants = product.variants.nodes;
+  if (variants.length < 2 || variants.length > MAX_CARD_VARIANTS) return [];
+  return variants.flatMap((variant) => {
+    const id = numericId(variant.id);
+    return id && variant.title && variant.price
+      ? [{ id, title: variant.title, price: variant.price, available: variant.availableForSale }]
+      : [];
+  });
+}
+
 export function toProductCard(product: StorefrontProduct): ProductCard {
   const price = product.priceRange.minVariantPrice;
   const compareAt = product.compareAtPriceRange?.maxVariantPrice;
   const onSale = compareAt && Number(compareAt.amount) > Number(price.amount);
   const variants = product.variants.nodes;
+  const choices = variantChoices(product);
 
   return {
     id: product.id,
@@ -235,6 +257,7 @@ export function toProductCard(product: StorefrontProduct): ProductCard {
       variants.length === 1 && variants[0].availableForSale
         ? numericId(variants[0].id)
         : null,
+    ...(choices.length > 1 ? { variants: choices } : {}),
   };
 }
 
@@ -242,6 +265,7 @@ export function toProductCard(product: StorefrontProduct): ProductCard {
 function toProductSummary(product: StorefrontProduct) {
   const { minVariantPrice, maxVariantPrice } = product.priceRange;
   const priceVaries = minVariantPrice.amount !== maxVariantPrice.amount;
+  const choices = variantChoices(product);
   return {
     title: product.title,
     handle: product.handle,
@@ -252,6 +276,13 @@ function toProductSummary(product: StorefrontProduct) {
     vendor: product.vendor || undefined,
     type: product.productType || undefined,
     summary: product.description || undefined,
+    // The same versions the product's card lets the shopper pick from.
+    versions: choices.length > 1
+      ? choices.map(
+          (choice) =>
+            `${choice.title}: ${formatMoney(choice.price)}${choice.available ? "" : " (sold out)"}`,
+        )
+      : undefined,
   };
 }
 

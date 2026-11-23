@@ -271,6 +271,90 @@ describe("chat widget", () => {
     expect((window as unknown as { hacked?: number }).hacked).toBeUndefined();
   });
 
+  it("lets the shopper pick a version on the card, then add it or buy it", async () => {
+    const variants = [
+      { id: "201", title: "Regular", price: { amount: "24.95", currencyCode: "USD" }, available: true },
+      { id: "202", title: "Special", price: { amount: "49.95", currencyCode: "USD" }, available: false },
+      { id: "203", title: "Sample", price: { amount: "9.95", currencyCode: "USD" }, available: true },
+    ];
+    configMock.mockImplementation(() => appConfig({ buyNow: true }));
+    liveCart({ 203: ["Ski Wax - Sample", 995] }, () =>
+      reply("Ski Wax comes in three versions.", {
+        cards: [
+          card({
+            title: "Ski Wax",
+            price: { amount: "9.95", currencyCode: "USD" },
+            compareAtPrice: { amount: "60.0", currencyCode: "USD" },
+            variantId: null,
+            variants,
+          }),
+        ],
+      }),
+    );
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("ski wax?");
+    await flush();
+
+    const item = widget.$(".sa-card");
+    const chips = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-variant"));
+    expect(chips.map((chip) => chip.textContent)).toEqual(["Regular$24.95", "SpecialSold out", "Sample$9.95"]);
+    expect(chips.map((chip) => chip.disabled)).toEqual([false, true, false]);
+    expect(item.querySelector(".sa-card-price")!.textContent).toContain("From $9.95");
+    expect(item.textContent).not.toContain("Choose options");
+
+    // Nothing can be added until a version is picked.
+    const [add, buy] = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-card-actions button"));
+    expect([add.textContent, buy.textContent]).toEqual(["Add to cart", "Buy now"]);
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
+
+    chips[2].click();
+    expect(chips.map((chip) => chip.getAttribute("aria-pressed"))).toEqual(["false", "false", "true"]);
+    expect(item.querySelector(".sa-card-price")!.textContent).toBe("$9.95");
+    expect([add.disabled, buy.disabled]).toEqual([false, false]);
+
+    buy.click();
+    await flush();
+    const cartCall = fetchMock.mock.calls.find((call) => call[0] === "/cart/add.js")!;
+    expect(JSON.parse((cartCall[1] as RequestInit).body as string)).toEqual({
+      items: [{ id: 203, quantity: 1 }],
+    });
+    expect(widget.$(".sa-order").textContent).toContain("Ski Wax - Sample");
+  });
+
+  it("offers no Buy now on cards unless the store allows it, and picks the only version in stock", async () => {
+    fetchMock.mockImplementation(() =>
+      reply("Ski Wax.", {
+        cards: [
+          card({
+            title: "Ski Wax",
+            variantId: null,
+            variants: [
+              { id: "201", title: "Regular", price: { amount: "18.0", currencyCode: "USD" }, available: false },
+              { id: "202", title: "Sample", price: { amount: "18.0", currencyCode: "USD" }, available: true },
+              { id: "javascript:alert(1)", title: "Bad", price: null, available: true },
+            ],
+          }),
+        ],
+      }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("ski wax?");
+    await flush();
+
+    const item = widget.$(".sa-card");
+    const chips = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-variant"));
+    // Same price for every version: no price on the buttons, no "From".
+    expect(chips.map((chip) => chip.textContent)).toEqual(["RegularSold out", "Sample"]);
+    expect(item.querySelector(".sa-card-price")!.textContent).toBe("$18.00");
+    expect(chips[1].getAttribute("aria-pressed")).toBe("true");
+    const buttons = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-card-actions button"));
+    expect(buttons.map((button) => button.textContent)).toEqual(["Add to cart"]);
+    expect(buttons[0].disabled).toBe(false);
+  });
+
   it("shows the shopper's own message as plain text", async () => {
     const widget = mountWidget();
     widget.launcher.click();

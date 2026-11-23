@@ -155,6 +155,56 @@ describe("shopper tools", () => {
     expect(result.cards[0].compareAtPrice).toEqual({ amount: "30.0", currencyCode: "USD" });
   });
 
+  it("gives a product's versions to the model and to its card", async () => {
+    const variant = (id: number, title: string, amount: string, availableForSale = true) => ({
+      id: `gid://shopify/ProductVariant/${id}`,
+      title,
+      availableForSale,
+      price: { amount, currencyCode: "USD" },
+    });
+    const search = (nodes: unknown[]) =>
+      run(
+        "search_products",
+        { query: "wax" },
+        toolContext({
+          storefront: fakeGraphql({
+            search: { nodes: [storefrontProduct({ variants: { nodes } })] },
+          }),
+        }),
+      );
+
+    const few = await search([
+      variant(201, "Regular", "24.95"),
+      variant(202, "Special", "49.95", false),
+      variant(203, "Sample", "9.95"),
+    ]);
+    expect(few.json.products[0].versions).toEqual([
+      "Regular: 24.95 USD",
+      "Special: 49.95 USD (sold out)",
+      "Sample: 9.95 USD",
+    ]);
+    expect(few.cards[0].variantId).toBeNull();
+    expect(few.cards[0].variants).toEqual([
+      { id: "201", title: "Regular", price: { amount: "24.95", currencyCode: "USD" }, available: true },
+      { id: "202", title: "Special", price: { amount: "49.95", currencyCode: "USD" }, available: false },
+      { id: "203", title: "Sample", price: { amount: "9.95", currencyCode: "USD" }, available: true },
+    ]);
+
+    // One version is nothing to choose between.
+    const one = await search([variant(201, "Default Title", "24.95")]);
+    expect(one.json.products[0].versions).toBeUndefined();
+    expect(one.cards[0].variants).toBeUndefined();
+    expect(one.cards[0].variantId).toBe("201");
+
+    // More than a card can show: the product page takes over.
+    const many = await search(
+      Array.from({ length: 13 }, (_, index) => variant(300 + index, `Size ${index}`, "24.95")),
+    );
+    expect(many.json.products[0].versions).toBeUndefined();
+    expect(many.cards[0].variants).toBeUndefined();
+    expect(many.cards[0].variantId).toBeNull();
+  });
+
   it("get_products_by_price asks Shopify to do the sorting", async () => {
     const products = [
       storefrontProduct({ title: "Budget Board", handle: "budget-board" }),
