@@ -397,22 +397,26 @@ describe("chat widget", () => {
     expect(buttons[0].textContent).toBe("Added");
   });
 
-  it("folds the picker away in a list of products until it is asked for", async () => {
+  it("folds the picker away in a list of products, with one pair of buttons for the whole list", async () => {
     const variants = ["Ice", "Dawn", "Powder"].map((title, index) => ({
       id: String(301 + index),
       title,
       price: { amount: "699.95", currencyCode: "USD" },
       available: true,
     }));
-    fetchMock.mockImplementation(() =>
-      reply("Trail Mug and The Complete Snowboard.", {
-        cards: [
-          card(),
-          card({ title: "The Complete Snowboard", handle: "complete", variantId: null, variants }),
-        ],
-      }),
+    const { adds } = liveCart(
+      { 101: ["Trail Mug", 1800], 303: ["The Complete Snowboard - Powder", 69995] },
+      () =>
+        reply("Trail Mug and The Complete Snowboard.", {
+          cards: [
+            card(),
+            card({ title: "The Complete Snowboard", handle: "complete", variantId: null, variants }),
+          ],
+        }),
     );
+    configMock.mockImplementation(() => appConfig({ buyNow: true }));
     const widget = mountWidget();
+    await flush();
     widget.launcher.click();
     widget.send("cheapest?");
     await flush();
@@ -434,7 +438,44 @@ describe("chat widget", () => {
       "2.Dawn",
       "3.Powder",
     ]);
-    expect(picker.querySelector(".sa-card-actions")!.textContent).toBe("Add to cart");
+
+    // No card has buttons of its own: the list shares one pair, under it.
+    expect(widget.all(".sa-card").map((item) => item.textContent)).not.toContain("Add to cart");
+    expect(widget.all(".sa-card .sa-card-total")).toHaveLength(0);
+    const bar = widget.$(".sa-cards-bar");
+    const [add, buy] = Array.from(bar.querySelectorAll<HTMLButtonElement>("button"));
+    expect([add.textContent, buy.textContent]).toEqual(["Add to cart", "Buy now"]);
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
+    expect(bar.querySelector(".sa-card-total")!.textContent).toBe("Set how many you want of each product above.");
+
+    // A product with one version has its quantity on the card.
+    const mug = widget.all(".sa-card")[0];
+    const press = (scope: Element, label: "+" | "−") =>
+      Array.from(scope.querySelectorAll<HTMLButtonElement>(".sa-stepper-button"))
+        .find((button) => button.textContent === label)!
+        .click();
+    expect(mug.querySelector(".sa-stepper-count")!.textContent).toBe("0");
+    press(mug, "+");
+    press(mug, "+");
+    press(picker.querySelectorAll(".sa-variant")[2], "+");
+    expect(bar.querySelector(".sa-card-total")!.textContent).toBe("3 items · $735.95");
+    expect([add.disabled, buy.disabled]).toEqual([false, false]);
+    expect([mug.classList.contains("sa-card-on"), board.classList.contains("sa-card-on")]).toEqual([true, true]);
+
+    buy.click();
+    await flush();
+    expect(adds).toEqual([
+      [
+        { id: 101, quantity: 2 },
+        { id: 303, quantity: 1 },
+      ],
+    ]);
+    expect(widget.all(".sa-order")).toHaveLength(1);
+
+    press(mug, "−");
+    press(mug, "−");
+    press(picker.querySelectorAll(".sa-variant")[2], "−");
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
   });
 
   it("asks for the app's settings again after a reply when the page loaded without them", async () => {
@@ -504,7 +545,10 @@ describe("chat widget", () => {
     expect(cards[3].querySelector("a")).toBeNull();
     expect(cards[3].querySelector("img")).toBeNull();
 
-    const addButton = cards[0].querySelector("button")!;
+    // In a list the quantity is set on the card and added from under the list.
+    const more = Array.from(cards[0].querySelectorAll("button")).find((button) => button.textContent === "+")!;
+    more.click();
+    const addButton = widget.$(".sa-cards-bar button");
     expect(addButton.textContent).toBe("Add to cart");
     addButton.click();
     await flush();

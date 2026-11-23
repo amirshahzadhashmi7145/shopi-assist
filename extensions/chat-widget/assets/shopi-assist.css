@@ -406,8 +406,42 @@ a.sa-card-title:hover {
 .sa-card-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-top: 5px;
+}
+
+/* In a list of products: a card something has been picked on. */
+.sa-card-on {
+  border-color: var(--sa-accent);
+}
+
+/* Under a list of products: the one place to add or buy everything picked
+   on the cards. */
+.sa-cards-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--sa-line);
+  border-radius: 12px;
+  background: var(--sa-surface-soft);
+}
+
+.sa-cards-bar .sa-card-total,
+.sa-cards-bar .sa-card-actions {
+  margin-top: 0;
+}
+
+.sa-cards-bar .sa-card-total {
+  flex: 1 1 140px;
+}
+
+.sa-cards-bar .sa-card-button {
+  min-height: 36px;
+  padding: 6px 14px;
 }
 
 /* The versions of a product to pick between: a numbered list under the
@@ -483,7 +517,7 @@ a.sa-card-title:hover {
   background: var(--sa-surface);
 }
 
-.sa-variant-on .sa-stepper {
+.sa-stepper-on {
   border-color: var(--sa-accent);
 }
 
