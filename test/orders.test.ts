@@ -6,7 +6,6 @@ import {
   listDeliveryCountries,
   OrderError,
   orderErrorResponse,
-  splitName,
   type ChatOrderDeps,
   type ChatOrderResult,
 } from "../app/assistant/orders.server";
@@ -127,7 +126,7 @@ const adminApi = (overrides: Record<string, Handler> = {}) =>
 
 const details = (overrides: Record<string, unknown> = {}) => ({
   items: [{ variantId: "101", quantity: 2 }],
-  contact: { name: "Ada Lovelace", phone: "+1 (613) 555-0111", email: "ada@example.com" },
+  contact: { firstName: "Ada", lastName: "Lovelace", phone: "+1 (613) 555-0111", email: "ada@example.com" },
   address: {
     address1: "12 Analytical Way",
     address2: "",
@@ -253,7 +252,7 @@ describe("order quote", () => {
 
   it("passes a province name through as a name and leaves an empty email out", async () => {
     const body = details({
-      contact: { name: "Cher", phone: "03001234567", email: "" },
+      contact: { lastName: "Cher", phone: "03001234567", email: "" },
       address: { address1: "5 Mall Road", city: "Lahore", province: "Punjab", countryCode: "PK" },
     });
     const { result, admin } = order({ step: "quote", ...body });
@@ -275,7 +274,7 @@ describe("order quote", () => {
     const { result, admin, storefront: store } = order({
       step: "quote",
       ...details({
-        contact: { name: "A", phone: "12", email: "not-an-email" },
+        contact: { firstName: "x".repeat(41), lastName: "", phone: "12", email: "not-an-email" },
         address: { address1: "", city: "", countryCode: "Canada" },
       }),
     });
@@ -288,7 +287,8 @@ describe("order quote", () => {
       "city",
       "countryCode",
       "email",
-      "name",
+      "firstName",
+      "lastName",
       "phone",
     ]);
     expect(admin.calls).toHaveLength(0);
@@ -476,7 +476,7 @@ describe("placing an order", () => {
           shop: SHOP_A,
           body: placeBody({
             idempotencyKey: `form-key-00000000${index}0`,
-            contact: { name: "Ada Lovelace", phone, email: "" },
+            contact: { firstName: "Ada", lastName: "Lovelace", phone, email: "" },
           }),
           ip: `203.0.113.${index}`,
           admin: adminApi(),
@@ -656,12 +656,6 @@ describe("delivery countries", () => {
 });
 
 describe("helpers", () => {
-  it("splits a name into first and last", () => {
-    expect(splitName("Ada Lovelace")).toEqual({ firstName: "Ada", lastName: "Lovelace" });
-    expect(splitName("Mary Jane  Watson")).toEqual({ firstName: "Mary Jane", lastName: "Watson" });
-    expect(splitName("Cher")).toEqual({ firstName: null, lastName: "Cher" });
-  });
-
   it("turns errors into responses the widget can show", async () => {
     const response = orderErrorResponse(
       new OrderError("invalid_order", 422, "Please check the highlighted details.", {

@@ -199,7 +199,7 @@ describe("handleChatTurn", () => {
     await turn({ admin: fakeGraphql({ shop: { name: "Shop A" } }) }, { provider });
 
     expect(provider.requests[0].tools.map((tool) => tool.name)).toContain("get_order_status");
-    expect(provider.requests[0].messages[0].content).toContain("order number and the email");
+    expect(provider.requests[0].messages[0].content).toContain("the order number and proof that it is theirs");
   });
 
   it("puts the merchant's guidance and the server-side shop name in the prompt", async () => {
@@ -362,6 +362,23 @@ describe("handleChatTurn", () => {
     // Deleting the conversation takes its orders with it.
     await db.conversation.deleteMany({ where: { shop: SHOP_A } });
     expect(await db.conversationOrder.count()).toBe(0);
+  });
+
+  it("allows lookups by order number alone only when both order settings are on", async () => {
+    const system = async () => {
+      const provider = scriptedProvider([text("ok")]);
+      await turn({ admin: fakeGraphql({ shop: { name: "Shop A" } }) }, { provider });
+      return provider.requests[0].messages[0].content as string;
+    };
+
+    await saveSettings(SHOP_A, { orderLookupEnabled: false, orderLookupByNumber: true }, db);
+    expect(await system()).toMatch(/you cannot look up orders/);
+
+    await saveSettings(SHOP_A, { orderLookupEnabled: true, orderLookupByNumber: false }, db);
+    expect(await system()).toMatch(/proof that it is theirs/);
+
+    await saveSettings(SHOP_A, { orderLookupByNumber: true }, db);
+    expect(await system()).toMatch(/with the order number alone, so look it up as soon as you have the number/);
   });
 
   it("passes the shopper's cart to the assistant, and only a well-formed one", async () => {

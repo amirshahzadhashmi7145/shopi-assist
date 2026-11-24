@@ -42,6 +42,10 @@ model ShopSettings {
   instructions       String   @default("")
   // Opt-in: lets shoppers check an order's status with order number + checkout email.
   orderLookupEnabled Boolean  @default(false)
+  // Opt-in on top of the above: basic status from the order number alone.
+  // Less private, since order numbers can be guessed; tracking details and
+  // return requests still need the checkout email.
+  orderLookupByNumber Boolean @default(false)
   // Conversations older than this are deleted.
   retentionDays      Int      @default(30)
 

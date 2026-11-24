@@ -23,6 +23,7 @@ export const FIELD_GROUPS = {
     "allowCheckout",
     "allowChatOrders",
     "orderLookupEnabled",
+    "orderLookupByNumber",
     "allowReturns",
   ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
@@ -68,6 +69,12 @@ export function AbilityFields({ settings }: FieldGroupProps) {
         label="Check order status"
         details="The shopper gives their order number and checkout email, and gets payment status, delivery status and tracking."
         {...checked(settings.orderLookupEnabled)}
+      />
+      <s-checkbox
+        name="orderLookupByNumber"
+        label="Let shoppers check status with the order number alone"
+        details="Without the email, the assistant shares only the basics: order date, payment status and delivery status. Order numbers are easy to guess, so anyone could see those basics for any order. Tracking numbers, tracking links and return requests still need the checkout email. Needs 'Check order status'."
+        {...checked(settings.orderLookupByNumber)}
       />
       <s-checkbox
         name="allowReturns"

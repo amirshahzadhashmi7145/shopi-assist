@@ -4,8 +4,10 @@
  * Everything here is reachable by anonymous visitors, so each tool must only
  * expose what a visitor could already see on the storefront. Catalog data
  * comes from the Storefront API, which only returns published products. The
- * single exception is `get_order_status`, which is opt-in per shop and gated
- * on the shopper proving they know both the order number and checkout email.
+ * single exception is `get_order_status`, which is opt-in per shop. It is gated
+ * on the shopper proving the order is theirs (order number plus the checkout
+ * email or the phone number on the order), unless the merchant has also opted
+ * in to giving the bare basics for an order number alone.
  */
 import { z } from "zod";
 
@@ -42,6 +44,35 @@ export const ORDER_STATUS_QUERY = `#graphql
       nodes {
         name
         email
+        processedAt
+        cancelledAt
+        displayFinancialStatus
+        displayFulfillmentStatus
+        id
+        fulfillments(first: 5) {
+          status
+          estimatedDeliveryAt
+          trackingInfo(first: 3) { company number url }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Admin API. The same order fields plus the phone numbers on the order, used
+ * only to check a shopper who proves an order with its phone number instead
+ * of an email. Kept apart from the query above so that lookups by email keep
+ * working on a store where the app may not read phone numbers.
+ */
+export const ORDER_STATUS_WITH_PHONE_QUERY = `#graphql
+  query ShopiAssistOrderStatusWithPhone($query: String!) {
+    orders(first: 5, query: $query) {
+      nodes {
+        name
+        email
+        phone
+        shippingAddress { phone }
         processedAt
         cancelledAt
         displayFinancialStatus
@@ -779,7 +810,25 @@ const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const ORDER_LOOKUP_THROTTLED =
   "Too many order lookups. Ask the shopper to try again later or contact the store.";
 const ORDER_NOT_FOUND =
-  "No order matches that order number and email. Ask the shopper to double-check both, or to contact the store.";
+  "No order matches that order number with that email or phone number. Ask the shopper to double-check both, or to contact the store.";
+
+/** A phone number as digits only, without the zeros people put in front. */
+function phoneDigits(value: string | null | undefined): string {
+  return (value ?? "").replace(/\D/g, "").replace(/^0+/, "");
+}
+
+/**
+ * Whether two phone numbers are the same line. People write the same number
+ * with or without the country code ("+92 319 875 4964" and "0319 8754964"),
+ * so one may be the tail of the other, as long as that tail is a full local
+ * number and not just a few digits.
+ */
+export function samePhone(a: string | null | undefined, b: string | null | undefined): boolean {
+  const [shorter, longer] = [phoneDigits(a), phoneDigits(b)].sort(
+    (left, right) => left.length - right.length,
+  );
+  return shorter.length >= 7 && longer.endsWith(shorter);
+}
 
 /** Short non-reversible key, so email addresses are not held in the limiter. */
 export function fingerprint(value: string): string {
@@ -816,13 +865,22 @@ const orderProofSchema = {
   email: z
     .union([z.literal(""), z.email().max(254)])
     .optional()
+    .describe("The email used at checkout, when the shopper gives one."),
+  phone: z
+    .string()
+    .trim()
+    .max(30)
+    .optional()
     .describe(
-      "The email used at checkout. Leave it out only for an order listed as already known in this chat.",
+      "The phone number used on the order. Proves the order just as the email does, for shoppers who gave no email.",
     ),
 };
 
+const ORDER_NUMBER_NOT_FOUND =
+  "No order has that number. Ask the shopper to check it, or to contact the store.";
+
 const ORDER_NEEDS_EMAIL =
-  "This order is not one already known in this chat, so the email address used at checkout is needed too. Ask the shopper for it, then call again with both.";
+  "This order is not one already known in this chat, so the email address or the phone number used on the order is needed too. Ask the shopper for either one, then call again with it.";
 
 /**
  * Finds the order only if it is the shopper's: either the server already tied
@@ -836,9 +894,11 @@ async function findVerifiedOrder(
   context: ToolContext,
   orderNumber: string,
   email: string | undefined,
+  phone?: string,
 ): Promise<VerifiedOrder> {
   const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
   const wantedEmail = (email ?? "").trim().toLowerCase();
+  const wantedPhone = phoneDigits(phone);
 
   context.turn.orderLookups += 1;
   if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
@@ -860,7 +920,12 @@ async function findVerifiedOrder(
     if (!order) throw new ToolError(ORDER_NOT_FOUND);
     return order;
   }
-  if (!wantedEmail) throw new ToolError(ORDER_NEEDS_EMAIL);
+  if (!wantedEmail && !wantedPhone) throw new ToolError(ORDER_NEEDS_EMAIL);
+  if (!wantedEmail && wantedPhone.length < 7) {
+    throw new ToolError("That phone number looks incomplete. Ask the shopper for the full number.");
+  }
+  // An email, when given, is what is checked; the phone is the fallback.
+  const proof = wantedEmail || wantedPhone;
 
   const nowMs = context.now().getTime();
   const limits: Array<[key: string, max: number, windowMs: number]> = [
@@ -870,9 +935,66 @@ async function findVerifiedOrder(
       FIFTEEN_MINUTES_MS,
     ],
     [
-      `order-lookup:email:${context.shop}:${fingerprint(wantedEmail)}`,
+      `order-lookup:email:${context.shop}:${fingerprint(proof)}`,
       ORDER_LOOKUPS_PER_EMAIL,
       ONE_HOUR_MS,
+    ],
+    [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
+  ];
+  for (const [key, max, windowMs] of limits) {
+    if (!context.rateLimiter.hit(key, max, windowMs, nowMs).allowed) {
+      throw new ToolError(ORDER_LOOKUP_THROTTLED);
+    }
+  }
+
+  const data = await context.admin!<{
+    orders: {
+      nodes: Array<VerifiedOrder & { phone?: string | null; shippingAddress?: { phone: string | null } | null }>;
+    };
+  }>(wantedEmail ? ORDER_STATUS_QUERY : ORDER_STATUS_WITH_PHONE_QUERY, {
+    query: `name:${wantedName}`,
+  });
+
+  // The search is fuzzy, so require an exact match on both fields here.
+  const order = data.orders.nodes.find(
+    (candidate) =>
+      candidate.name.replace(/^#/, "").toLowerCase() === wantedName &&
+      (wantedEmail
+        ? (candidate.email ?? "").toLowerCase() === wantedEmail
+        : samePhone(candidate.phone, wantedPhone) ||
+          samePhone(candidate.shippingAddress?.phone, wantedPhone)),
+  );
+  if (!order) throw new ToolError(ORDER_NOT_FOUND);
+  // Proved once: follow-up questions in this chat need no proof again.
+  await context.rememberOrder?.({ id: order.id, name: order.name });
+  return order;
+}
+
+/**
+ * Finds an order by its number alone. Only used when the merchant has opted
+ * in, and only for the basics: an order number proves nothing about who is
+ * asking, so the caller must not hand back anything personal. The per-address
+ * and per-shop throttles still apply, which slows down walking through order
+ * numbers but does not prevent it. That trade-off is the merchant's choice.
+ */
+async function findOrderByNumber(
+  context: ToolContext,
+  orderNumber: string,
+): Promise<VerifiedOrder> {
+  const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
+
+  context.turn.orderLookups += 1;
+  if (context.turn.orderLookups > ORDER_LOOKUPS_PER_TURN) {
+    throw new ToolError(
+      "Only a couple of orders can be checked per message. Ask the shopper which single order they mean.",
+    );
+  }
+  const nowMs = context.now().getTime();
+  const limits: Array<[key: string, max: number, windowMs: number]> = [
+    [
+      `order-lookup:ip:${context.shop}:${clientKey(context.buyer.ip)}`,
+      ORDER_LOOKUPS_PER_ADDRESS,
+      FIFTEEN_MINUTES_MS,
     ],
     [`order-lookup:shop:${context.shop}`, ORDER_LOOKUPS_PER_SHOP, ONE_HOUR_MS],
   ];
@@ -886,30 +1008,56 @@ async function findVerifiedOrder(
     ORDER_STATUS_QUERY,
     { query: `name:${wantedName}` },
   );
-
-  // The search is fuzzy, so require an exact match on both fields here.
+  // The search is fuzzy, so require an exact match on the number.
   const order = data.orders.nodes.find(
-    (candidate) =>
-      candidate.name.replace(/^#/, "").toLowerCase() === wantedName &&
-      (candidate.email ?? "").toLowerCase() === wantedEmail,
+    (candidate) => candidate.name.replace(/^#/, "").toLowerCase() === wantedName,
   );
-  if (!order) throw new ToolError(ORDER_NOT_FOUND);
-  // Proved once: follow-up questions in this chat need no email again.
-  await context.rememberOrder?.({ id: order.id, name: order.name });
+  if (!order) throw new ToolError(ORDER_NUMBER_NOT_FOUND);
   return order;
 }
 
 const getOrderStatus = defineTool({
   name: "get_order_status",
   description:
-    "Check the status and tracking of the shopper's own order. Requires BOTH the order number and the email address used at checkout; ask for whichever is missing before calling. The one exception is an order listed as already known in this chat: for those the order number alone is enough, so do not ask for the email.",
+    "Check the status of the shopper's order by its order number. Whether proof is also needed (the email address or the phone number used on the order, either one) depends on the store, and your instructions say which. Proof is never needed for an order listed as already known in this chat. The tracking number and link are only returned when the order is known in this chat or proof is given.",
   audiences: ["shopper"],
   schema: z.object(orderProofSchema),
   // Off unless the merchant turned it on in the app settings.
   isAvailable: (context) =>
     Boolean(context.admin) && context.settings.orderLookupEnabled,
-  async run({ orderNumber, email }, context) {
-    const order = await findVerifiedOrder(context, orderNumber, email);
+  async run({ orderNumber, email, phone }, context) {
+    const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
+    const proved =
+      Boolean(email) ||
+      Boolean(phone) ||
+      Boolean(
+        context.knownOrders?.some(
+          (known) => known.name.replace(/^#/, "").toLowerCase() === wantedName,
+        ),
+      );
+
+    // The merchant's opt-in: the basics from the number alone. No tracking
+    // number or link, since those lead to where the parcel is going.
+    if (!proved && context.settings.orderLookupByNumber) {
+      const order = await findOrderByNumber(context, orderNumber);
+      return {
+        output: {
+          order: order.name,
+          placedOn: order.processedAt.slice(0, 10),
+          cancelled: Boolean(order.cancelledAt),
+          paymentStatus: order.displayFinancialStatus,
+          fulfillmentStatus: order.displayFulfillmentStatus,
+          shipments: order.fulfillments.map((fulfillment) => ({
+            status: fulfillment.status,
+            estimatedDelivery: fulfillment.estimatedDeliveryAt?.slice(0, 10),
+            carrier: fulfillment.trackingInfo[0]?.company ?? undefined,
+          })),
+          note: "Basic status only. The tracking number and link are shared when the shopper also gives the email address or the phone number used on the order: offer that if they want to track the parcel.",
+        },
+      };
+    }
+
+    const order = await findVerifiedOrder(context, orderNumber, email, phone);
 
     return {
       output: {
@@ -941,7 +1089,7 @@ interface ReturnableItem {
 const requestReturn = defineTool({
   name: "request_return",
   description:
-    "Ask the store to accept a return for the shopper's own order. Requires BOTH the order number and the checkout email (the email can be left out for an order already known in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
+    "Ask the store to accept a return for the shopper's own order. Requires the order number, proof that it is theirs (the email address or the phone number used on the order; neither is needed for an order already known in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,
@@ -961,8 +1109,8 @@ const requestReturn = defineTool({
   }),
   // Off unless the merchant turned it on in the app settings.
   isAvailable: (context) => Boolean(context.admin) && context.settings.allowReturns,
-  async run({ orderNumber, email, reason, itemTitle, quantity }, context) {
-    const order = await findVerifiedOrder(context, orderNumber, email);
+  async run({ orderNumber, email, phone, reason, itemTitle, quantity }, context) {
+    const order = await findVerifiedOrder(context, orderNumber, email, phone);
 
     const data = await context.admin!<{
       returnableFulfillments: {
