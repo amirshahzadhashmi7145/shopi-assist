@@ -16,3 +16,11 @@ updates:
           - "@react-router/*"
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # @shopify/shopify-app-react-router supports React Router 7 only
+      # (peer dependency "react-router ^7.6.2" as of 4.0.x). Drop this when a
+      # release of it supports React Router 8.
+      - dependency-name: "react-router"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@react-router/*"
+        update-types: ["version-update:semver-major"]
