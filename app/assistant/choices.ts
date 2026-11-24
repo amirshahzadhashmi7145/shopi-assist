@@ -190,9 +190,9 @@ export function asksYesOrNo(reply: string): boolean {
 
 /** True when the reply asks the shopper which of their orders they mean. */
 export function asksWhichOrder(reply: string): boolean {
-  return (
-    reply.includes("?") && /\bwhich (order|one)\b|\border number\b/i.test(reply)
-  );
+  // "Let me know which order..." asks it too, without a question mark.
+  if (/\bwhich order\b/i.test(reply)) return true;
+  return reply.includes("?") && /\bwhich one\b|\border number\b/i.test(reply);
 }
 
 /** True when the reply asks why the shopper wants to return something. */

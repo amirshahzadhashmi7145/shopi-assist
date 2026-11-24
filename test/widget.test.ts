@@ -589,6 +589,8 @@ describe("chat widget", () => {
     await flush();
     expect(lastBody(fetchMock).message).toBe("Damaged or defective");
     expect(widget.bubbles().slice(-2)).toEqual(["Damaged or defective", "Thanks."]);
+    // Every message says this widget can draw answer buttons.
+    expect(lastBody(fetchMock).supports).toEqual(["choices"]);
 
     // Other hands over the text box instead of sending anything.
     const sent = fetchMock.mock.calls.length;

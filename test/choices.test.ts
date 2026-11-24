@@ -93,6 +93,7 @@ describe("answers as buttons", () => {
   it("knows when the shopper is asked which order they mean", () => {
     expect(asksWhichOrder("Could you please tell me which order you'd like to return?")).toBe(true);
     expect(asksWhichOrder("Sure. What is the order number?")).toBe(true);
+    expect(asksWhichOrder("Please let me know which order you want to return and the reason.")).toBe(true);
     expect(asksWhichOrder("Your order number is #1012.")).toBe(false);
     expect(asksWhichOrder("What is the reason for the return?")).toBe(false);
   });

@@ -87,6 +87,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       country: body.country,
       language: body.language,
       cart: body.cart,
+      supports: body.supports,
       customerId,
       ip,
       admin: toGraphqlFn(admin, "Admin"),

@@ -83,6 +83,12 @@ export interface ChatTurnInput {
   language?: unknown;
   /** The storefront cart as the widget read it. Untrusted; see `readCart`. */
   cart?: unknown;
+  /**
+   * What the widget says it can draw beyond text and cards, such as
+   * "choices". Untrusted, and only ever used to hold things back from a
+   * widget that did not ask for them.
+   */
+  supports?: unknown;
   admin?: GraphqlFn;
   storefront?: GraphqlFn;
   /**
@@ -128,6 +134,15 @@ export function maskForStorage(text: string): string {
 }
 
 const MAX_CART_LINES = 20;
+
+
+/** The widget's list of what it can draw, kept only if it is a short list of plain names. */
+function readSupports(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is string => typeof entry === "string" && /^[a-z_]{1,30}$/.test(entry))
+    .slice(0, 10);
+}
 
 /**
  * The shopper's cart as their browser reported it, or undefined when it was
@@ -360,6 +375,7 @@ export async function handleChatTurn(
         : undefined,
     buyer: { country, language, ip: input.ip },
     cart: input.audience === "shopper" ? readCart(input.cart) : undefined,
+    clientSupports: readSupports(input.supports),
     knownOrders: orders,
     rememberOrder: async (order) => {
       if (orders.some((known) => known.id === order.id)) return;
@@ -460,8 +476,12 @@ export async function handleChatTurn(
   // shopper as that question with buttons. The saved transcript keeps the
   // list, so the model still knows what it offered. Not when products are
   // shown (their cards are the things to pick) or buttons were offered already.
+  // Only for a widget that said it can draw them: one loaded before this
+  // server was deployed would drop the buttons and show a question with its
+  // answers missing.
   const mayOffer =
     input.audience === "shopper" &&
+    Boolean(context.clientSupports?.includes("choices")) &&
     turn.cards.length === 0 &&
     !turn.actions.some((action) => action.type === "choices");
   const lifted = mayOffer ? liftChoices(turn.reply) : null;

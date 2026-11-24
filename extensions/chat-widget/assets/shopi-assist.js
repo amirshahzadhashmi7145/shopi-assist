@@ -17,6 +17,8 @@
   var MAX_MESSAGE_LENGTH = 2000;
   var MAX_ORDER_ITEMS = 10;
   var MAX_ITEM_QUANTITY = 10;
+  // Told to the app with every message; see `request`.
+  var WIDGET_SUPPORTS = ["choices"];
   // Up to this many answers to a question are shown as buttons; more become a list.
   var MAX_CHOICE_BUTTONS = 4;
   var MAX_CARD_VARIANTS = 12;
@@ -1466,6 +1468,9 @@
           conversationId: self.state.conversationId,
           country: self.config.country,
           language: (self.config.locale || "").slice(0, 2),
+          // What this version of the widget can draw besides text and cards.
+          // The app holds back anything a widget has not said it can show.
+          supports: WIDGET_SUPPORTS,
         };
         if (cart) payload.cart = cartSnapshot(cart);
         return window.fetch(self.config.endpoint, {

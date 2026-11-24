@@ -1149,6 +1149,8 @@ const offerChoices = defineTool({
       .default(false)
       .describe("True adds an 'Other' button that lets the shopper type their own answer."),
   }),
+  // Only for a widget that can draw the buttons; an older one would show nothing.
+  isAvailable: (context) => Boolean(context.clientSupports?.includes("choices")),
   async run({ options, allowOther }) {
     // The same answer twice is one button.
     const unique = [...new Map(options.map((option) => [option.toLowerCase(), option])).values()];

@@ -39,6 +39,12 @@ export interface ToolContext {
     allowOrderEdit?: boolean;
   };
   /**
+   * What the page showing the chat has said it can draw, beyond text and
+   * product cards. A shopper's browser can be running a widget older than
+   * this server, so nothing is handed to it that it has not asked for.
+   */
+  clientSupports?: readonly string[];
+  /**
    * Whether Shopify says this is a development store. Asked only when a
    * lookup limit is reached: such stores get more room for testing.
    */

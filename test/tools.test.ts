@@ -240,19 +240,27 @@ describe("shopper tools", () => {
   });
 
   it("offer_choices hands the widget the answers to show as buttons", async () => {
+    const context = toolContext({ clientSupports: ["choices"] });
     const result = await run(
       "offer_choices",
       { options: ["#1012", "#1008", "#1008 "], allowOther: true },
-      toolContext({}),
+      context,
     );
     expect(result.ok).toBe(true);
     expect(result.actions).toEqual([{ type: "choices", options: ["#1012", "#1008"], other: true }]);
     expect(result.json.note).toMatch(/do not|without listing/);
 
-    const plain = await run("offer_choices", { options: ["Yes", "No"] }, toolContext({}));
+    const plain = await run("offer_choices", { options: ["Yes", "No"] }, context);
     expect(plain.actions).toEqual([{ type: "choices", options: ["Yes", "No"] }]);
     // One answer is not a choice.
-    expect((await run("offer_choices", { options: ["Yes"] }, toolContext({}))).ok).toBe(false);
+    expect((await run("offer_choices", { options: ["Yes"] }, context)).ok).toBe(false);
+
+    // A widget that has not said it can draw buttons is not offered the tool.
+    const names = (supports?: string[]) =>
+      toolsFor(allTools, toolContext({ clientSupports: supports })).map((tool) => tool.name);
+    expect(names(["choices"])).toContain("offer_choices");
+    expect(names()).not.toContain("offer_choices");
+    expect(names(["something_else"])).not.toContain("offer_choices");
   });
 
   it("returns only products whose own data mentions what was asked for", async () => {

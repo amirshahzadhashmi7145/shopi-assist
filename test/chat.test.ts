@@ -88,6 +88,41 @@ const expectChatError = async (promise: Promise<unknown>, code: string, status: 
 };
 
 describe("handleChatTurn", () => {
+  it("turns a question's answers into buttons only for a widget that can draw them", async () => {
+    const listed =
+      "What is the reason for the return? You can choose from these options:\n\n- Changed my mind\n- Too big\n- Other";
+    const provider = () => scriptedProvider([text(listed)]);
+
+    // An older widget, still open in a shopper's browser, says nothing about
+    // buttons: it gets the reply exactly as written, answers included.
+    const old = await turn({ message: "1012" }, { provider: provider() });
+    expect(old.reply).toBe(listed);
+    expect(old.actions).toEqual([]);
+
+    // Anything but a short list of plain names counts as saying nothing.
+    for (const supports of ["choices", [42], [{ choices: true }], ["CHOICES!"]]) {
+      const odd = await turn({ message: "1012", supports }, { provider: provider() });
+      expect(odd.reply).toBe(listed);
+    }
+
+    const current = await turn({ message: "1012", supports: ["choices"] }, { provider: provider() });
+    expect(current.reply).toBe("What is the reason for the return?");
+    expect(current.actions).toEqual([
+      { type: "choices", options: ["Changed my mind", "Too big", "Other"], other: true },
+    ]);
+    // The model still sees what it offered: the saved reply keeps the list.
+    const transcript = await getConversationTranscript(db, SHOP_A, current.conversationId);
+    expect(transcript!.messages.at(-1)!.content).toBe(listed);
+
+    // A plain yes-or-no question gets its two buttons the same way.
+    const yesNo = await turn(
+      { message: "ok", supports: ["choices"] },
+      { provider: scriptedProvider([text("It has not shipped yet. Would you like to cancel it instead?")]) },
+    );
+    expect(yesNo.actions).toEqual([{ type: "choices", options: ["Yes", "No"], other: true }]);
+    expect(yesNo.reply).toBe("It has not shipped yet. Would you like to cancel it instead?");
+  });
+
   it("answers, creates a conversation and stores the exchange", async () => {
     const result = await turn({ message: "  hello  " });
 
