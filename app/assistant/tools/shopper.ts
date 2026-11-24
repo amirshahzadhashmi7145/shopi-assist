@@ -54,6 +54,8 @@ export const ORDER_STATUS_QUERY = `#graphql
         id
         fulfillments(first: 5) {
           status
+          displayStatus
+          deliveredAt
           estimatedDeliveryAt
           trackingInfo(first: 3) { company number url }
         }
@@ -83,6 +85,8 @@ export const ORDER_STATUS_WITH_PHONE_QUERY = `#graphql
         id
         fulfillments(first: 5) {
           status
+          displayStatus
+          deliveredAt
           estimatedDeliveryAt
           trackingInfo(first: 3) { company number url }
         }
@@ -1360,20 +1364,34 @@ function phoneDigits(value: string | null | undefined): string {
   return (value ?? "").replace(/\D/g, "").replace(/^0+/, "");
 }
 
+/** The digits of a phone number as written, without an international "00". */
+function writtenDigits(value: string | null | undefined): string {
+  return (value ?? "").replace(/\D/g, "").replace(/^00/, "");
+}
+
 /**
- * Whether two phone numbers are the same line. People write the same number
- * with or without the country code ("+92 319 875 4964" and "0319 8754964"),
- * so one may be the other with a country calling code in front. Nothing else
- * may differ: an extra or missing digit anywhere, or digits in front that
- * are not a calling code, is a different number.
+ * Whether two phone numbers are the same line. The same number is written
+ * with or without its country code and with or without the local leading
+ * zero: "0319 8754964", "+92 319 8754964", and "+1 0319 8754964" for a number
+ * stored with its zero on an order from the United States. So the numbers
+ * match when their digits are equal once leading zeros are dropped, or when
+ * one is the other with a real country calling code in front. Nothing else
+ * may differ: a digit added, missing or changed anywhere is another number.
  */
 export function samePhone(a: string | null | undefined, b: string | null | undefined): boolean {
-  const [shorter, longer] = [phoneDigits(a), phoneDigits(b)].sort(
+  const [shorter, longer] = [writtenDigits(a), writtenDigits(b)].sort(
     (left, right) => left.length - right.length,
   );
-  if (shorter.length < 7) return false;
-  if (shorter === longer) return true;
-  return longer.endsWith(shorter) && CALLING_CODES.has(longer.slice(0, longer.length - shorter.length));
+  const local = shorter.replace(/^0+/, "");
+  if (local.length < 7) return false;
+  if (longer.replace(/^0+/, "") === local) return true;
+  // A country code in front of the other number, written with its zero or without.
+  for (const rest of new Set([shorter, local])) {
+    if (longer.endsWith(rest) && CALLING_CODES.has(longer.slice(0, longer.length - rest.length))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Short non-reversible key, so email addresses are not held in the limiter. */
@@ -1396,6 +1414,9 @@ interface VerifiedOrder {
   displayFulfillmentStatus: string;
   fulfillments: Array<{
     status: string;
+    /** Where the parcel is: "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED"... */
+    displayStatus?: string | null;
+    deliveredAt?: string | null;
     estimatedDeliveryAt: string | null;
     trackingInfo: Array<{ company: string | null; number: string | null; url: string | null }>;
   }>;
@@ -1407,13 +1428,24 @@ interface VerifiedOrder {
   proofNote?: string;
 }
 
+const PHONE_AS_ORDER_NUMBER =
+  "That is a phone number, not an order number. The shopper gave it to prove the order you were just talking about is theirs: call again with that order's number as orderNumber and this number as phone.";
+
 export const orderProofSchema = {
   orderNumber: z
     .string()
     .trim()
     .min(1)
     .max(40)
-    .regex(/^#?[A-Za-z0-9\-_.]+$/, "Order number like 1001 or #1001."),
+    .superRefine((value, issue) => {
+      // A long run of digits, however it is spaced, is a phone number the
+      // shopper gave as proof, not an order to look for.
+      if (/^\+?\d{9,}$/.test(value.replace(/^#/, "").replace(/[\s().-]/g, ""))) {
+        issue.addIssue({ code: "custom", message: PHONE_AS_ORDER_NUMBER });
+      } else if (!/^#?[A-Za-z0-9\-_.]+$/.test(value)) {
+        issue.addIssue({ code: "custom", message: "Order number like 1001 or #1001." });
+      }
+    }),
   // Anything that is not an email address counts as "none given" instead of
   // failing the call. The model sometimes passes the "[email removed]"
   // placeholder it sees in the transcript; for an order this chat already
@@ -1451,12 +1483,23 @@ const ORDER_NEEDS_EMAIL =
  * used to guess. It throws the same error for "no such order" and "wrong
  * email", so it cannot be used to discover which order numbers exist.
  */
+/**
+ * A long run of digits where an order number belongs is a phone number the
+ * shopper gave as proof: say so, instead of looking for an order by it.
+ */
+function refusePhoneAsOrderNumber(orderNumber: string): void {
+  if (/^\+?\d{9,}$/.test(orderNumber.replace(/^#/, "").replace(/[\s().-]/g, ""))) {
+    throw new ToolError(PHONE_AS_ORDER_NUMBER);
+  }
+}
+
 export async function findVerifiedOrder(
   context: ToolContext,
   orderNumber: string,
   email: string | undefined,
   phone?: string,
 ): Promise<VerifiedOrder> {
+  refusePhoneAsOrderNumber(orderNumber);
   const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
   const wantedEmail = (email ?? "").trim().toLowerCase();
   const wantedPhone = phoneDigits(phone);
@@ -1585,6 +1628,17 @@ async function findOrderByNumber(
   return order;
 }
 
+/** Where one shipment is, in Shopify's words, and when it arrived if it has. */
+function shipmentState(fulfillment: VerifiedOrder["fulfillments"][number]) {
+  return {
+    // "DELIVERED" or "IN_TRANSIT" says more than the plain "SUCCESS" of a shipment made.
+    status: fulfillment.displayStatus || fulfillment.status,
+    delivered: fulfillment.deliveredAt ? true : undefined,
+    deliveredOn: fulfillment.deliveredAt?.slice(0, 10),
+    estimatedDelivery: fulfillment.estimatedDeliveryAt?.slice(0, 10),
+  };
+}
+
 const getOrderStatus = defineTool({
   name: "get_order_status",
   description:
@@ -1595,6 +1649,7 @@ const getOrderStatus = defineTool({
   isAvailable: (context) =>
     Boolean(context.admin) && context.settings.orderLookupEnabled,
   async run({ orderNumber, email, phone }, context) {
+    refusePhoneAsOrderNumber(orderNumber);
     const wantedName = orderNumber.replace(/^#/, "").toLowerCase();
     const proved =
       Boolean(email) ||
@@ -1617,8 +1672,7 @@ const getOrderStatus = defineTool({
           paymentStatus: order.displayFinancialStatus,
           fulfillmentStatus: order.displayFulfillmentStatus,
           shipments: order.fulfillments.map((fulfillment) => ({
-            status: fulfillment.status,
-            estimatedDelivery: fulfillment.estimatedDeliveryAt?.slice(0, 10),
+            ...shipmentState(fulfillment),
             carrier: fulfillment.trackingInfo[0]?.company ?? undefined,
           })),
           note: "Basic status only, and nothing else is known about this order: not what is in it, and not whether anything can be returned. Never name its items or say it can be returned from this. The tracking number and link are shared when the shopper also gives the email address or the phone number used on the order: offer that if they want to track the parcel.",
@@ -1628,6 +1682,24 @@ const getOrderStatus = defineTool({
 
     const order = await findVerifiedOrder(context, orderNumber, email, phone);
 
+    // The order is theirs, so what can be returned from it is theirs to know.
+    // It is read from the order as it is now, so nothing about a return has
+    // to be worked out from the delivery status.
+    let returns: Record<string, unknown> | undefined;
+    if (context.settings.allowReturns) {
+      const [check] = await checkReturnable(context.admin!, [
+        { id: order.id, name: order.name, source: "verified" },
+      ]);
+      if (check) {
+        returns = check.items.length
+          ? {
+              canBeReturnedNow: check.items,
+              note: "These are the only items that can be returned right now. To ask for a return use the return tool with this order number.",
+            }
+          : { canBeReturnedNow: [], because: check.reason };
+      }
+    }
+
     return {
       output: {
         order: order.name,
@@ -1636,15 +1708,18 @@ const getOrderStatus = defineTool({
         paymentStatus: order.displayFinancialStatus,
         fulfillmentStatus: order.displayFulfillmentStatus,
         shipments: order.fulfillments.map((fulfillment) => ({
-          status: fulfillment.status,
-          estimatedDelivery: fulfillment.estimatedDeliveryAt?.slice(0, 10),
+          ...shipmentState(fulfillment),
           tracking: fulfillment.trackingInfo.map((tracking) => ({
             carrier: tracking.company,
             number: tracking.number,
             url: tracking.url,
           })),
         })),
+        returns,
         aboutProof: order.proofNote,
+        note: returns
+          ? undefined
+          : "Whether anything on this order can be returned is not part of this answer. Never say it can or cannot be returned from the delivery status.",
       },
     };
   },

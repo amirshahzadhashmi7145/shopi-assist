@@ -400,18 +400,27 @@ describe("system prompts", () => {
     // Part of a longer number is not a mention.
     expect(promptFor("call me on 5551005123")).not.toContain("#1005");
 
-    // The message is about another order, or brings proof: nothing is said,
-    // because the model takes any mention for the only orders it may help with.
-    for (const other of [
-      "Cancel order 1002, my phone is +1 202 555 0143",
-      "Add one more to order 1004, my email is dana.demo@example.com",
-      "+1 202 555 0143",
+    // The message is about another order: the remembered ones are not named,
+    // because the model takes any mention for the only orders it may help
+    // with. It is pointed at the order the shopper did name instead.
+    for (const [other, number] of [
+      ["Cancel order 1002, my phone is +1 202 555 0143", "1002"],
+      ["Add one more to order 1004, my email is dana.demo@example.com", "1004"],
+      ["no i wanna return order #1009", "1009"],
     ]) {
       const prompt = promptFor(other);
       expect(prompt).not.toContain("#1005");
-      expect(prompt).not.toMatch(/About the shopper's latest message/);
+      expect(prompt).toContain(
+        `it names order #${number}, which is not one of the orders already known to be theirs. Answer about that order and no other`,
+      );
       expect(prompt).toMatch(/the order number alone is enough/);
       expect(prompt).toMatch(/ask for an email or phone number only when the tool's answer says one is needed/);
+    }
+    // Proof on its own, or a number that could be a phone number: nothing is said.
+    for (const proof of ["+1 202 555 0143", "03198754964", "order 03198754964", "dana.demo@example.com"]) {
+      const prompt = promptFor(proof);
+      expect(prompt).not.toContain("#1005");
+      expect(prompt).not.toMatch(/About the shopper's latest message/);
     }
 
     const none = buildSystemPrompt({

@@ -90,6 +90,21 @@ const orderName = (order: KnownOrder) => order.name.replace(/[^#A-Za-z0-9\-_.]/g
 function rememberedOrdersNote(orders: KnownOrder[] | undefined, message: string | undefined): string {
   if (!orders?.length) return "";
   const text = message ?? "";
+  // "order 1009" or "#1009", said outright, and not one of the orders already
+  // theirs: that order is what the message is about. Without this the model
+  // answers about the orders it knows instead. A bare number is left alone:
+  // it may be a phone number given as proof.
+  const stated = /(?:\border\s*(?:number|no\.?)?\s*#?\s*|#)([A-Za-z0-9][A-Za-z0-9\-_.]{2,19})\b/i.exec(text)?.[1];
+  if (
+    stated &&
+    /\d{3}/.test(stated) &&
+    !/^\d{9,}$/.test(stated) &&
+    !orders.some((order) => orderName(order).replace(/^#/, "").toLowerCase() === stated.toLowerCase())
+  ) {
+    return `
+
+About the shopper's latest message: it names order #${stated.replace(/[^A-Za-z0-9\-_.]/g, "")}, which is not one of the orders already known to be theirs. Answer about that order and no other: use your tools with that order number (the return tool when they want to return it). The tool says whether an email address or phone number is needed. Do not answer about their other orders instead.`;
+  }
   const describe = (order: KnownOrder) =>
     `${orderName(order)} (${
       order.source === "placed"

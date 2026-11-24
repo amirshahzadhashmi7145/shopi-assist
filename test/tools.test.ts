@@ -679,6 +679,90 @@ describe("get_order_status", () => {
     expect(result.content.toLowerCase()).not.toContain("buyer@example.com");
   });
 
+  it("says where the parcel really is, and what can be returned once the order is proved", async () => {
+    const delivered = {
+      ...order,
+      id: "gid://shopify/Order/9001",
+      fulfillments: [
+        { ...order.fulfillments[0], displayStatus: "DELIVERED", deliveredAt: "2026-11-14T10:00:00Z" },
+      ],
+    };
+    const returnState = (items: Array<[string, number]>, returnStatus = "NO_RETURN") => ({
+      order: { name: "#1001", cancelledAt: null, returnStatus, fulfillments: [{ id: "f" }] },
+      returnableFulfillments: {
+        nodes: [
+          {
+            returnableFulfillmentLineItems: {
+              nodes: items.map(([title, quantity]) => ({ quantity, fulfillmentLineItem: { lineItem: { title } } })),
+            },
+          },
+        ],
+      },
+    });
+    const withReturns = (admin: ReturnType<typeof fakeGraphql>) => ({
+      ...enabled(admin),
+      settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true, allowReturns: true },
+    });
+    const proved = { orderNumber: "1001", email: "buyer@example.com" };
+
+    // Delivered, not just "a shipment was made".
+    const plain = await run("get_order_status", proved, enabled(fakeGraphql({ orders: { nodes: [delivered] } })));
+    expect(plain.json.shipments[0]).toMatchObject({ status: "DELIVERED", delivered: true, deliveredOn: "2026-11-14" });
+    // Where returns are off, nothing is said about them and nothing is to be inferred.
+    expect(plain.json.returns).toBeUndefined();
+    expect(plain.json.note).toMatch(/Never say it can or cannot be returned from the delivery status/);
+
+    // Where returns are on, what can be returned is read from the order now.
+    const admin = fakeGraphql({ orders: { nodes: [delivered] } }, returnState([["Ski Wax", 1]]));
+    const returnable = await run("get_order_status", proved, withReturns(admin));
+    expect(returnable.json.returns.canBeReturnedNow).toEqual([{ title: "Ski Wax", quantity: 1 }]);
+    expect(admin.calls[1].variables).toEqual({ orderId: "gid://shopify/Order/9001" });
+
+    const waiting = await run(
+      "get_order_status",
+      proved,
+      withReturns(fakeGraphql({ orders: { nodes: [delivered] } }, returnState([], "RETURN_REQUESTED"))),
+    );
+    expect(waiting.json.returns).toEqual({
+      canBeReturnedNow: [],
+      because: "a return request for it is already waiting for the store's answer",
+    });
+
+    // From the number alone nothing about returns is asked or told.
+    const basicsAdmin = fakeGraphql({ orders: { nodes: [delivered] } });
+    const basics = await run(
+      "get_order_status",
+      { orderNumber: "1001" },
+      {
+        ...withReturns(basicsAdmin),
+        settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true, orderLookupByNumber: true, allowReturns: true },
+      },
+    );
+    expect(basics.json.shipments[0]).toMatchObject({ status: "DELIVERED", delivered: true });
+    expect(basics.json.returns).toBeUndefined();
+    expect(JSON.stringify(basics.json)).not.toContain("Ski Wax");
+    expect(basicsAdmin.calls).toHaveLength(1);
+  });
+
+  it("takes a long number given as the order number for the phone number it is", async () => {
+    for (const number of ["103198754964", "+1 0319 875-4964", "03198754964"]) {
+      const admin = fakeGraphql({ orders: { nodes: [order] } });
+      const result = await run("get_order_status", { orderNumber: number }, enabled(admin));
+      expect(result.ok).toBe(false);
+      expect(result.json.error).toMatch(/That is a phone number, not an order number/);
+      expect(result.json.error).toMatch(/this number as phone/);
+      // Nothing was looked for under it.
+      expect(admin.calls).toHaveLength(0);
+    }
+    // An ordinary order number, however long a store makes them, is still one.
+    const fine = await run(
+      "get_order_status",
+      { orderNumber: "#10012345", email: "buyer@example.com" },
+      enabled(fakeGraphql({ orders: { nodes: [{ ...order, name: "#10012345" }] } })),
+    );
+    expect(fine.ok).toBe(true);
+  });
+
   it("needs no email for an order the server already tied to this chat", async () => {
     const mine = { ...order, id: "gid://shopify/Order/1005", name: "#1005", email: null };
     const admin = fakeGraphql({ orders: { nodes: [mine] } });
@@ -1751,18 +1835,27 @@ describe("samePhone", () => {
     expect(samePhone("+12025550143", "+12025550143")).toBe(true);
   });
 
-  it("accepts a country code in front, and no other digits", () => {
+  it("accepts a country code in front, with the local zero or without", () => {
     // The order holds the local number; the shopper adds a real country code.
     expect(samePhone("0319 8754964", "+92 319 875 4964")).toBe(true);
     expect(samePhone("3198754964", "+1 3198754964")).toBe(true);
-    // "10" is not a country code, so this is another number...
-    expect(samePhone("0319 8754964", "+10 319 875 4964")).toBe(false);
-    // ...and so is one with a digit added, dropped or changed.
+    // The stored number keeps its zero and the shopper puts the country code in front of it.
+    expect(samePhone("0319 8754964", "+1 0319 8754964")).toBe(true);
+    expect(samePhone("0319 8754964", "103198754964")).toBe(true);
+    expect(samePhone("0319 8754964", "0092 319 8754964")).toBe(true);
+    // Leading zeros alone are not a difference.
+    expect(samePhone("0319 8754964", "319 8754964")).toBe(true);
+  });
+
+  it("refuses a number with a digit added, missing or changed", () => {
     expect(samePhone("0319 8754964", "0319 87549644")).toBe(false);
+    expect(samePhone("0319 8754964", "+1 0319 875496")).toBe(false);
     expect(samePhone("0319 8754964", "+92 319 875 496")).toBe(false);
     expect(samePhone("+92 319 875 4964", "+93 319 875 4964")).toBe(false);
-    // A country code is not followed by the local zero.
-    expect(samePhone("0319 8754964", "+92 0319 8754964")).toBe(false);
+    // Digits in front that are not a country code.
+    expect(samePhone("0319 8754964", "+11 0319 8754964")).toBe(false);
+    expect(samePhone("0319 8754964", "55 0319 8754964 ")).toBe(true); // 55 is Brazil's code
+    expect(samePhone("0319 8754964", "8 0319 8754964")).toBe(false);
   });
 
   it("does not match different lines, short tails or nothing", () => {
