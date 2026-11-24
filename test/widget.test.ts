@@ -1000,13 +1000,16 @@ describe("chat widget", () => {
     );
   });
 
-  it("changes how many of a line the order holds, without leaving the chat", async () => {
+  it("changes how many of a line the order holds at once, and tells the cart once", async () => {
     const lines = [{ ...cartLine(101, 2, "Trail Mug", 1800), key: "101:abc" }];
-    let refuse = false;
+    // How many the store has. Asking for more is refused, as Shopify does.
+    let stock = 99;
+    let broken = false;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url !== "/cart/change.js") return reply("Here.", { actions: [{ type: "checkout" }] });
-      if (refuse) return jsonResponse({ status: 422, description: "Sold out" }, 422);
+      if (broken) return jsonResponse({ message: "Server error" }, 500);
       const change = JSON.parse(init!.body as string);
+      if (change.quantity > stock) return jsonResponse({ status: 422, description: "Sold out" }, 422);
       lines[0] = { ...cartLine(101, change.quantity, "Trail Mug", 1800), key: "101:abc" };
       return jsonResponse(cartJson(...lines));
     });
@@ -1018,39 +1021,81 @@ describe("chat widget", () => {
 
     const step = (label: string) =>
       widget.all(".sa-order .sa-stepper-button").find((button) => button.textContent === label) as HTMLButtonElement;
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("2");
-    expect(step("+").getAttribute("aria-label")).toBe("One more: Trail Mug");
-    // No link out to the cart page.
-    expect(widget.$(".sa-order").textContent).not.toContain("Edit cart");
-
-    step("+").click();
-    await flush();
+    const count = () => widget.$(".sa-order .sa-stepper-count").textContent;
     const changes = () =>
       fetchMock.mock.calls
         .filter((call) => call[0] === "/cart/change.js")
         .map((call) => JSON.parse((call[1] as RequestInit).body as string));
-    expect(changes()).toEqual([{ id: "101:abc", quantity: 3 }]);
-    expect(widget.all(".sa-order")).toHaveLength(1);
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("3");
-    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$54.00");
+    /** Long enough for the widget to tell the cart, and for the answer to be drawn. */
+    const settle = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 420));
+      await flush();
+    };
+    expect(count()).toBe("2");
+    expect(step("+").getAttribute("aria-label")).toBe("One more: Trail Mug");
+    // No link out to the cart page.
+    expect(widget.$(".sa-order").textContent).not.toContain("Edit cart");
 
-    step("\u2212").click();
-    step("\u2212").click();
-    await flush();
-    // The second press landed on a disabled button: one change at a time.
-    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 2 });
-    expect(changes()).toHaveLength(2);
-
-    step("\u2212").click();
-    await flush();
-    // At one, less is off: Remove is the way to take the line out.
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
-    expect(step("\u2212").disabled).toBe(true);
-
-    refuse = true;
+    // Three quick presses: the number and the price move at once, on each press...
     step("+").click();
-    await flush();
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
+    expect(count()).toBe("3");
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$54.00");
+    step("+").click();
+    step("+").click();
+    expect(count()).toBe("5");
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$90.00");
+    // ...the focus stays on the button, and the cart has not been asked yet.
+    expect(widget.root.activeElement).toBe(step("+"));
+    expect(changes()).toHaveLength(0);
+
+    // Then the cart is told once, with where the presses ended up, and is not read again.
+    const reads = cartMock.mock.calls.length;
+    await settle();
+    expect(changes()).toEqual([{ id: "101:abc", quantity: 5 }]);
+    expect(cartMock.mock.calls).toHaveLength(reads);
+    expect(widget.all(".sa-order")).toHaveLength(1);
+    expect(count()).toBe("5");
+
+    step("\u2212").click();
+    await settle();
+    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 4 });
+    expect(count()).toBe("4");
+
+    // The store has six. Asking for eight finds that out, settles on six and stops there.
+    stock = 6;
+    for (let press = 0; press < 4; press += 1) step("+").click();
+    expect(count()).toBe("8");
+    await settle();
+    expect(changes().slice(2)).toEqual([
+      { id: "101:abc", quantity: 8 },
+      { id: "101:abc", quantity: 7 },
+      { id: "101:abc", quantity: 6 },
+    ]);
+    expect(count()).toBe("6");
+    expect(step("+").disabled).toBe(true);
+    expect(widget.$(".sa-order-limit").textContent).toBe("Only 6 available");
+    // Said beside the quantity, not as an error in the chat.
+    expect(widget.all(".sa-notice")).toHaveLength(0);
+    // Fewer is still theirs to choose, and the note goes when it no longer applies.
+    step("\u2212").click();
+    await settle();
+    expect(count()).toBe("5");
+    expect(widget.root.querySelector(".sa-order-limit")).toBeNull();
+    expect(step("+").disabled).toBe(false);
+
+    // At one, less is off: Remove is the way to take the line out.
+    for (let press = 0; press < 4; press += 1) step("\u2212").click();
+    expect(count()).toBe("1");
+    expect(step("\u2212").disabled).toBe(true);
+    await settle();
+    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 1 });
+
+    // Anything else going wrong puts the cart's own quantity back and says so.
+    broken = true;
+    step("+").click();
+    expect(count()).toBe("2");
+    await settle();
+    expect(count()).toBe("1");
     expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
       "That quantity couldn't be set. Your order is as shown above.",
     );

@@ -671,6 +671,13 @@ a.sa-card-title:hover {
   gap: 8px;
 }
 
+/* Beside the quantity, once the store has said how many it has. */
+.sa-order-limit {
+  flex: 1 1 auto;
+  color: var(--sa-ink-soft);
+  font-size: 12.5px;
+}
+
 .sa-stepper-small .sa-stepper-button {
   width: 28px;
   height: 28px;

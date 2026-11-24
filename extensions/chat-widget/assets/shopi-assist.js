@@ -21,6 +21,9 @@
   var WIDGET_SUPPORTS = ["choices"];
   // Up to this many answers to a question are shown as buttons; more become a list.
   var MAX_CHOICE_BUTTONS = 4;
+  // How long after the last press on − or + the cart is told the new quantity.
+  // Several quick presses become one request.
+  var CART_CHANGE_DELAY_MS = 350;
   var MAX_CARD_VARIANTS = 12;
   var MAX_SUMMARY_LINES = 12;
 
@@ -344,6 +347,10 @@
     // False until the app's settings have arrived. A page that loaded while
     // the app was unreachable asks again once a reply shows it is back.
     this.remoteLoaded = false;
+    // Quantity changes on their way to the cart, by cart line: see queueCartQuantity.
+    this.cartQueue = {};
+    // The most of a line the store would put in the cart, once it has said so.
+    this.cartLimits = {};
     // The open order form, if any. Its contents are never stored.
     this.orderForm = null;
     // True on a development store: the order form offers to fill in test details.
@@ -799,8 +806,11 @@
       for (var i = 0; i < buttons.length; i += 1) buttons[i].disabled = true;
     };
 
-    /** Draws the summary again in place after a line is ticked or unticked. */
-    var redraw = function (line) {
+    /**
+     * Draws the summary again in place after a line is ticked, unticked or
+     * given another quantity, and puts the focus back where it was.
+     */
+    var redraw = function (line, control) {
       // An order form opened from the summary was for the lines as they were.
       if (self.orderForm && !self.orderForm.mode) self.closeOrderForm();
       self.saveState();
@@ -808,7 +818,11 @@
       if (!fresh || !box.parentNode) return;
       box.parentNode.insertBefore(fresh, box);
       box.parentNode.removeChild(box);
-      var again = fresh.querySelector('.sa-order-pick[data-line="' + lines.indexOf(line) + '"]');
+      var at = lines.indexOf(line);
+      var again = control
+        ? fresh.querySelector('[data-step="' + control + ":" + at + '"]:not([disabled])') ||
+          fresh.querySelector('[data-step$=":' + at + '"]:not([disabled])')
+        : fresh.querySelector('.sa-order-pick[data-line="' + at + '"]');
       if (again) again.focus();
     };
 
@@ -844,19 +858,38 @@
         var more = el("button", "sa-stepper-button", "+");
         more.type = "button";
         more.setAttribute("aria-label", "One more: " + line.title);
-        more.disabled = quantity >= MAX_ITEM_QUANTITY;
+        // No more than the store has said it can put in the cart.
+        var stock = self.cartLimits[line.key];
+        var most = Math.min(MAX_ITEM_QUANTITY, stock || MAX_ITEM_QUANTITY);
+        more.disabled = quantity >= most;
+        less.setAttribute("data-step", "less:" + lines.indexOf(line));
+        more.setAttribute("data-step", "more:" + lines.indexOf(line));
+        // The new quantity shows at once, with the price worked out from the
+        // line as it stood. The cart is told a moment later, once for however
+        // many presses, and the summary is then drawn again from its answer.
+        var step = function (next, control) {
+          var each = typeof line.total === "number" ? line.total / quantity : null;
+          if (each !== null) {
+            if (typeof entry.subtotal === "number") entry.subtotal += each * (next - quantity);
+            line.total = each * next;
+          }
+          line.quantity = next;
+          self.queueCartQuantity(line.key, next);
+          redraw(line, control);
+        };
         less.addEventListener("click", function () {
-          busy();
-          self.setCartQuantity(line.key, quantity - 1);
+          step(quantity - 1, "less");
         });
         more.addEventListener("click", function () {
-          busy();
-          self.setCartQuantity(line.key, quantity + 1);
+          step(quantity + 1, "more");
         });
         stepper.appendChild(less);
         stepper.appendChild(count);
         stepper.appendChild(more);
         edit.appendChild(stepper);
+        if (stock && quantity >= stock) {
+          edit.appendChild(el("span", "sa-order-limit", "Only " + stock + " available"));
+        }
 
         var remove = el("button", "sa-order-remove", "Remove");
         remove.type = "button";
@@ -1832,9 +1865,10 @@
    * empty. `picked` lists the variants just asked for: they are ticked for
    * the order and the rest of the cart is listed unticked.
    */
-  Widget.prototype.showOrderSummary = function (picked) {
+  Widget.prototype.showOrderSummary = function (picked, known) {
     var self = this;
-    return this.fetchCart().then(function (cart) {
+    // A change to the cart answers with the cart: no need to ask for it again.
+    return (known ? Promise.resolve(known) : this.fetchCart()).then(function (cart) {
       if (!cart) {
         // The cart could not be read. The checkout link itself still works.
         self.pushEntry({
@@ -1870,7 +1904,20 @@
         });
         return;
       }
-      self.pushEntry(orderSummary(cart, chosen, before));
+      var summary = orderSummary(cart, chosen, before);
+      // A quantity the shopper has just set, and the cart has not heard yet,
+      // is what they see: it is on its way.
+      summary.lines.forEach(function (line) {
+        var job = self.cartQueue[line.key];
+        if (!job || job.target === line.quantity) return;
+        if (typeof line.total === "number") {
+          var each = line.total / line.quantity;
+          if (typeof summary.subtotal === "number") summary.subtotal += each * (job.target - line.quantity);
+          line.total = each * job.target;
+        }
+        line.quantity = job.target;
+      });
+      self.pushEntry(summary);
     });
   };
 
@@ -1921,7 +1968,8 @@
 
   /**
    * Sets one cart line's quantity; none given takes the line out. Resolves
-   * true when Shopify agreed.
+   * with the cart as Shopify now has it, or with `refused` when Shopify said
+   * no to the change itself (there is not that much in stock, for one).
    */
   Widget.prototype.changeCartLine = function (key, quantity) {
     return window
@@ -1932,41 +1980,95 @@
         body: JSON.stringify({ id: key, quantity: quantity > 0 ? quantity : 0 }),
       })
       .then(function (response) {
-        return response.ok ? response.json() : null;
-      })
-      .then(function (cart) {
-        if (cart) {
-          document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
-        }
-        return Boolean(cart);
+        if (!response.ok) return { cart: null, refused: response.status === 422 };
+        return response.json().then(function (cart) {
+          var read = cart && Array.isArray(cart.items) ? cart : null;
+          if (read) {
+            document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: read }));
+          }
+          return { cart: read, refused: false };
+        });
       })
       .catch(function () {
-        return false;
+        return { cart: null, refused: false };
       });
   };
 
   /** Takes one line out of the storefront cart, then shows the summary again. */
   Widget.prototype.removeFromCart = function (key) {
     var self = this;
-    // The summary is read from the cart again, so it shows the truth either way.
-    return this.changeCartLine(key).then(function () {
-      return self.showOrderSummary();
+    delete this.cartQueue[key];
+    // Drawn from the cart's own answer, or read again when there was none.
+    return this.changeCartLine(key).then(function (result) {
+      return self.showOrderSummary(undefined, result.cart || undefined);
     });
   };
 
-  /** Changes how many of one line the cart holds, then shows the summary again. */
-  Widget.prototype.setCartQuantity = function (key, quantity) {
+  /**
+   * Notes the quantity the shopper wants for a line and tells the cart a
+   * moment later. Presses that follow quickly replace the quantity instead of
+   * each making a request, so tapping + four times is one change to the cart.
+   */
+  Widget.prototype.queueCartQuantity = function (key, quantity) {
     var self = this;
-    return this.changeCartLine(key, quantity).then(function (changed) {
-      return self.showOrderSummary().then(function () {
-        // Shopify says no when, for one, there is not that much in stock.
-        if (!changed) {
+    var job = this.cartQueue[key] || (this.cartQueue[key] = { target: quantity, timer: null, sending: false });
+    job.target = quantity;
+    window.clearTimeout(job.timer);
+    job.timer = window.setTimeout(function () {
+      self.sendCartQuantity(key);
+    }, CART_CHANGE_DELAY_MS);
+  };
+
+  /**
+   * Tells the cart the quantity waiting for a line, then shows the cart's
+   * answer. When Shopify refuses because it does not have that many, the
+   * most it does have is found by asking for one fewer until it agrees, and
+   * remembered, so + stops there without asking again.
+   */
+  Widget.prototype.sendCartQuantity = function (key) {
+    var self = this;
+    var job = this.cartQueue[key];
+    // One at a time for a line: the request on its way looks again when it is back.
+    if (!job || job.sending) return Promise.resolve();
+    var sent = job.target;
+    job.sending = true;
+    return this.changeCartLine(key, sent).then(function (result) {
+      job.sending = false;
+      if (self.cartQueue[key] !== job) return undefined;
+      // Pressed again meanwhile: that quantity is the one that counts.
+      if (job.target !== sent) return self.sendCartQuantity(key);
+
+      if (result.cart) {
+        delete self.cartQueue[key];
+        // One more than this was refused a moment ago: this is all there is.
+        if (job.refused === sent + 1) self.cartLimits[key] = sent;
+        return self.showOrderSummary(undefined, result.cart);
+      }
+
+      // Not set. See what the cart holds, to tell too many from anything else.
+      return self.fetchCart().then(function (cart) {
+        if (self.cartQueue[key] !== job) return undefined;
+        var line = (cart ? cart.items : []).filter(function (item) {
+          return item.key === key;
+        })[0];
+        var held = line ? Number(line.quantity) : 0;
+        var tooMany = result.refused && held > 0 && sent > held;
+        if (tooMany && sent - 1 > held && job.target === sent) {
+          // Somewhere between what the cart holds and what was asked for.
+          job.refused = sent;
+          job.target = sent - 1;
+          return self.sendCartQuantity(key);
+        }
+        delete self.cartQueue[key];
+        if (tooMany) self.cartLimits[key] = held;
+        return self.showOrderSummary(undefined, cart || undefined).then(function () {
+          if (tooMany) return;
           self.pushEntry({
             role: "notice",
             tone: "error",
             text: "That quantity couldn't be set. Your order is as shown above.",
           });
-        }
+        });
       });
     });
   };
@@ -1985,8 +2087,8 @@
       // One after another: each change gives the remaining lines new positions.
       return keys.reduce(function (chain, key) {
         return chain.then(function (removed) {
-          return self.changeCartLine(key).then(function (ok) {
-            return removed || ok;
+          return self.changeCartLine(key).then(function (result) {
+            return removed || Boolean(result.cart);
           });
         });
       }, Promise.resolve(false));
