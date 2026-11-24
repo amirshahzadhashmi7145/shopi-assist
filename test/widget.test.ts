@@ -560,6 +560,60 @@ describe("chat widget", () => {
     expect(addButton.textContent).toBe("Added");
   });
 
+  it("shows the answers to the assistant's question as buttons, with Other for typing", async () => {
+    const choices = {
+      type: "choices",
+      options: ["Changed my mind", "Damaged or defective", " damaged or defective ", "<b>Too big</b>", ""],
+      other: true,
+    };
+    fetchMock.mockImplementation(() => reply("What is the reason for the return?", { actions: [choices] }));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("i want to return order 1012");
+    await flush();
+
+    const buttons = () => widget.all(".sa-choices button");
+    // Each answer once, as text; then the way out for anything else.
+    expect(buttons().map((button) => button.textContent)).toEqual([
+      "Changed my mind",
+      "Damaged or defective",
+      "<b>Too big</b>",
+      "Other…",
+    ]);
+    expect(widget.root.querySelector(".sa-choices b")).toBeNull();
+
+    // Pressing an answer sends it as the shopper's message and clears the buttons.
+    fetchMock.mockImplementation(() => reply("Thanks.", { actions: [choices] }));
+    buttons()[1].click();
+    expect(buttons()).toHaveLength(0);
+    await flush();
+    expect(lastBody(fetchMock).message).toBe("Damaged or defective");
+    expect(widget.bubbles().slice(-2)).toEqual(["Damaged or defective", "Thanks."]);
+
+    // Other hands over the text box instead of sending anything.
+    const sent = fetchMock.mock.calls.length;
+    buttons().at(-1)!.click();
+    expect(buttons()).toHaveLength(0);
+    expect(fetchMock.mock.calls).toHaveLength(sent);
+    expect(widget.root.activeElement).toBe(widget.input);
+    expect(widget.input.placeholder).toBe("Type your answer…");
+    fetchMock.mockImplementation(() => reply("Noted.", { actions: [choices] }));
+    widget.send("the strap snapped");
+    expect(widget.input.placeholder).toBe("Ask a question…");
+    await flush();
+
+    // Typing an answer instead of pressing one clears the buttons too, and
+    // fewer than two answers are not worth buttons.
+    expect(buttons()).toHaveLength(4);
+    fetchMock.mockImplementation(() =>
+      reply("Okay.", { actions: [{ type: "choices", options: ["Only one"] }] }),
+    );
+    widget.send("something else");
+    expect(buttons()).toHaveLength(0);
+    await flush();
+    expect(widget.root.querySelector(".sa-choices")).toBeNull();
+  });
+
   it("runs an add_to_cart action from the assistant and confirms it", async () => {
     fetchMock.mockImplementation((url: string) =>
       url === "/cart/add.js"

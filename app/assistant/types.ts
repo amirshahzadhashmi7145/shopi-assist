@@ -126,6 +126,12 @@ export type ClientAction =
       /** For "address": the country the new address must be in. */
       countryCode?: string;
     }
+  /**
+   * Show the answers to the assistant's question as buttons under its reply.
+   * Pressing one sends it as the shopper's next message; with `other`, a last
+   * button lets them type an answer of their own instead.
+   */
+  | { type: "choices"; options: string[]; other?: boolean }
   /** Take every line with this variant out of the cart. */
   | { type: "remove_from_cart"; variantId: string; title?: string }
   /** Empty the cart. */

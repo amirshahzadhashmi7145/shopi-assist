@@ -30,6 +30,7 @@ import {
   rememberOrder,
 } from "./store.server";
 import { allTools } from "./tools";
+import { asksWhichOrder, asksYesOrNo, liftChoices } from "./choices";
 import { toolsFor, type ToolContext, type ToolDefinition } from "./tools/registry";
 import type {
   Audience,
@@ -454,15 +455,40 @@ export async function handleChatTurn(
 
   startRetentionSweeper(deps.db);
 
+  // A question whose answers the model wrote out as a list reaches the
+  // shopper as that question with buttons. The saved transcript keeps the
+  // list, so the model still knows what it offered. Not when products are
+  // shown (their cards are the things to pick) or buttons were offered already.
+  const mayOffer =
+    input.audience === "shopper" &&
+    turn.cards.length === 0 &&
+    !turn.actions.some((action) => action.type === "choices");
+  const lifted = mayOffer ? liftChoices(turn.reply) : null;
+  // Two questions with answers the server already knows: which of the
+  // shopper's own orders (their numbers), and a plain yes or no. Not while a
+  // card with its own button is on its way, which is the answer to give.
+  const quick =
+    !mayOffer || lifted || turn.actions.length > 0
+      ? null
+      : asksWhichOrder(turn.reply) && orders.length > 1
+        ? orders.slice(0, 5).map((order) => order.name)
+        : asksYesOrNo(turn.reply)
+          ? ["Yes", "No"]
+          : null;
+
   return {
     conversationId: conversation.id,
-    reply: turn.reply,
+    reply: lifted ? lifted.text : turn.reply,
     // With add to cart switched off, cards link to the product but offer
     // nothing to add or pick.
     cards: settings.allowAddToCart
       ? turn.cards
       : turn.cards.map((card) => ({ ...card, variantId: null, variants: undefined })),
-    actions: turn.actions,
+    actions: lifted
+      ? [...turn.actions, { type: "choices", options: lifted.choices, other: true }]
+      : quick
+        ? [{ type: "choices", options: quick, other: true }]
+        : turn.actions,
   };
 }
 

@@ -35,6 +35,9 @@ function describeAction(action: ClientAction): string {
   if (action.type === "checkout") {
     return "On your storefront, the widget shows a summary of the shopper's cart with a Go to checkout button.";
   }
+  if (action.type === "choices") {
+    return `On your storefront, the widget shows these answers as buttons: ${action.options.join(", ")}${action.other ? ", and Other to type their own" : ""}.`;
+  }
   return `On your storefront, the widget adds this to the shopper's cart: ${action.quantity} × ${action.title ?? "the item"}.`;
 }
 

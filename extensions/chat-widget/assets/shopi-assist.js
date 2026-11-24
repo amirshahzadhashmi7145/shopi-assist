@@ -1433,6 +1433,9 @@
 
     this.lastFailedMessage = null;
     this.removeRetry();
+    // Answered, by a button or in their own words: the buttons have done their job.
+    this.dropChoices();
+    this.input.placeholder = "Ask a question…";
     this.state.messages.push({ role: "user", text: text });
     this.saveState();
     this.appendBubble("user", text);
@@ -1548,6 +1551,59 @@
    * Runs the assistant's actions one after another, so the order summary
    * reads the cart only after every item before it has been added.
    */
+  /** Takes the answer buttons off the screen. They are never saved. */
+  Widget.prototype.dropChoices = function () {
+    var shown = this.messagesEl.querySelectorAll(".sa-choices");
+    for (var i = 0; i < shown.length; i += 1) shown[i].parentNode.removeChild(shown[i]);
+  };
+
+  /**
+   * The answers to the assistant's question as buttons under its reply.
+   * Pressing one sends it as the shopper's message; "Other" hands them the
+   * text box instead. They go away as soon as the shopper answers either way.
+   */
+  Widget.prototype.showChoices = function (action) {
+    var self = this;
+    var seen = {};
+    var options = (Array.isArray(action.options) ? action.options : [])
+      .filter(function (option) {
+        var text = typeof option === "string" ? option.trim() : "";
+        if (!text || seen[text.toLowerCase()]) return false;
+        seen[text.toLowerCase()] = true;
+        return true;
+      })
+      .slice(0, 8);
+    this.dropChoices();
+    if (options.length < 2) return;
+
+    var group = el("div", "sa-choices");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Answers to choose from");
+    options.forEach(function (option) {
+      var text = option.trim().slice(0, 60);
+      var button = el("button", "sa-chip sa-choice", text);
+      button.type = "button";
+      button.addEventListener("click", function () {
+        if (self.pending) return;
+        self.send(text);
+      });
+      group.appendChild(button);
+    });
+    if (action.other === true) {
+      var other = el("button", "sa-chip sa-choice sa-choice-other", "Other…");
+      other.type = "button";
+      other.setAttribute("aria-label", "Other: type your own answer");
+      other.addEventListener("click", function () {
+        self.dropChoices();
+        self.input.placeholder = "Type your answer…";
+        self.input.focus();
+      });
+      group.appendChild(other);
+    }
+    this.messagesEl.appendChild(group);
+    this.scrollToEnd();
+  };
+
   Widget.prototype.runActions = function (actions) {
     var self = this;
     return actions.reduce(function (chain, action) {
@@ -1601,6 +1657,11 @@
 
     if (action.type === "order_action") {
       this.showOrderAction(action);
+      return Promise.resolve();
+    }
+
+    if (action.type === "choices") {
+      this.showChoices(action);
       return Promise.resolve();
     }
 

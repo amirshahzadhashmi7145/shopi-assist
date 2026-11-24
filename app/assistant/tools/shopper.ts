@@ -1123,6 +1123,35 @@ const clearCart = defineTool({
   },
 });
 
+const offerChoices = defineTool({
+  name: "offer_choices",
+  description:
+    "Show the possible answers to the question you are about to ask as buttons under your reply, so the shopper can tap one instead of typing. Use it whenever you ask the shopper to pick from a short fixed list: which of their orders, a reason, a size, yes or no. Then ask the question in one short sentence and do not list the options in your reply. One question at a time.",
+  audiences: ["shopper"],
+  schema: z.object({
+    options: z
+      .array(z.string().trim().min(1).max(60))
+      .min(2)
+      .max(8)
+      .describe("The answers to choose from, each a few words, as the shopper would say them."),
+    allowOther: z
+      .boolean()
+      .default(false)
+      .describe("True adds an 'Other' button that lets the shopper type their own answer."),
+  }),
+  async run({ options, allowOther }) {
+    // The same answer twice is one button.
+    const unique = [...new Map(options.map((option) => [option.toLowerCase(), option])).values()];
+    return {
+      output: {
+        status: "buttons_shown",
+        note: "The options are shown as buttons under your reply. Ask the question in one short sentence without listing them. The shopper's next message is the option they pressed, or their own words.",
+      },
+      actions: [{ type: "choices" as const, options: unique, ...(allowOther ? { other: true } : {}) }],
+    };
+  },
+});
+
 const startCheckout = defineTool({
   name: "start_checkout",
   description:
@@ -1613,6 +1642,7 @@ const requestReturn = defineTool({
 });
 
 export const shopperTools: ToolDefinition[] = [
+  offerChoices,
   searchProducts,
   getBestSellers,
   getNewestProducts,

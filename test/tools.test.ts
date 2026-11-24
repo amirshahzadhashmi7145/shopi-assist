@@ -239,6 +239,22 @@ describe("shopper tools", () => {
     expect(none.json.note).toMatch(/None of these products mentions "white"/);
   });
 
+  it("offer_choices hands the widget the answers to show as buttons", async () => {
+    const result = await run(
+      "offer_choices",
+      { options: ["#1012", "#1008", "#1008 "], allowOther: true },
+      toolContext({}),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.actions).toEqual([{ type: "choices", options: ["#1012", "#1008"], other: true }]);
+    expect(result.json.note).toMatch(/do not|without listing/);
+
+    const plain = await run("offer_choices", { options: ["Yes", "No"] }, toolContext({}));
+    expect(plain.actions).toEqual([{ type: "choices", options: ["Yes", "No"] }]);
+    // One answer is not a choice.
+    expect((await run("offer_choices", { options: ["Yes"] }, toolContext({}))).ok).toBe(false);
+  });
+
   it("returns only products whose own data mentions what was asked for", async () => {
     const board = (id: number, title: string, altText: string, extra: Record<string, unknown> = {}) =>
       storefrontProduct({

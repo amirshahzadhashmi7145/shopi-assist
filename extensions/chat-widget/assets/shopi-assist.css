@@ -1038,6 +1038,24 @@ button.sa-order-online {
   border-color: var(--sa-ink);
 }
 
+/* Answers to the assistant's question, as buttons under its reply. */
+.sa-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sa-choice {
+  border-color: var(--sa-accent);
+  font-weight: 600;
+}
+
+.sa-choice-other {
+  border-style: dashed;
+  border-color: var(--sa-ink-soft);
+  font-weight: 400;
+}
+
 /* Composer ---------------------------------------------------------------- */
 
 .sa-form {
