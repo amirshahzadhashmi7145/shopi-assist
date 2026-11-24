@@ -524,7 +524,9 @@ describe("system prompts", () => {
     );
     expect(guest).not.toMatch(/signed in/);
     // The tool decides when proof is needed, for guests too.
-    expect(guest).toMatch(/The tool tells you when one is still needed, and only then do you ask for it/);
+    expect(guest).toMatch(/whether an email or phone number is still needed \(only then do you ask for one\)/);
+    // Nothing about a return is said from memory or from the order's status.
+    expect(guest).toMatch(/never name an order's items, from the order's status or from memory/);
     expect(guest).not.toMatch(/offer to cancel/);
   });
 

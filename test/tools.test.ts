@@ -1423,7 +1423,7 @@ describe("request_return", () => {
     expect(wrong.json.status).toBe("requested");
     expect(wrong.json.aboutProof).toMatch(/is not the one on this order/);
     expect(wrong.json.aboutProof).toMatch(/on the account they are signed in to/);
-    expect(wrong.json.aboutProof).toMatch(/do not say the email was accepted or verified/);
+    expect(wrong.json.aboutProof).toMatch(/do not say it was accepted or verified/);
     expect(JSON.stringify(wrong.json)).not.toContain("buyer@example.com");
 
     // For an order this chat does not know, a wrong email still gets nowhere.
@@ -1447,18 +1447,51 @@ describe("request_return", () => {
     expect(admin.calls).toHaveLength(1);
   });
 
-  it("allows one request per order per day", async () => {
+  it("allows a few requests per order per day, and then says nothing more was sent", async () => {
     const rateLimiter = new RateLimiter();
     const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
-    const first = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
-    const again = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+    const send = async () => {
+      const admin = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+      return { result: await run("request_return", proof, returnsOn(admin, rateLimiter)), admin };
+    };
 
-    expect((await run("request_return", proof, returnsOn(first, rateLimiter))).json.status).toBe("requested");
-    const repeat = await run("request_return", proof, returnsOn(again, rateLimiter));
+    // Other items of the same order, or one the store declined, can be asked for the same day.
+    for (let request = 0; request < 3; request += 1) {
+      expect((await send()).result.json.status).toBe("requested");
+    }
+    const fourth = await send();
+    expect(fourth.result.json.error).toMatch(/Several return requests were already sent for this order today/);
+    expect(fourth.result.json.error).toMatch(/Nothing was sent now/);
+    // Order, items and reasons were read; no further request was sent.
+    expect(fourth.admin.calls).toHaveLength(3);
+  });
 
-    expect(repeat.json.error).toMatch(/already sent for this order today/);
-    // Order, items and reasons were read; no second request was sent.
-    expect(again.calls).toHaveLength(3);
+  it("checks first, without a reason, and names only what can be returned", async () => {
+    const items = returnable(
+      ["gid://shopify/FulfillmentLineItem/1", "Ski Wax", 1],
+      ["gid://shopify/FulfillmentLineItem/2", "Used Up", 0],
+    );
+    const admin = fakeGraphql({ orders: { nodes: [order] } }, items);
+    const checked = await run(
+      "request_return",
+      { orderNumber: "1001", email: "buyer@example.com" },
+      returnsOn(admin),
+    );
+    expect(checked.json).toMatchObject({
+      status: "need_reason",
+      order: "#1001",
+      returnableItems: [{ title: "Ski Wax", quantity: 1 }],
+    });
+    expect(checked.json.note).toMatch(/No request was sent/);
+    // The order and its items were read, and nothing was written.
+    expect(admin.calls).toHaveLength(2);
+
+    // Checking is not a way round proof: a stranger learns nothing about the order.
+    const stranger = fakeGraphql({ orders: { nodes: [order] } }, items);
+    const refused = await run("request_return", { orderNumber: "1001" }, returnsOn(stranger));
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused.json)).not.toContain("Ski Wax");
+    expect(stranger.calls).toHaveLength(0);
   });
 
   it("lets the shopper try again after Shopify turned a request down", async () => {
@@ -1558,26 +1591,32 @@ describe("request_return", () => {
       returnsOn(fakeGraphql({ orders: { nodes: [order] } }, returnable())),
     );
     // Not shipped: say that, and that it can be requested once it has arrived.
-    expect(nothing.json.error).toMatch(/has not shipped yet/);
+    expect(nothing.json.error).toMatch(/Order #1001 cannot be returned right now because it has not shipped yet/);
     expect(nothing.json.error).toMatch(/once it has arrived/);
     expect(nothing.json.error).not.toMatch(/cancel/);
 
-    const shipped = { ...order, fulfillments: [{ status: "SUCCESS", estimatedDeliveryAt: null, trackingInfo: [] }] };
-    const open = await run(
-      "request_return",
-      proof,
-      returnsOn(fakeGraphql({ orders: { nodes: [shipped] } }, returnable())),
-    );
-    expect(open.json.error).toMatch(/Nothing on this order can be returned right now/);
+    // The reason is read from the order as it is now, never guessed.
+    const state = (overrides: Record<string, unknown>) => ({
+      order: { name: "#1001", cancelledAt: null, returnStatus: "NO_RETURN", fulfillments: [{ id: "f" }], ...overrides },
+      returnableFulfillments: { nodes: [] },
+    });
+    const because = async (overrides: Record<string, unknown>) =>
+      (
+        await run(
+          "request_return",
+          proof,
+          returnsOn(fakeGraphql({ orders: { nodes: [order] } }, returnable(), state(overrides))),
+        )
+      ).json.error as string;
 
-    const cancelled = await run(
-      "request_return",
-      proof,
-      returnsOn(
-        fakeGraphql({ orders: { nodes: [{ ...order, cancelledAt: "2026-11-01T00:00:00Z" }] } }, returnable()),
-      ),
-    );
-    expect(cancelled.json.error).toMatch(/was cancelled/);
+    const waiting = await because({ returnStatus: "RETURN_REQUESTED" });
+    expect(waiting).toMatch(/because a return request for it is already waiting for the store's answer/);
+    expect(waiting).toMatch(/give no other reason/);
+    expect(waiting).not.toMatch(/shipped|cancel/);
+    expect(await because({ returnStatus: "IN_PROGRESS" })).toMatch(/a return for it is already in progress/);
+    expect(await because({ returnStatus: "RETURNED" })).toMatch(/it has already been returned/);
+    expect(await because({})).toMatch(/because nothing on it can be returned\. .*Suggest contacting the store/);
+    expect(await because({ cancelledAt: "2026-11-01T00:00:00Z" })).toMatch(/because it was cancelled/);
 
     const rejected = await run(
       "request_return",
@@ -1710,6 +1749,20 @@ describe("samePhone", () => {
     expect(samePhone("03198754964", "+92 319 8754964")).toBe(true);
     expect(samePhone("+1 (202) 555-0143", "2025550143")).toBe(true);
     expect(samePhone("+12025550143", "+12025550143")).toBe(true);
+  });
+
+  it("accepts a country code in front, and no other digits", () => {
+    // The order holds the local number; the shopper adds a real country code.
+    expect(samePhone("0319 8754964", "+92 319 875 4964")).toBe(true);
+    expect(samePhone("3198754964", "+1 3198754964")).toBe(true);
+    // "10" is not a country code, so this is another number...
+    expect(samePhone("0319 8754964", "+10 319 875 4964")).toBe(false);
+    // ...and so is one with a digit added, dropped or changed.
+    expect(samePhone("0319 8754964", "0319 87549644")).toBe(false);
+    expect(samePhone("0319 8754964", "+92 319 875 496")).toBe(false);
+    expect(samePhone("+92 319 875 4964", "+93 319 875 4964")).toBe(false);
+    // A country code is not followed by the local zero.
+    expect(samePhone("0319 8754964", "+92 0319 8754964")).toBe(false);
   });
 
   it("does not match different lines, short tails or nothing", () => {

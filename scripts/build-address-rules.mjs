@@ -63,6 +63,9 @@ function wording(code) {
 
 const formats = [];
 const countries = {};
+// Every country calling code ("1", "44", "92"), for telling a number written
+// with its country code from one written without.
+const callingCodes = new Set();
 let droppedPatterns = 0;
 
 for (const file of readdirSync(REGIONS).sort()) {
@@ -72,6 +75,9 @@ for (const file of readdirSync(REGIONS).sort()) {
   const region = readYaml(join(REGIONS, file));
   const edit = region?.format?.edit;
   if (typeof edit !== "string") continue;
+  if (/^[1-9]\d{0,2}$/.test(String(region.phone_number_prefix ?? ""))) {
+    callingCodes.add(String(region.phone_number_prefix));
+  }
 
   let format = formats.indexOf(edit);
   if (format < 0) format = formats.push(edit) - 1;
@@ -111,6 +117,7 @@ const rules = {
   source: `https://github.com/Shopify/worldwide data/regions at ${commit}`,
   formats,
   words: wording("_default"),
+  callingCodes: [...callingCodes].sort((a, b) => Number(a) - Number(b)),
   countries,
 };
 writeFileSync(OUTPUT, `${JSON.stringify(rules)}\n`);

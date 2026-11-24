@@ -12,6 +12,7 @@
 import { z } from "zod";
 
 import { clientKey } from "../rate-limit";
+import { CALLING_CODES } from "../address-rules";
 import type { CardVariant, GraphqlFn, KnownOrder, Money, OrderItem, ProductCard } from "../types";
 import {
   defineTool,
@@ -1312,6 +1313,7 @@ const ORDER_LOOKUPS_PER_SHOP = 60; // per hour, all visitors together
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+const RETURN_REQUESTS_PER_ORDER_PER_DAY = 3;
 const ORDER_LOOKUP_THROTTLED =
   "Too many order lookups. Ask the shopper to try again later or contact the store.";
 /** How much looser the lookup limits are on a development store. */
@@ -1361,14 +1363,17 @@ function phoneDigits(value: string | null | undefined): string {
 /**
  * Whether two phone numbers are the same line. People write the same number
  * with or without the country code ("+92 319 875 4964" and "0319 8754964"),
- * so one may be the tail of the other, as long as that tail is a full local
- * number and not just a few digits.
+ * so one may be the other with a country calling code in front. Nothing else
+ * may differ: an extra or missing digit anywhere, or digits in front that
+ * are not a calling code, is a different number.
  */
 export function samePhone(a: string | null | undefined, b: string | null | undefined): boolean {
   const [shorter, longer] = [phoneDigits(a), phoneDigits(b)].sort(
     (left, right) => left.length - right.length,
   );
-  return shorter.length >= 7 && longer.endsWith(shorter);
+  if (shorter.length < 7) return false;
+  if (shorter === longer) return true;
+  return longer.endsWith(shorter) && CALLING_CODES.has(longer.slice(0, longer.length - shorter.length));
 }
 
 /** Short non-reversible key, so email addresses are not held in the limiter. */
@@ -1469,18 +1474,34 @@ export async function findVerifiedOrder(
     // Matched on the id the server recorded, not on the name alone.
     const order = data.orders.nodes.find((candidate) => candidate.id === known.id);
     if (!order) throw new ToolError(ORDER_NOT_FOUND);
-    // The order is theirs without any proof. An email given anyway is still
-    // looked at, so a wrong one is never passed off as having been checked.
-    if (wantedEmail && (order.email ?? "").toLowerCase() !== wantedEmail) {
+    // The order is theirs without any proof. An email or phone number given
+    // anyway is still looked at, so a wrong one is never passed off as
+    // having been checked.
+    let mismatch = wantedEmail ? (order.email ?? "").toLowerCase() !== wantedEmail : false;
+    if (!wantedEmail && wantedPhone) {
+      // The phone numbers are a separate read; when it is not allowed, nothing is claimed.
+      const phones = await context.admin!<{
+        orders: {
+          nodes: Array<{ id: string; phone?: string | null; shippingAddress?: { phone: string | null } | null }>;
+        };
+      }>(ORDER_STATUS_WITH_PHONE_QUERY, { query: `name:${wantedName}` }).catch(() => null);
+      const withPhones = phones?.orders.nodes.find((candidate) => candidate.id === known.id);
+      mismatch = Boolean(
+        withPhones &&
+          !samePhone(withPhones.phone, wantedPhone) &&
+          !samePhone(withPhones.shippingAddress?.phone, wantedPhone),
+      );
+    }
+    if (mismatch) {
       return {
         ...order,
-        proofNote: `The email address the shopper gave is not the one on this order. It was not needed and was not used: the order is known to be theirs because it is ${
+        proofNote: `The ${wantedEmail ? "email address" : "phone number"} the shopper gave is not the one on this order. It was not needed and was not used: the order is known to be theirs because it is ${
           known.source === "customer"
             ? "on the account they are signed in to"
             : known.source === "placed"
               ? "one they placed in this chat"
               : "one they already proved in this chat"
-        }. Tell them that plainly, and do not say the email was accepted or verified.`,
+        }. Tell them that plainly, and do not say it was accepted or verified.`,
       };
     }
     return order;
@@ -1600,7 +1621,7 @@ const getOrderStatus = defineTool({
             estimatedDelivery: fulfillment.estimatedDeliveryAt?.slice(0, 10),
             carrier: fulfillment.trackingInfo[0]?.company ?? undefined,
           })),
-          note: "Basic status only. The tracking number and link are shared when the shopper also gives the email address or the phone number used on the order: offer that if they want to track the parcel.",
+          note: "Basic status only, and nothing else is known about this order: not what is in it, and not whether anything can be returned. Never name its items or say it can be returned from this. The tracking number and link are shared when the shopper also gives the email address or the phone number used on the order: offer that if they want to track the parcel.",
         },
       };
     }
@@ -1638,16 +1659,18 @@ interface ReturnableItem {
 const requestReturn = defineTool({
   name: "request_return",
   description:
-    "Ask the store to accept a return for the shopper's own order. Requires the order number, proof that it is theirs (the email address or the phone number used on the order; neither is needed for an order placed or already proved earlier in this chat, or one on the account of a shopper who is signed in), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
+    "Check or ask for a return of the shopper's own order. Call it as soon as you have the order number, with whatever the shopper has given: it answers from the order as it is right now. Without a reason it only checks, and sends nothing: it says whether an email address or phone number is still needed to prove the order is theirs (neither is needed for an order placed or already proved earlier in this chat, or one on the account of a shopper who is signed in), which items on the order can be returned, or exactly why nothing can. With a reason and the items it sends the store a return REQUEST, which the store approves or declines; it does not approve the return or issue a refund. One request can hold one item, several ('items') or everything returnable ('allItems'): send them together, never one call per item.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,
     reason: z
       .string()
       .trim()
-      .min(3)
       .max(300)
-      .describe("Why the shopper wants to return it, in their words."),
+      .optional()
+      .describe(
+        "Why the shopper wants to return it, in their words. Leave it out to check first: the tool then says whether the order is theirs and what on it can be returned, and sends nothing.",
+      ),
     reasonKind: z
       .enum(Object.keys(RETURN_REASON_HANDLES) as [ReturnReasonKind, ...ReturnReasonKind[]])
       .default("other")
@@ -1705,22 +1728,42 @@ const requestReturn = defineTool({
       }));
 
     if (items.length === 0) {
-      // Say which it is, so the shopper is not sent to the store for nothing.
-      if (order.cancelledAt) {
-        throw new ToolError("This order was cancelled, so there is nothing to return.");
-      }
-      if (order.fulfillments.length === 0) {
-        throw new ToolError(
-          `This order has not shipped yet, so there is nothing to return yet. Say that plainly.${
-            context.settings.allowOrderCancel
+      // Say which it is, from the order as it is now, so the shopper is not
+      // sent to the store for nothing and the model has nothing to guess.
+      const [check] = await checkReturnable(context.admin!, [
+        { id: order.id, name: order.name, source: "verified" },
+      ]);
+      const because =
+        check?.reason ??
+        (order.cancelledAt
+          ? "it was cancelled"
+          : order.fulfillments.length === 0
+            ? "it has not shipped yet"
+            : "nothing on it can be returned");
+      throw new ToolError(
+        `Order ${order.name} cannot be returned right now because ${because}. Tell the shopper exactly that and give no other reason.${
+          because === "it has not shipped yet"
+            ? context.settings.allowOrderCancel
               ? " It can still be cancelled: offer to cancel it instead, and do that with your cancel tool if they agree."
               : " A return can be requested once it has arrived."
-          }`,
-        );
-      }
-      throw new ToolError(
-        "Nothing on this order can be returned right now: a return may already be open for it, or its items are not returnable. Suggest contacting the store.",
+            : because.startsWith("a return")
+              ? " The store will be in touch by email about that return."
+              : " Suggest contacting the store."
+        }`,
       );
+    }
+
+    // Asked only what can be returned: say so, and send nothing yet.
+    if (!reason || reason.length < 3) {
+      return {
+        output: {
+          status: "need_reason",
+          order: order.name,
+          aboutProof: order.proofNote,
+          note: "No request was sent. The order is the shopper's and these are the only items on it that can be returned right now: name no others. Ask which of them they want to return (when there are several) and why, then call again once with the reason and the items.",
+          returnableItems: items.map((item) => ({ title: item.title, quantity: item.quantity })),
+        },
+      };
     }
 
     // What goes into the request: everything, the items named, or the one item.
@@ -1762,14 +1805,20 @@ const requestReturn = defineTool({
       definitions.find((candidate) => candidate.handle === handle) ??
       definitions.find((candidate) => candidate.handle === RETURN_REASON_HANDLES.other);
 
-    // One request per order per day, so a repeated message cannot pile up
-    // duplicate requests in the merchant's admin. A request that Shopify
-    // turns down does not count.
+    // Shopify itself stops the same item being requested twice: an item with
+    // a request waiting is no longer returnable. This only keeps one order
+    // from being used to pile requests into the merchant's admin. A request
+    // that Shopify turns down does not count.
     const onceKey = `return-requested:${context.shop}:${order.id}`;
-    const once = context.rateLimiter.hit(onceKey, 1, ONE_DAY_MS, context.now().getTime());
+    const once = context.rateLimiter.hit(
+      onceKey,
+      RETURN_REQUESTS_PER_ORDER_PER_DAY,
+      ONE_DAY_MS,
+      context.now().getTime(),
+    );
     if (!once.allowed) {
       throw new ToolError(
-        "A return request was already sent for this order today, for the items asked for then, and another cannot be sent from the chat today. Nothing was sent now. If more items need returning, the shopper should contact the store. Do not say a return is in progress for items that were not in that request.",
+        "Several return requests were already sent for this order today, and another cannot be sent from the chat today. Nothing was sent now. If more items need returning, the shopper should contact the store. Do not say a return is in progress for items that were not in those requests.",
       );
     }
 

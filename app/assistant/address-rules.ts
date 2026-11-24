@@ -68,6 +68,7 @@ interface CountryRules {
 }
 
 const DATA = rules as unknown as {
+  callingCodes: string[];
   formats: string[];
   words: Partial<Record<AddressField, Words>>;
   countries: Record<string, CountryRules>;
@@ -82,6 +83,9 @@ const UNKNOWN_COUNTRY: CountryRules = {
   zip: { required: false },
   provinceRequired: false,
 };
+
+/** Every country calling code, without the plus: "1", "44", "92". */
+export const CALLING_CODES: ReadonlySet<string> = new Set(DATA.callingCodes);
 
 const isAddressField = (name: string): name is AddressField =>
   (ADDRESS_FIELDS as readonly string[]).includes(name);
