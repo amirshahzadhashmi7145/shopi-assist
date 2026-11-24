@@ -1093,6 +1093,55 @@ button.sa-order-online {
   font-weight: 400;
 }
 
+/* Rating: a thumbs-up or thumbs-down for the chat ------------------------- */
+
+.sa-rating {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 2px 14px 6px;
+  color: var(--sa-ink-soft);
+  font-size: 12.5px;
+}
+
+.sa-rating-text {
+  margin-right: 2px;
+}
+
+.sa-rating-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--sa-line);
+  border-radius: 999px;
+  background: var(--sa-surface);
+  color: var(--sa-ink-soft);
+}
+
+.sa-rating-button:hover {
+  border-color: var(--sa-ink);
+  color: var(--sa-ink);
+}
+
+.sa-rating-down svg {
+  transform: rotate(180deg);
+}
+
+.sa-rating-on {
+  border-color: var(--sa-accent);
+  background: var(--sa-accent);
+  color: var(--sa-on-accent);
+}
+
+.sa-rating-on:hover {
+  border-color: var(--sa-accent);
+  color: var(--sa-on-accent);
+}
+
 /* Composer ---------------------------------------------------------------- */
 
 .sa-form {

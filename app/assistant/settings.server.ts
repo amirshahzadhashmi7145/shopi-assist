@@ -62,6 +62,7 @@ export const settingsSchema = z.object({
   allowAddressChange: z.boolean(),
   allowOrderEdit: z.boolean(),
   recogniseCustomers: z.boolean(),
+  chatRatings: z.boolean(),
   // The order form's fields.
   orderFirstName: choice(ORDER_FORM_CHOICES.orderFirstName),
   orderCompany: choice(ORDER_FORM_CHOICES.orderCompany),
@@ -101,6 +102,7 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   allowAddressChange: false,
   allowOrderEdit: false,
   recogniseCustomers: false,
+  chatRatings: true,
   orderFirstName: "optional",
   orderCompany: "hidden",
   orderAddress2: "optional",
@@ -151,6 +153,7 @@ export async function getSettings(
     allowAddressChange: row.allowAddressChange,
     allowOrderEdit: row.allowOrderEdit,
     recogniseCustomers: row.recogniseCustomers,
+    chatRatings: row.chatRatings ?? true,
     orderFirstName: pickOr(ORDER_FORM_CHOICES.orderFirstName, row.orderFirstName),
     orderCompany: pickOr(ORDER_FORM_CHOICES.orderCompany, row.orderCompany),
     orderAddress2: pickOr(ORDER_FORM_CHOICES.orderAddress2, row.orderAddress2),
@@ -204,6 +207,7 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "allowAddressChange",
   "allowOrderEdit",
   "recogniseCustomers",
+  "chatRatings",
 ];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
 

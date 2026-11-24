@@ -39,6 +39,12 @@
     close: { size: 20, stroke: 2, d: "M6 6l12 12M18 6L6 18" },
     reset: { size: 18, stroke: 2, d: "M4 5v5h5M4.6 14a8 8 0 1 0 1.6-7.5L4 10" },
     send: { size: 18, stroke: 2.2, d: "M12 19V5M6 11l6-6 6 6" },
+    // A raised thumb. Turned over by its button's class for the other answer.
+    thumb: {
+      size: 17,
+      stroke: 1.9,
+      d: "M7 10.5l3.6-6.9c1.4-.3 2.5.7 2.5 2.1v3.4h5.1c1.5 0 2.5 1.3 2.2 2.7l-1.3 6.6c-.2 1.2-1.2 2-2.4 2H7zM7 10.5H3.5v10H7",
+    },
   };
 
   function icon(name) {
@@ -340,7 +346,11 @@
       checkoutUrl: "/checkout",
       orderEndpoint:
         data.orderEndpoint || (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "order"),
+      ratingEndpoint:
+        data.ratingEndpoint || (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "rating"),
     };
+    // True when the merchant lets shoppers rate the chat.
+    this.ratings = false;
     // True when the merchant takes pay-on-delivery orders in the chat.
     this.chatOrders = false;
     // True when product cards may start an order with "Buy now".
@@ -375,12 +385,15 @@
       visitorId: /^[A-Za-z0-9_-]{8,64}$/.test(stored.visitorId || "") ? stored.visitorId : randomId(),
       conversationId: typeof stored.conversationId === "string" ? stored.conversationId : null,
       messages: Array.isArray(stored.messages) ? stored.messages : [],
+      // What the shopper said of this chat: "up", "down", or nothing yet.
+      rating: stored.rating === "up" || stored.rating === "down" ? stored.rating : null,
       updatedAt: Number(stored.updatedAt) || 0,
     };
     // A stale conversation is confusing; start fresh after a day of silence.
     if (state.updatedAt && Date.now() - state.updatedAt > IDLE_RESET_MS) {
       state.conversationId = null;
       state.messages = [];
+      state.rating = null;
     }
     return state;
   };
@@ -479,6 +492,31 @@
     var suggestions = el("div", "sa-suggestions");
     this.suggestionsEl = suggestions;
 
+    // Thumbs up or down for the chat as a whole, under the messages.
+    var rating = el("div", "sa-rating");
+    rating.hidden = true;
+    rating.setAttribute("role", "group");
+    rating.setAttribute("aria-label", "Rate this chat");
+    this.ratingEl = rating;
+    this.ratingTextEl = el("span", "sa-rating-text", "");
+    rating.appendChild(this.ratingTextEl);
+    this.ratingButtons = {};
+    [
+      ["up", "Good"],
+      ["down", "Not good"],
+    ].forEach(function (choice) {
+      var button = el("button", "sa-rating-button sa-rating-" + choice[0]);
+      button.type = "button";
+      button.setAttribute("aria-label", choice[1]);
+      button.title = choice[1];
+      button.appendChild(icon("thumb"));
+      button.addEventListener("click", function () {
+        self.rateChat(choice[0]);
+      });
+      rating.appendChild(button);
+      self.ratingButtons[choice[0]] = button;
+    });
+
     var form = el("form", "sa-form");
     form.noValidate = true;
     var input = el("textarea", "sa-input");
@@ -516,6 +554,7 @@
     panel.appendChild(header);
     panel.appendChild(messages);
     panel.appendChild(suggestions);
+    panel.appendChild(rating);
     panel.appendChild(form);
     panel.appendChild(footnote);
     panel.addEventListener("keydown", function (event) {
@@ -567,6 +606,8 @@
         return message.cards && message.cards.length;
       });
     }
+    this.ratings = remote.ratings === true;
+    this.renderRating();
     var chatOrders = remote.chatOrders === true;
     if (chatOrders !== this.chatOrders) {
       this.chatOrders = chatOrders;
@@ -675,6 +716,8 @@
     if (this.pending) return;
     this.state.conversationId = null;
     this.state.messages = [];
+    // A new chat has not been rated.
+    this.state.rating = null;
     this.lastFailedMessage = null;
     this.saveState();
     this.renderAll();
@@ -713,7 +756,82 @@
       self.renderMessage(message);
     });
     this.renderSuggestions();
+    this.renderRating();
     this.scrollToEnd();
+  };
+
+  /**
+   * The thumbs under the chat. Shown once the assistant has answered in a
+   * chat the app knows, where the merchant asks for ratings.
+   */
+  Widget.prototype.renderRating = function () {
+    var answered = this.state.messages.some(function (message) {
+      return message.role === "assistant";
+    });
+    var show = this.ratings && Boolean(this.state.conversationId) && answered;
+    this.ratingEl.hidden = !show;
+    if (!show) return;
+    var given = this.state.rating;
+    this.ratingTextEl.textContent = this.ratingFailed
+      ? "That rating couldn't be saved. Try again?"
+      : given
+        ? "Thanks for your feedback."
+        : "How is this chat going?";
+    var self = this;
+    ["up", "down"].forEach(function (value) {
+      var button = self.ratingButtons[value];
+      button.setAttribute("aria-pressed", given === value ? "true" : "false");
+      button.classList.toggle("sa-rating-on", given === value);
+    });
+  };
+
+  /**
+   * Gives the chat a thumbs-up or thumbs-down, or takes it back when the same
+   * thumb is pressed again. Shown at once and sent in the background.
+   */
+  Widget.prototype.rateChat = function (value) {
+    var self = this;
+    var conversationId = this.state.conversationId;
+    if (!conversationId) return Promise.resolve();
+    var before = this.state.rating;
+    var rating = before === value ? null : value;
+    this.state.rating = rating;
+    this.ratingFailed = false;
+    this.saveState();
+    this.renderRating();
+
+    return window
+      .fetch(this.config.ratingEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          visitorId: this.state.visitorId,
+          conversationId: conversationId,
+          rating: rating,
+        }),
+      })
+      .then(function (response) {
+        return response.json().then(
+          function (body) {
+            return response.ok && body && body.ok === true;
+          },
+          function () {
+            return false;
+          },
+        );
+      })
+      .catch(function () {
+        return false;
+      })
+      .then(function (saved) {
+        // The shopper may have moved on, or pressed again, since.
+        if (saved || self.state.conversationId !== conversationId || self.state.rating !== rating) return;
+        self.state.rating = before;
+        self.ratingFailed = true;
+        self.saveState();
+        self.renderRating();
+      });
   };
 
   Widget.prototype.renderSuggestions = function () {
@@ -1556,11 +1674,16 @@
         }
 
         var body = result.body;
-        if (typeof body.conversationId === "string") self.state.conversationId = body.conversationId;
+        if (typeof body.conversationId === "string") {
+          // Another chat than the one that was rated: its rating starts empty.
+          if (body.conversationId !== self.state.conversationId) self.state.rating = null;
+          self.state.conversationId = body.conversationId;
+        }
         var cards = Array.isArray(body.cards) ? body.cards : [];
         var entry = { role: "assistant", text: body.reply, cards: cards };
         self.state.messages.push(entry);
         self.saveState();
+        self.renderRating();
         self.scrollToMessage(self.renderMessage(entry));
 
         // A failed action reports itself in the chat. It must never look like

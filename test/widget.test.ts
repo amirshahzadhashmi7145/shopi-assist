@@ -560,6 +560,81 @@ describe("chat widget", () => {
     expect(addButton.textContent).toBe("Added");
   });
 
+  it("lets the shopper give the chat a thumbs-up or thumbs-down", async () => {
+    configMock.mockImplementation(() => appConfig({ ratings: true }));
+    let saves = true;
+    const ratings: unknown[] = [];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url !== "/apps/shopi-assist/rating") return reply("Standard delivery takes 3 to 5 days.");
+      ratings.push(JSON.parse(init!.body as string));
+      return saves ? jsonResponse({ ok: true }) : jsonResponse({ ok: false, error: { code: "rate_limited" } });
+    });
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+
+    const bar = () => widget.$(".sa-rating");
+    const thumb = (which: "up" | "down") => widget.$<HTMLButtonElement>(`.sa-rating-${which}`);
+    const pressed = () => [thumb("up"), thumb("down")].map((button) => button.getAttribute("aria-pressed"));
+    // Nothing to rate before the assistant has answered.
+    expect(bar().hidden).toBe(true);
+
+    widget.send("how long is delivery?");
+    await flush();
+    expect(bar().hidden).toBe(false);
+    expect(widget.$(".sa-rating-text").textContent).toBe("How is this chat going?");
+    expect([thumb("up").getAttribute("aria-label"), thumb("down").getAttribute("aria-label")]).toEqual([
+      "Good",
+      "Not good",
+    ]);
+    expect(pressed()).toEqual(["false", "false"]);
+
+    // Shown at once, and sent for this chat and this visitor.
+    thumb("up").click();
+    expect(pressed()).toEqual(["true", "false"]);
+    expect(widget.$(".sa-rating-text").textContent).toBe("Thanks for your feedback.");
+    await flush();
+    expect(ratings).toEqual([
+      { visitorId: expect.stringMatching(/^[a-f0-9]{32}$/), conversationId: "conv12345678", rating: "up" },
+    ]);
+
+    // The other thumb changes it; the same thumb again takes it back.
+    thumb("down").click();
+    await flush();
+    expect(pressed()).toEqual(["false", "true"]);
+    thumb("down").click();
+    await flush();
+    expect(pressed()).toEqual(["false", "false"]);
+    expect(ratings.map((sent) => (sent as { rating: unknown }).rating)).toEqual(["up", "down", null]);
+    expect(widget.$(".sa-rating-text").textContent).toBe("How is this chat going?");
+
+    // Not saved: the thumb goes back to how it was, and says why.
+    thumb("up").click();
+    await flush();
+    saves = false;
+    thumb("down").click();
+    expect(pressed()).toEqual(["false", "true"]);
+    await flush();
+    expect(pressed()).toEqual(["true", "false"]);
+    expect(widget.$(".sa-rating-text").textContent).toBe("That rating couldn't be saved. Try again?");
+
+    // The rating is kept with the chat for the next page, and a new chat starts unrated.
+    expect(JSON.parse(Object.values({ ...window.localStorage }).join("")).rating).toBe("up");
+    widget.$<HTMLButtonElement>('[aria-label="Start a new chat"]').click();
+    expect(bar().hidden).toBe(true);
+    expect(JSON.parse(Object.values({ ...window.localStorage }).join("")).rating).toBeNull();
+  });
+
+  it("asks for no rating where the merchant has ratings off", async () => {
+    fetchMock.mockImplementation(() => reply("Hello!"));
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("hi");
+    await flush();
+    expect(widget.$(".sa-rating").hidden).toBe(true);
+  });
+
   it("shows the answers to the assistant's question as buttons, with Other for typing", async () => {
     const choices = {
       type: "choices",

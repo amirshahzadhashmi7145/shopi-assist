@@ -34,6 +34,7 @@ export const FIELD_GROUPS = {
     "allowAddressChange",
     "allowOrderEdit",
     "allowReturns",
+    "chatRatings",
   ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
   personality: ["assistantName", "greeting", "tone"],
@@ -115,6 +116,12 @@ export function AbilityFields({ settings, errors = {} }: FieldGroupProps) {
         label="Take return requests"
         details="The shopper gives their order number, checkout email and a reason. The request appears in your Shopify admin for you to approve or decline. Nothing is refunded automatically."
         {...checked(settings.allowReturns)}
+      />
+      <s-checkbox
+        name="chatRatings"
+        label="Let shoppers rate the chat"
+        details="A thumbs-up and a thumbs-down appear under the chat once the assistant has answered. Ratings show on the Conversations page, so you can see which chats went well and read the ones that did not."
+        {...checked(settings.chatRatings)}
       />
     </s-stack>
   );

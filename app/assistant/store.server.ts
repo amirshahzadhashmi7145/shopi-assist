@@ -39,6 +39,46 @@ export async function findConversation(
   });
 }
 
+/**
+ * Records, changes or takes back the shopper's rating of their own chat.
+ * Like `findConversation`, the id must belong to the same shop, audience and
+ * visitor: nobody rates a chat that is not theirs. False when there is none.
+ * The chat's own "last activity" time is left alone.
+ */
+export async function rateConversation(
+  db: PrismaClient,
+  key: ConversationKey,
+  conversationId: string,
+  rating: "up" | "down" | null,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const mine = await findConversation(db, key, conversationId);
+  if (!mine) return false;
+  const current = await db.conversation.findFirst({
+    where: { id: mine.id, shop: key.shop },
+    select: { updatedAt: true },
+  });
+  const changed = await db.conversation.updateMany({
+    where: { id: mine.id, shop: key.shop },
+    data: { rating, ratedAt: rating ? now : null, updatedAt: current?.updatedAt },
+  });
+  return changed.count > 0;
+}
+
+/** How shoppers rated the chats still on record for a shop. */
+export async function ratingCounts(
+  db: PrismaClient,
+  shop: string,
+): Promise<{ up: number; down: number }> {
+  const rows = await db.conversation.groupBy({
+    by: ["rating"],
+    where: { shop, audience: "shopper", isPreview: false, rating: { not: null } },
+    _count: { _all: true },
+  });
+  const count = (rating: string) => rows.find((row) => row.rating === rating)?._count._all ?? 0;
+  return { up: count("up"), down: count("down") };
+}
+
 export async function createConversation(
   db: PrismaClient,
   key: ConversationKey,
@@ -187,6 +227,7 @@ export async function listConversations(
       updatedAt: true,
       createdAt: true,
       customerId: true,
+      rating: true,
       _count: { select: { messages: true } },
       messages: {
         where: { role: "user" },
@@ -201,6 +242,7 @@ export async function listConversations(
     startedAt: row.createdAt,
     updatedAt: row.updatedAt,
     loggedIn: Boolean(row.customerId),
+    rating: row.rating === "up" || row.rating === "down" ? row.rating : null,
     messageCount: row._count.messages,
     firstMessage: row.messages[0]?.content ?? "",
   }));
@@ -217,6 +259,7 @@ export async function getConversationTranscript(
       id: true,
       audience: true,
       isPreview: true,
+      rating: true,
       createdAt: true,
       updatedAt: true,
       messages: {
