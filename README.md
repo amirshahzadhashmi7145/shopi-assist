@@ -125,6 +125,8 @@ cp .env.example .env        # add OPENAI_API_KEY, or set LLM_PROVIDER=mock
 npm run dev                 # logs in to Shopify, creates/links the app, starts a tunnel
 ```
 
+`npm run dev` opens the tunnel itself and keeps it alive (`scripts/dev.mjs`): it retries until Cloudflare has connected one, hands it to `shopify app dev`, and when the tunnel later stops answering (the laptop slept, the network changed) it opens a new one and restarts the dev server on it. Left to itself, the CLI's own tunnel can die while the dev server looks healthy, and the storefront chat then answers "something went wrong". `npm run dev:tunnel-check` tests whether a tunnel can be opened from your network; `npm run dev:plain` is `shopify app dev` on its own. None of this applies to a deployed app, which has a fixed address.
+
 `npm run dev` asks you to log in, name the app, and pick or create a dev store. It also asks for the dev store's **storefront password** (Shopify admin → Online Store → Preferences), which is not your account password. Then:
 
 1. Press `p` in the terminal to open the app and install it.
