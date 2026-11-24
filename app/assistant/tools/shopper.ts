@@ -133,6 +133,16 @@ const RETURN_REASON_HANDLES = {
 } as const;
 type ReturnReasonKind = keyof typeof RETURN_REASON_HANDLES;
 
+/** The reasons as a shopper is offered them; "other" is theirs to type. */
+export const RETURN_REASON_LABELS = [
+  "Changed my mind",
+  "Not as described",
+  "Wrong item",
+  "Damaged or defective",
+  "Too small",
+  "Too big",
+] as const;
+
 /** Admin API. Creates a return request for the merchant to approve or decline. */
 export const RETURN_REQUEST_MUTATION = `#graphql
   mutation ShopiAssistReturnRequest($input: ReturnRequestInput!) {

@@ -17,6 +17,8 @@
   var MAX_MESSAGE_LENGTH = 2000;
   var MAX_ORDER_ITEMS = 10;
   var MAX_ITEM_QUANTITY = 10;
+  // Up to this many answers to a question are shown as buttons; more become a list.
+  var MAX_CHOICE_BUTTONS = 4;
   var MAX_CARD_VARIANTS = 12;
   var MAX_SUMMARY_LINES = 12;
 
@@ -1579,6 +1581,52 @@
     var group = el("div", "sa-choices");
     group.setAttribute("role", "group");
     group.setAttribute("aria-label", "Answers to choose from");
+    var typeInstead = function () {
+      self.dropChoices();
+      self.input.placeholder = "Type your answer…";
+      self.input.focus();
+    };
+
+    // A handful of answers are buttons, one press each. More than that is a
+    // list to choose from and send, so the chat is not filled with buttons.
+    if (options.length > MAX_CHOICE_BUTTONS) {
+      group.classList.add("sa-choices-list");
+      var select = el("select", "sa-choice-select");
+      select.setAttribute("aria-label", "Choose an answer");
+      var prompt = el("option", null, "Choose an answer…");
+      prompt.value = "";
+      select.appendChild(prompt);
+      options.forEach(function (option, index) {
+        var entry = el("option", null, option.trim().slice(0, 60));
+        entry.value = String(index);
+        select.appendChild(entry);
+      });
+      if (action.other === true) {
+        var own = el("option", null, "Other (type your own)");
+        own.value = "other";
+        select.appendChild(own);
+      }
+      var sendChoice = el("button", "sa-card-button sa-card-button-primary sa-choice-send", "Send");
+      sendChoice.type = "button";
+      sendChoice.disabled = true;
+      select.addEventListener("change", function () {
+        // Their own answer needs the text box, not this list.
+        if (select.value === "other") return typeInstead();
+        sendChoice.disabled = select.value === "";
+        return undefined;
+      });
+      sendChoice.addEventListener("click", function () {
+        var picked = options[Number(select.value)];
+        if (self.pending || select.value === "" || !picked) return;
+        self.send(picked.trim().slice(0, 60));
+      });
+      group.appendChild(select);
+      group.appendChild(sendChoice);
+      this.messagesEl.appendChild(group);
+      this.scrollToEnd();
+      return;
+    }
+
     options.forEach(function (option) {
       var text = option.trim().slice(0, 60);
       var button = el("button", "sa-chip sa-choice", text);
@@ -1593,11 +1641,7 @@
       var other = el("button", "sa-chip sa-choice sa-choice-other", "Other…");
       other.type = "button";
       other.setAttribute("aria-label", "Other: type your own answer");
-      other.addEventListener("click", function () {
-        self.dropChoices();
-        self.input.placeholder = "Type your answer…";
-        self.input.focus();
-      });
+      other.addEventListener("click", typeInstead);
       group.appendChild(other);
     }
     this.messagesEl.appendChild(group);

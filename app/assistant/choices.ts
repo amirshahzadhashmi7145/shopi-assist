@@ -20,7 +20,7 @@ const MAX_CHOICE_LENGTH = 50;
 function plain(item: string): string {
   return item
     .replace(/\*\*|__|`/g, "")
-    .replace(/[\s.;,]+$/, "")
+    .replace(/[\s.;,?!]+$/, "")
     .trim();
 }
 
@@ -60,7 +60,9 @@ function listBlocks(lines: string[]): Block[] {
 }
 
 const isChoiceBlock = (block: Block) =>
-  block.items.length >= 2 && block.items.length <= MAX_CHOICES && block.items.every(isAnswer);
+  block.items.length >= 2 &&
+  block.items.length <= MAX_CHOICES &&
+  block.items.every(isAnswer);
 
 export interface LiftedChoices {
   /** The reply without the list. */
@@ -68,11 +70,58 @@ export interface LiftedChoices {
   choices: string[];
 }
 
+/** True when the text is asking the shopper to pick or to say something. */
+const isAsking = (text: string) =>
+  /\?|\b(choose|select|pick|which|options?)\b/i.test(text);
+
+/**
+ * Answers written into a sentence instead of a list: "Here are some options:
+ * Changed my mind, Wrong item, or Too big." The sentence that lists them is
+ * taken out, and so is a closing remark after it.
+ */
+function liftInlineChoices(reply: string): LiftedChoices | null {
+  const sentences = reply.trim().split(/(?<=[.?!])\s+/);
+  for (let index = 0; index < sentences.length; index += 1) {
+    const colon = sentences[index].indexOf(":");
+    if (colon < 0) continue;
+    const items = sentences[index]
+      .slice(colon + 1)
+      .split(",")
+      .map((item) => plain(item.replace(/^\s*(?:or|and)\s+/i, "")))
+      .filter(Boolean);
+    if (items.length < 3 || items.length > MAX_CHOICES) continue;
+    if (!items.every((item) => isAnswer(item) && item.split(/\s+/).length <= 4))
+      continue;
+
+    const before = sentences.slice(0, index).join(" ").trim();
+    // The list's own sentence may be the question: "Which fits best: A, B, or C?"
+    const opener = sentences[index].slice(0, colon).trim();
+    const question = before || `${opener}?`.replace(/\?+$/, "?");
+    if (!isAsking(before || opener)) continue;
+
+    const after = sentences
+      .slice(index + 1)
+      .join(" ")
+      .trim();
+    const keepAfter = after && (after.length > 80 || after.includes("?"));
+    const choices = [
+      ...new Map(items.map((item) => [item.toLowerCase(), item])).values(),
+    ];
+    if (choices.length < 3) continue;
+    return { text: keepAfter ? `${question}\n\n${after}` : question, choices };
+  }
+  return null;
+}
+
 /**
  * The reply's first list of answers, lifted out. Null when the reply has no
  * such list, or the list does not follow a question.
  */
 export function liftChoices(reply: string): LiftedChoices | null {
+  return liftListChoices(reply) ?? liftInlineChoices(reply);
+}
+
+function liftListChoices(reply: string): LiftedChoices | null {
   const lines = reply.split("\n");
   const blocks = listBlocks(lines);
   const first = blocks.findIndex(isChoiceBlock);
@@ -82,14 +131,15 @@ export function liftChoices(reply: string): LiftedChoices | null {
   // What leads up to the list has to be asking something.
   const before = lines.slice(0, block.start).join("\n").trim();
   const leadIn = before.split(/\n\s*\n/).pop() ?? "";
-  if (!/\?|\b(choose|select|pick|which|options?)\b/i.test(leadIn)) return null;
+  if (!isAsking(leadIn)) return null;
 
   // "Which order? Here are your recent orders to choose from:" keeps the
   // question and loses the announcement of a list that is no longer there.
   const sentences = before.split(/(?<=[.?!])\s+/);
   const last = sentences[sentences.length - 1] ?? "";
   const question =
-    last.trim().endsWith(":") && sentences.slice(0, -1).some((sentence) => sentence.includes("?"))
+    last.trim().endsWith(":") &&
+    sentences.slice(0, -1).some((sentence) => sentence.includes("?"))
       ? sentences.slice(0, -1).join(" ").trim()
       : before;
   if (!question) return null;
@@ -97,11 +147,17 @@ export function liftChoices(reply: string): LiftedChoices | null {
   // One question at a time: a second list of answers further down is the
   // next question, which the assistant asks again once this one is answered.
   // Otherwise what follows stays, unless it is only a closing pleasantry.
-  const after = lines.slice(block.end + 1).join("\n").trim();
+  const after = lines
+    .slice(block.end + 1)
+    .join("\n")
+    .trim();
   const moreChoices = blocks.slice(first + 1).some(isChoiceBlock);
-  const keepAfter = !moreChoices && after && (after.length > 80 || after.includes("?"));
+  const keepAfter =
+    !moreChoices && after && (after.length > 80 || after.includes("?"));
 
-  const choices = [...new Map(block.items.map((item) => [item.toLowerCase(), item])).values()];
+  const choices = [
+    ...new Map(block.items.map((item) => [item.toLowerCase(), item])).values(),
+  ];
   if (choices.length < 2) return null;
   return { text: keepAfter ? `${question}\n\n${after}` : question, choices };
 }
@@ -121,7 +177,12 @@ function closingQuestion(reply: string): string | null {
 export function asksYesOrNo(reply: string): boolean {
   const question = closingQuestion(reply);
   if (!question || question.length > 160) return false;
-  if (/\bor\b|\bwhich\b|\bwhat\b|\bhow\b|\bwhen\b|\bwhere\b|\bwho\b/i.test(question)) return false;
+  if (
+    /\bor\b|\bwhich\b|\bwhat\b|\bhow\b|\bwhen\b|\bwhere\b|\bwho\b/i.test(
+      question,
+    )
+  )
+    return false;
   return /^(would you like|do you want|shall i|should i|want me to|is that (right|correct|ok|okay)|are you sure|can i go ahead|may i)\b/i.test(
     question,
   );
@@ -129,5 +190,14 @@ export function asksYesOrNo(reply: string): boolean {
 
 /** True when the reply asks the shopper which of their orders they mean. */
 export function asksWhichOrder(reply: string): boolean {
-  return reply.includes("?") && /\bwhich (order|one)\b|\border number\b/i.test(reply);
+  return (
+    reply.includes("?") && /\bwhich (order|one)\b|\border number\b/i.test(reply)
+  );
+}
+
+/** True when the reply asks why the shopper wants to return something. */
+export function asksReturnReason(reply: string): boolean {
+  return (
+    reply.includes("?") && /\breason\b/i.test(reply) && /\breturn/i.test(reply)
+  );
 }

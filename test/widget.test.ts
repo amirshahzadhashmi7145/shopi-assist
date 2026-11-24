@@ -605,6 +605,7 @@ describe("chat widget", () => {
     // Typing an answer instead of pressing one clears the buttons too, and
     // fewer than two answers are not worth buttons.
     expect(buttons()).toHaveLength(4);
+    expect(widget.root.querySelector(".sa-choice-select")).toBeNull();
     fetchMock.mockImplementation(() =>
       reply("Okay.", { actions: [{ type: "choices", options: ["Only one"] }] }),
     );
@@ -612,6 +613,48 @@ describe("chat widget", () => {
     expect(buttons()).toHaveLength(0);
     await flush();
     expect(widget.root.querySelector(".sa-choices")).toBeNull();
+  });
+
+  it("shows a longer set of answers as a list to choose from and send", async () => {
+    const reasons = ["Changed my mind", "Not as described", "Wrong item", "Damaged or defective", "Too small", "Too big"];
+    fetchMock.mockImplementation(() =>
+      reply("What is the reason for the return?", { actions: [{ type: "choices", options: reasons, other: true }] }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("1012");
+    await flush();
+
+    const select = () => widget.$<HTMLSelectElement>(".sa-choice-select");
+    const send = () => widget.$<HTMLButtonElement>(".sa-choice-send");
+    expect(widget.all(".sa-choices .sa-chip")).toHaveLength(0);
+    expect(Array.from(select().options).map((option) => option.textContent)).toEqual([
+      "Choose an answer…",
+      ...reasons,
+      "Other (type your own)",
+    ]);
+    // Nothing is sent until an answer is chosen.
+    expect(send().disabled).toBe(true);
+    const sent = fetchMock.mock.calls.length;
+    send().click();
+    expect(fetchMock.mock.calls).toHaveLength(sent);
+
+    const choose = (value: string) => {
+      select().value = value;
+      select().dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose("3");
+    expect(send().disabled).toBe(false);
+    send().click();
+    expect(widget.root.querySelector(".sa-choices")).toBeNull();
+    await flush();
+    expect(lastBody(fetchMock, -1).message).toBe("Damaged or defective");
+
+    // Their own answer: the list makes way for the text box.
+    choose("other");
+    expect(widget.root.querySelector(".sa-choices")).toBeNull();
+    expect(widget.root.activeElement).toBe(widget.input);
+    expect(widget.input.placeholder).toBe("Type your answer…");
   });
 
   it("runs an add_to_cart action from the assistant and confirms it", async () => {

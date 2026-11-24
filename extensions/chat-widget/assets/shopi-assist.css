@@ -1050,6 +1050,36 @@ button.sa-order-online {
   font-weight: 600;
 }
 
+/* More answers than fit as buttons: a list to choose from, and Send. */
+.sa-choices-list {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.sa-choice-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--sa-accent);
+  border-radius: 8px;
+  background: var(--sa-surface);
+  color: var(--sa-ink);
+  font: inherit;
+  /* 16px stops iOS Safari from zooming the page when the list is opened. */
+  font-size: 16px;
+}
+
+.sa-choice-select:focus-visible {
+  outline: 2px solid var(--sa-accent);
+  outline-offset: 0;
+}
+
+.sa-choice-send {
+  flex: 0 0 auto;
+  min-height: 40px;
+}
+
 .sa-choice-other {
   border-style: dashed;
   border-color: var(--sa-ink-soft);

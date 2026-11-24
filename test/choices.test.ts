@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { asksWhichOrder, asksYesOrNo, liftChoices } from "../app/assistant/choices";
+import {
+  asksReturnReason,
+  asksWhichOrder,
+  asksYesOrNo,
+  liftChoices,
+} from "../app/assistant/choices";
 
 describe("answers as buttons", () => {
   it("lifts a list of answers out of the question that offers them", () => {
@@ -90,5 +95,31 @@ describe("answers as buttons", () => {
     expect(asksWhichOrder("Sure. What is the order number?")).toBe(true);
     expect(asksWhichOrder("Your order number is #1012.")).toBe(false);
     expect(asksWhichOrder("What is the reason for the return?")).toBe(false);
+  });
+
+  it("lifts answers written into a sentence instead of a list", () => {
+    const reply =
+      "What is the reason for the return? Here are some options to choose from: Changed my mind, Not as described, Wrong item, Damaged or defective, Too small, or Too big. You can also provide a different reason if you'd like.";
+    expect(liftChoices(reply)).toEqual({
+      text: "What is the reason for the return?",
+      choices: ["Changed my mind", "Not as described", "Wrong item", "Damaged or defective", "Too small", "Too big"],
+    });
+
+    // The sentence with the answers can be the question itself.
+    expect(liftChoices("Which size would you like: Small, Medium, or Large?")).toEqual({
+      text: "Which size would you like?",
+      choices: ["Small", "Medium", "Large"],
+    });
+    // Information with commas in it is not a set of answers.
+    expect(liftChoices("We ship to: Canada, Mexico, and the United States.")).toBeNull();
+    expect(liftChoices("Your order has three items: a mug, a kettle, and a blanket. Anything else?")).toBeNull();
+    expect(liftChoices("Which one: Trail Mug at $18.00, Camp Kettle at $45.00, or both?")).toBeNull();
+  });
+
+  it("knows when the shopper is asked why they want to return something", () => {
+    expect(asksReturnReason("What is the reason for the return?")).toBe(true);
+    expect(asksReturnReason("Could you tell me the reason you'd like to return order #1012?")).toBe(true);
+    expect(asksReturnReason("Your return request has been sent with the reason you gave.")).toBe(false);
+    expect(asksReturnReason("Which order would you like to return?")).toBe(false);
   });
 });

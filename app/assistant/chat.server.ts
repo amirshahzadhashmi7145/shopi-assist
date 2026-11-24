@@ -30,8 +30,9 @@ import {
   rememberOrder,
 } from "./store.server";
 import { allTools } from "./tools";
-import { asksWhichOrder, asksYesOrNo, liftChoices } from "./choices";
+import { asksReturnReason, asksWhichOrder, asksYesOrNo, liftChoices } from "./choices";
 import { toolsFor, type ToolContext, type ToolDefinition } from "./tools/registry";
+import { RETURN_REASON_LABELS } from "./tools/shopper";
 import type {
   Audience,
   CartLine,
@@ -464,17 +465,22 @@ export async function handleChatTurn(
     turn.cards.length === 0 &&
     !turn.actions.some((action) => action.type === "choices");
   const lifted = mayOffer ? liftChoices(turn.reply) : null;
-  // Two questions with answers the server already knows: which of the
-  // shopper's own orders (their numbers), and a plain yes or no. Not while a
-  // card with its own button is on its way, which is the answer to give.
+  // Questions with answers the server already knows, in the order they are
+  // asked: which of the shopper's own orders (their numbers), why something
+  // is being returned (the store's reason categories), and a plain yes or
+  // no. Not while a card with its own button is on its way, which is the
+  // answer to give.
+  const canReturn = tools.some((tool) => tool.name === "request_return");
   const quick =
-    !mayOffer || lifted || turn.actions.length > 0
+    !mayOffer || turn.actions.length > 0
       ? null
       : asksWhichOrder(turn.reply) && orders.length > 1
         ? orders.slice(0, 5).map((order) => order.name)
-        : asksYesOrNo(turn.reply)
-          ? ["Yes", "No"]
-          : null;
+        : asksReturnReason(turn.reply) && canReturn
+          ? [...RETURN_REASON_LABELS]
+          : !lifted && asksYesOrNo(turn.reply)
+            ? ["Yes", "No"]
+            : null;
 
   return {
     conversationId: conversation.id,
@@ -484,10 +490,11 @@ export async function handleChatTurn(
     cards: settings.allowAddToCart
       ? turn.cards
       : turn.cards.map((card) => ({ ...card, variantId: null, variants: undefined })),
-    actions: lifted
-      ? [...turn.actions, { type: "choices", options: lifted.choices, other: true }]
-      : quick
-        ? [{ type: "choices", options: quick, other: true }]
+    // The server's own answers win over ones read out of the reply.
+    actions: quick
+      ? [{ type: "choices", options: quick, other: true }]
+      : lifted
+        ? [...turn.actions, { type: "choices", options: lifted.choices, other: true }]
         : turn.actions,
   };
 }
