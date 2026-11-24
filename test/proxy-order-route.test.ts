@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // test can see exactly what the route passes along.
 const appProxy = vi.fn();
 const handleChatOrder = vi.fn();
+const handleOrderAction = vi.fn();
 const listDeliveryCountries = vi.fn();
 
 vi.mock("../app/shopify.server", () => ({
@@ -17,6 +18,11 @@ vi.mock("../app/assistant/orders.server", async (importOriginal) => {
     handleChatOrder: (...args: unknown[]) => handleChatOrder(...args),
     listDeliveryCountries: (...args: unknown[]) => listDeliveryCountries(...args),
   };
+});
+
+vi.mock("../app/assistant/order-actions.server", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../app/assistant/order-actions.server")>();
+  return { ...original, handleOrderAction: (...args: unknown[]) => handleOrderAction(...args) };
 });
 
 const { action, loader } = await import("../app/routes/proxy.order");
@@ -50,7 +56,10 @@ beforeEach(() => {
     step: "place",
     order: { name: "#1001", total: { amount: "44.6", currencyCode: "USD" } },
   });
-  listDeliveryCountries.mockReset().mockResolvedValue([{ code: "CA", name: "Canada" }]);
+  listDeliveryCountries.mockReset().mockResolvedValue({
+    countries: [{ code: "CA", name: "Canada", form: 0 }],
+    forms: [[[{ name: "lastName", label: "Last name", required: true }]]],
+  });
 });
 
 describe("POST /proxy/order", () => {
@@ -145,12 +154,51 @@ describe("POST /proxy/order", () => {
   });
 });
 
+describe("POST /proxy/order with a confirmed order change", () => {
+  it("hands the grant to the order-change handler, with the shop from the signed request", async () => {
+    handleOrderAction.mockReset().mockResolvedValue({
+      ok: true,
+      step: "cancel",
+      order: { name: "#1005" },
+      message: "Order #1005 is cancelled.",
+    });
+
+    for (const step of ["cancel", "cancel_request", "address", "edit"]) {
+      const response = await run(post({ step, token: "signed-grant", shop: "victim-shop.myshopify.com" }));
+      expect(await response.json()).toMatchObject({ ok: true, message: "Order #1005 is cancelled." });
+    }
+
+    expect(handleOrderAction).toHaveBeenCalledTimes(4);
+    expect(handleChatOrder).not.toHaveBeenCalled();
+    const input = handleOrderAction.mock.calls[0][0];
+    expect(input.shop).toBe(SHOP);
+    expect(input.body.token).toBe("signed-grant");
+    expect(typeof input.admin).toBe("function");
+  });
+
+  it("sends an expired grant's message through as readable JSON", async () => {
+    handleOrderAction
+      .mockReset()
+      .mockRejectedValue(new OrderError("invalid_request", 410, "This has expired. Please ask the assistant again."));
+    const response = await run(post({ step: "cancel", token: "old" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: "invalid_request", status: 410, message: "This has expired. Please ask the assistant again." },
+    });
+  });
+});
+
 describe("GET /proxy/order", () => {
   it("returns the delivery countries for the signed shop", async () => {
     const response = await get("&language=fr");
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, countries: [{ code: "CA", name: "Canada" }] });
+    expect(await response.json()).toEqual({
+      ok: true,
+      countries: [{ code: "CA", name: "Canada", form: 0 }],
+      forms: [[[{ name: "lastName", label: "Last name", required: true }]]],
+    });
     expect(listDeliveryCountries.mock.calls[0][0]).toMatchObject({ shop: SHOP, language: "fr" });
   });
 

@@ -21,6 +21,16 @@ export const POLICY_CHOICES = {
   shipsTo: ["", "domestic", "international"],
 } as const;
 
+/**
+ * What the pay-on-delivery order form asks for, as in Shopify's own checkout
+ * settings. The first value of each is Shopify's default for a new store.
+ */
+export const ORDER_FORM_CHOICES = {
+  orderFirstName: ["optional", "required"],
+  orderCompany: ["hidden", "optional", "required"],
+  orderAddress2: ["optional", "hidden", "required"],
+} as const;
+
 const choice = <T extends readonly [string, ...string[]]>(values: T) =>
   z.enum(values, "Choose one of the listed options.");
 
@@ -48,6 +58,16 @@ export const settingsSchema = z.object({
   allowCheckout: z.boolean(),
   allowReturns: z.boolean(),
   allowChatOrders: z.boolean(),
+  allowOrderCancel: z.boolean(),
+  allowAddressChange: z.boolean(),
+  allowOrderEdit: z.boolean(),
+  recogniseCustomers: z.boolean(),
+  // The order form's fields.
+  orderFirstName: choice(ORDER_FORM_CHOICES.orderFirstName),
+  orderCompany: choice(ORDER_FORM_CHOICES.orderCompany),
+  orderAddress2: choice(ORDER_FORM_CHOICES.orderAddress2),
+  orderPaymentName: text(60, "the payment method's name"),
+  orderPaymentNote: text(300, "the payment instructions"),
   // Quick policy picks.
   returnWindow: choice(POLICY_CHOICES.returnWindow),
   returnShipping: choice(POLICY_CHOICES.returnShipping),
@@ -77,6 +97,15 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   allowCheckout: true,
   allowReturns: false,
   allowChatOrders: false,
+  allowOrderCancel: false,
+  allowAddressChange: false,
+  allowOrderEdit: false,
+  recogniseCustomers: false,
+  orderFirstName: "optional",
+  orderCompany: "hidden",
+  orderAddress2: "optional",
+  orderPaymentName: "",
+  orderPaymentNote: "",
   returnWindow: "",
   returnShipping: "",
   processingTime: "",
@@ -87,6 +116,11 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
 /** Returns the stored value when it is a known choice, otherwise "not set". */
 function pick<T extends readonly string[]>(choices: T, value: string): T[number] {
   return (choices as readonly string[]).includes(value) ? (value as T[number]) : "";
+}
+
+/** Returns the stored value when it is a known choice, otherwise the default (the first). */
+function pickOr<T extends readonly string[]>(choices: T, value: unknown): T[number] {
+  return (choices as readonly unknown[]).includes(value) ? (value as T[number]) : choices[0];
 }
 
 /** Settings for one shop, falling back to defaults when none are saved yet. */
@@ -113,6 +147,15 @@ export async function getSettings(
     allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
     allowChatOrders: row.allowChatOrders,
+    allowOrderCancel: row.allowOrderCancel,
+    allowAddressChange: row.allowAddressChange,
+    allowOrderEdit: row.allowOrderEdit,
+    recogniseCustomers: row.recogniseCustomers,
+    orderFirstName: pickOr(ORDER_FORM_CHOICES.orderFirstName, row.orderFirstName),
+    orderCompany: pickOr(ORDER_FORM_CHOICES.orderCompany, row.orderCompany),
+    orderAddress2: pickOr(ORDER_FORM_CHOICES.orderAddress2, row.orderAddress2),
+    orderPaymentName: row.orderPaymentName ?? "",
+    orderPaymentNote: row.orderPaymentNote ?? "",
     returnWindow: pick(POLICY_CHOICES.returnWindow, row.returnWindow),
     returnShipping: pick(POLICY_CHOICES.returnShipping, row.returnShipping),
     processingTime: pick(POLICY_CHOICES.processingTime, row.processingTime),
@@ -157,6 +200,10 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "allowCheckout",
   "allowReturns",
   "allowChatOrders",
+  "allowOrderCancel",
+  "allowAddressChange",
+  "allowOrderEdit",
+  "recogniseCustomers",
 ];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
 

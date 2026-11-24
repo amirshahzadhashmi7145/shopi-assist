@@ -22,8 +22,17 @@ export const FIELD_GROUPS = {
     "allowAddToCart",
     "allowCheckout",
     "allowChatOrders",
+    "orderFirstName",
+    "orderCompany",
+    "orderAddress2",
+    "orderPaymentName",
+    "orderPaymentNote",
     "orderLookupEnabled",
     "orderLookupByNumber",
+    "recogniseCustomers",
+    "allowOrderCancel",
+    "allowAddressChange",
+    "allowOrderEdit",
     "allowReturns",
   ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
@@ -37,7 +46,7 @@ export const FIELD_GROUPS = {
 const checked = (on: boolean) => (on ? { defaultChecked: true } : {});
 
 /** Step 1 of setup: what the assistant may do. All checkboxes, no typing. */
-export function AbilityFields({ settings }: FieldGroupProps) {
+export function AbilityFields({ settings, errors = {} }: FieldGroupProps) {
   return (
     <s-stack direction="block" gap="base">
       <s-checkbox
@@ -64,6 +73,7 @@ export function AbilityFields({ settings }: FieldGroupProps) {
         details="The order summary gets an 'Order here, pay on delivery' button. The shopper fills in a short form (name, phone, delivery address) and the order appears in your Shopify admin as unpaid, tagged shopi-assist. Tick this only if you offer cash on delivery, and check these orders before you ship them. Needs 'Help shoppers place an order'."
         {...checked(settings.allowChatOrders)}
       />
+      <OrderFormFields settings={settings} errors={errors} />
       <s-checkbox
         name="orderLookupEnabled"
         label="Check order status"
@@ -77,12 +87,93 @@ export function AbilityFields({ settings }: FieldGroupProps) {
         {...checked(settings.orderLookupByNumber)}
       />
       <s-checkbox
+        name="recogniseCustomers"
+        label="Recognise signed-in customers"
+        details="A shopper who is signed in to their account on your store can ask about their own recent orders without giving an order number or email. Needs 'Check order status'."
+        {...checked(settings.recogniseCustomers)}
+      />
+      <s-checkbox
+        name="allowOrderCancel"
+        label="Cancel orders"
+        details="Only before the order starts shipping, and only when the shopper proves it is theirs and presses a confirm button. An order nothing has been paid for is cancelled and restocked. A paid order is not cancelled or refunded by the assistant: it is tagged 'cancellation-requested' for you to handle."
+        {...checked(settings.allowOrderCancel)}
+      />
+      <s-checkbox
+        name="allowAddressChange"
+        label="Change the delivery address"
+        details="Only before the order starts shipping, within the same country, for an order the shopper proves is theirs. They type the new address into a form, not the chat. The order is tagged 'address-changed-in-chat' so you can check it."
+        {...checked(settings.allowAddressChange)}
+      />
+      <s-checkbox
+        name="allowOrderEdit"
+        label="Change the items in an order"
+        details="Only before the order starts shipping and only while nothing has been paid (pay-on-delivery orders): the shopper can add or remove items and change quantities, then confirms the new order with a button. The order is tagged 'changed-in-chat'."
+        {...checked(settings.allowOrderEdit)}
+      />
+      <s-checkbox
         name="allowReturns"
         label="Take return requests"
         details="The shopper gives their order number, checkout email and a reason. The request appears in your Shopify admin for you to approve or decline. Nothing is refunded automatically."
         {...checked(settings.allowReturns)}
       />
     </s-stack>
+  );
+}
+
+/**
+ * What the pay-on-delivery order form asks for. The address fields, their
+ * names and the postal code rules follow the delivery country by themselves;
+ * these three are the store's own choice.
+ */
+function OrderFormFields({ settings, errors = {} }: FieldGroupProps) {
+  return (
+    <s-box paddingInlineStart="large-200">
+      <s-stack direction="block" gap="small-200">
+        <s-paragraph color="subdued">
+          The order form follows each country&apos;s address format, the way your checkout does.
+          These three options are yours: set them to match Settings &gt; Checkout in your Shopify
+          admin, which apps are not able to read.
+        </s-paragraph>
+        <s-select name="orderFirstName" label="Full name" value={settings.orderFirstName}>
+          <s-option value="optional">Only require last name</s-option>
+          <s-option value="required">Require first and last name</s-option>
+        </s-select>
+        <s-select name="orderCompany" label="Company name" value={settings.orderCompany}>
+          <s-option value="hidden">Don&apos;t include</s-option>
+          <s-option value="optional">Optional</s-option>
+          <s-option value="required">Required</s-option>
+        </s-select>
+        <s-select name="orderAddress2" label="Address line 2 (apartment, unit, etc.)" value={settings.orderAddress2}>
+          <s-option value="hidden">Don&apos;t include</s-option>
+          <s-option value="optional">Optional</s-option>
+          <s-option value="required">Required</s-option>
+        </s-select>
+        <s-paragraph color="subdued">
+          The delivery countries, states, shipping rates, prices and tax come from your store. So
+          do the cards and wallets shown for paying online. Shopify does not tell apps which
+          manual payment methods you have set up, so say here what your store calls paying on
+          delivery.
+        </s-paragraph>
+        <s-text-field
+          name="orderPaymentName"
+          label="Name of your pay-on-delivery method"
+          placeholder="Cash on Delivery (COD)"
+          details="As it is named under Settings > Payments > Manual payment methods. Leave empty for Shopify's own name."
+          defaultValue={settings.orderPaymentName}
+          maxLength={60}
+          {...errorProp(errors.orderPaymentName)}
+        />
+        <s-text-area
+          name="orderPaymentNote"
+          label="Payment instructions (optional)"
+          details="Shown to the shopper under the payment method before they complete the order, for example 'Please have the exact amount ready'."
+          defaultValue={settings.orderPaymentNote}
+          maxLength={300}
+          rows={2}
+          {...errorProp(errors.orderPaymentNote)}
+        />
+      </s-stack>
+    </s-box>
   );
 }
 

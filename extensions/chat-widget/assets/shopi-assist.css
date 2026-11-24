@@ -406,8 +406,157 @@ a.sa-card-title:hover {
 .sa-card-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-top: 5px;
+}
+
+/* In a list of products: a card something has been picked on. */
+.sa-card-on {
+  border-color: var(--sa-accent);
+}
+
+/* Under a list of products: the one place to add or buy everything picked
+   on the cards. */
+.sa-cards-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--sa-line);
+  border-radius: 12px;
+  background: var(--sa-surface-soft);
+}
+
+.sa-cards-bar .sa-card-total,
+.sa-cards-bar .sa-card-actions {
+  margin-top: 0;
+}
+
+.sa-cards-bar .sa-card-total {
+  flex: 1 1 140px;
+}
+
+.sa-cards-bar .sa-card-button {
+  min-height: 36px;
+  padding: 6px 14px;
+}
+
+/* The versions of a product to pick between: a numbered list under the
+   picture and title, each with its own quantity. */
+.sa-card-choices {
+  flex-wrap: wrap;
+}
+
+.sa-card-choices .sa-card-body {
+  flex: 1 1 0;
+}
+
+.sa-card-pick {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.sa-card-variants {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--sa-line);
+}
+
+.sa-variant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--sa-line);
+  font-size: 13.5px;
+  line-height: 1.3;
+}
+
+.sa-variant-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.sa-variant-number {
+  flex: 0 0 auto;
+  color: var(--sa-ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.sa-variant-on .sa-variant-name {
+  font-weight: 600;
+}
+
+.sa-variant-note {
+  flex: 0 0 auto;
+  color: var(--sa-ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sa-variant-off .sa-variant-name {
+  color: var(--sa-ink-soft);
+  text-decoration: line-through;
+}
+
+.sa-stepper {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--sa-line);
+  border-radius: 999px;
+  background: var(--sa-surface);
+}
+
+.sa-stepper-on {
+  border-color: var(--sa-accent);
+}
+
+.sa-stepper-button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.sa-stepper-button:hover {
+  background: var(--sa-surface-soft);
+}
+
+.sa-stepper-button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.sa-stepper-count {
+  min-width: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.sa-card-pick .sa-card-actions {
+  margin-top: 8px;
+}
+
+.sa-card-total {
+  margin-top: 8px;
+  color: var(--sa-ink-soft);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .sa-card-button {
@@ -440,6 +589,18 @@ a.sa-card-title:hover {
   filter: brightness(1.08);
 }
 
+/* For the one button that cannot be undone: cancelling an order. */
+.sa-card-button-danger {
+  border-color: var(--sa-danger);
+  background: var(--sa-danger);
+  color: #ffffff;
+}
+
+.sa-card-button-danger:hover {
+  border-color: var(--sa-danger);
+  filter: brightness(1.08);
+}
+
 .sa-card-button:disabled {
   cursor: default;
   opacity: 0.7;
@@ -447,7 +608,8 @@ a.sa-card-title:hover {
 
 /* Order summary ----------------------------------------------------------- */
 
-.sa-order {
+.sa-order,
+.sa-action {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -475,8 +637,49 @@ a.sa-card-title:hover {
 
 .sa-order-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
+  gap: 4px 8px;
+}
+
+/* Ticks a line into the order, or leaves it in the cart for later. */
+.sa-order-pick {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  align-self: center;
+  accent-color: var(--sa-accent);
+}
+
+.sa-order-line-off .sa-order-item,
+.sa-order-line-off .sa-order-amount {
+  color: var(--sa-ink-soft);
+}
+
+.sa-order-also {
+  padding-top: 8px;
+  border-top: 1px solid var(--sa-line);
+}
+
+/* Under a line's name and price: how many, and a way to take it out. */
+.sa-order-edit {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+}
+
+.sa-stepper-small .sa-stepper-button {
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+}
+
+.sa-order-lines .sa-order-line + .sa-order-line {
+  padding-top: 8px;
+  border-top: 1px solid var(--sa-line);
 }
 
 .sa-order-quantity {
@@ -486,7 +689,8 @@ a.sa-card-title:hover {
 }
 
 .sa-order-item {
-  flex: 1 1 auto;
+  /* Grows from nothing, so a long name wraps and the price stays beside it. */
+  flex: 1 1 0;
   min-width: 0;
   line-height: 1.3;
   overflow-wrap: anywhere;
@@ -550,8 +754,18 @@ a.sa-card-title:hover {
 
 .sa-order-here {
   width: 100%;
-  min-height: 38px;
+  min-height: 40px;
+  font-size: 14px;
   white-space: normal;
+}
+
+.sa-order-online-note {
+  text-align: center;
+}
+
+.sa-order-online {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* Pay-on-delivery order form ---------------------------------------------- */
@@ -575,11 +789,30 @@ a.sa-card-title:hover {
   border-color: var(--sa-ink);
 }
 
+/* Under each heading of the form: its fields, two columns wide. */
+.sa-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.sa-order-form .sa-fields + .sa-order-title,
+.sa-order-form .sa-order-recap + .sa-order-rates,
+.sa-order-form .sa-order-rates + .sa-order-title,
+.sa-order-form .sa-order-pay + .sa-order-title {
+  margin-top: 6px;
+}
+
 .sa-field {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   gap: 3px;
   font-size: 13px;
+}
+
+.sa-field-half {
+  grid-column: auto;
 }
 
 .sa-field label {
@@ -617,27 +850,124 @@ a.sa-card-title:hover {
   font-size: 12.5px;
 }
 
+/* Review: who the order is for and where it goes, with a way to change it. */
+.sa-order-recap {
+  border: 1px solid var(--sa-line);
+  border-radius: 8px;
+  font-size: 13.5px;
+}
+
+.sa-order-recap-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.sa-order-recap-row + .sa-order-recap-row {
+  border-top: 1px solid var(--sa-line);
+}
+
+.sa-order-recap-label {
+  flex: 0 0 56px;
+  color: var(--sa-ink-soft);
+}
+
+.sa-order-recap-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sa-order-change {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--sa-ink);
+  font-size: 12.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .sa-order-rates {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin: 0;
-  padding: 8px 0 0;
+  padding: 0;
   border: 0;
-  border-top: 1px solid var(--sa-line);
   font-size: 14px;
 }
 
 .sa-order-rates legend {
-  padding: 0;
+  padding: 0 0 8px;
+}
+
+.sa-order-rate,
+.sa-order-pay {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--sa-line);
+  border-radius: 8px;
+}
+
+.sa-order-rate:has(input:checked) {
+  border-color: var(--sa-accent);
+}
+
+.sa-order-pay {
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.sa-order-pay span {
   color: var(--sa-ink-soft);
   font-size: 13px;
 }
 
-.sa-order-rate {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+.sa-order-pay-on {
+  border-color: var(--sa-accent);
+}
+
+.sa-order-pay-note {
+  white-space: pre-line;
+}
+
+.sa-order-pay-online {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The same options as buttons, when only the ticked lines go to the checkout. */
+button.sa-order-pay-online {
+  width: 100%;
+  background: none;
+  font: inherit;
+  text-align: left;
+  align-items: flex-start;
+}
+
+button.sa-order-online {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+.sa-order-pay-online:hover {
+  border-color: var(--sa-ink);
+}
+
+.sa-order-pay-online strong {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .sa-order-rate input {
@@ -706,6 +1036,54 @@ a.sa-card-title:hover {
 
 .sa-chip:hover {
   border-color: var(--sa-ink);
+}
+
+/* Answers to the assistant's question, as buttons under its reply. */
+.sa-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sa-choice {
+  border-color: var(--sa-accent);
+  font-weight: 600;
+}
+
+/* More answers than fit as buttons: a list to choose from, and Send. */
+.sa-choices-list {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.sa-choice-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--sa-accent);
+  border-radius: 8px;
+  background: var(--sa-surface);
+  color: var(--sa-ink);
+  font: inherit;
+  /* 16px stops iOS Safari from zooming the page when the list is opened. */
+  font-size: 16px;
+}
+
+.sa-choice-select:focus-visible {
+  outline: 2px solid var(--sa-accent);
+  outline-offset: 0;
+}
+
+.sa-choice-send {
+  flex: 0 0 auto;
+  min-height: 40px;
+}
+
+.sa-choice-other {
+  border-style: dashed;
+  border-color: var(--sa-ink-soft);
+  font-weight: 400;
 }
 
 /* Composer ---------------------------------------------------------------- */

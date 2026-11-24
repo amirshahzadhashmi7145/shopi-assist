@@ -17,6 +17,11 @@
   var MAX_MESSAGE_LENGTH = 2000;
   var MAX_ORDER_ITEMS = 10;
   var MAX_ITEM_QUANTITY = 10;
+  // Told to the app with every message; see `request`.
+  var WIDGET_SUPPORTS = ["choices"];
+  // Up to this many answers to a question are shown as buttons; more become a list.
+  var MAX_CHOICE_BUTTONS = 4;
+  var MAX_CARD_VARIANTS = 12;
   var MAX_SUMMARY_LINES = 12;
 
   // Icons are built with DOM calls (never innerHTML), like everything else here.
@@ -158,6 +163,28 @@
     return order;
   }
 
+  /**
+   * The versions of a product its card lets the shopper pick from. Empty when
+   * there is nothing to choose between.
+   */
+  function cardVariants(card) {
+    var seen = {};
+    var choices = [];
+    (Array.isArray(card.variants) ? card.variants : []).forEach(function (variant) {
+      var id = variant ? String(variant.id) : "";
+      if (!/^\d{1,20}$/.test(id) || seen[id] || typeof variant.title !== "string") return;
+      if (choices.length >= MAX_CARD_VARIANTS) return;
+      seen[id] = true;
+      choices.push({
+        id: id,
+        title: variant.title.slice(0, 80),
+        price: variant.price || null,
+        available: variant.available === true,
+      });
+    });
+    return choices.length > 1 ? choices : [];
+  }
+
   /** The cart in the few words the assistant needs: what, and how many. */
   function cartSnapshot(cart) {
     var byVariant = {};
@@ -181,16 +208,28 @@
     return lines;
   }
 
-  /** What the order summary shows, taken from the storefront cart as it is now. */
-  function orderSummary(cart) {
+  /**
+   * What the order summary shows, taken from the storefront cart as it is now.
+   * `picked` holds the variants the shopper has just asked to buy: those lines
+   * are ticked for the order and the rest of the cart is not. Without it a
+   * line keeps the tick it had in the summary this one replaces (`before`,
+   * by line key), and a line that is new to the cart is ticked.
+   */
+  function orderSummary(cart, picked, before) {
     var lines = cart.items.slice(0, MAX_SUMMARY_LINES).map(function (line) {
       var amount = line.final_line_price !== undefined ? line.final_line_price : line.line_price;
+      var key = typeof line.key === "string" ? line.key.slice(0, 200) : "";
       return {
         title: String(line.title || line.product_title || "Item").slice(0, 120),
         quantity: Math.max(1, parseInt(line.quantity, 10) || 1),
         total: fromCents(amount),
-        // Identifies the cart line, so it can be removed from the summary.
-        key: typeof line.key === "string" ? line.key.slice(0, 200) : "",
+        // Identifies the cart line, so it can be changed from the summary.
+        key: key,
+        on: picked
+          ? picked[String(line.variant_id)] === true
+          : before && Object.prototype.hasOwnProperty.call(before, key)
+            ? before[key]
+            : true,
       };
     });
     return {
@@ -300,6 +339,11 @@
     };
     // True when the merchant takes pay-on-delivery orders in the chat.
     this.chatOrders = false;
+    // True when product cards may start an order with "Buy now".
+    this.buyNow = false;
+    // False until the app's settings have arrived. A page that loaded while
+    // the app was unreachable asks again once a reply shows it is back.
+    this.remoteLoaded = false;
     // The open order form, if any. Its contents are never stored.
     this.orderForm = null;
     // True on a development store: the order form offers to fill in test details.
@@ -503,13 +547,23 @@
 
     var changed = false;
     this.testMode = remote.testMode === true;
+    var buyNow = remote.buyNow === true;
+    if (buyNow !== this.buyNow) {
+      this.buyNow = buyNow;
+      // Product cards already on screen gain or lose the button.
+      changed = this.state.messages.some(function (message) {
+        return message.cards && message.cards.length;
+      });
+    }
     var chatOrders = remote.chatOrders === true;
     if (chatOrders !== this.chatOrders) {
       this.chatOrders = chatOrders;
       // An order summary already on screen gains or loses its button.
-      changed = this.state.messages.some(function (message) {
-        return message.role === "order";
-      });
+      changed =
+        changed ||
+        this.state.messages.some(function (message) {
+          return message.role === "order";
+        });
     }
     if (typeof remote.title === "string" && remote.title.trim()) {
       var title = remote.title.trim().slice(0, 60);
@@ -554,6 +608,7 @@
       })
       .then(function (remote) {
         if (!remote || remote.ok !== true) return;
+        self.remoteLoaded = true;
         try {
           writeJson(window.sessionStorage, CONFIG_KEY, remote);
         } catch (error) {
@@ -720,71 +775,413 @@
         : "";
     };
 
+    // The shopper ticks which of the cart's lines this order holds: what
+    // they just asked for is ticked, what was in the cart before waits
+    // underneath. Ordering here or paying at the checkout, only the ticked
+    // lines are bought; the rest stay in the cart.
+    var isOn = function (line) {
+      return !line.key || line.on !== false;
+    };
+    var chosen = lines.filter(isOn);
+    var waiting = lines.filter(function (line) {
+      return !isOn(line);
+    });
+    var ticks = lines.length > 1 || waiting.length > 0;
+
     var box = el("section", "sa-order");
     box.setAttribute("aria-label", "Order summary");
     box.appendChild(el("h3", "sa-order-title", "Your order"));
 
-    var list = el("ul", "sa-order-lines");
-    lines.forEach(function (line) {
-      var item = el("li", "sa-order-line");
-      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " \u00d7"));
+    // One change to the cart at a time: the summary is drawn again from the
+    // cart once Shopify has answered.
+    var busy = function () {
+      var buttons = box.querySelectorAll("button, input");
+      for (var i = 0; i < buttons.length; i += 1) buttons[i].disabled = true;
+    };
+
+    /** Draws the summary again in place after a line is ticked or unticked. */
+    var redraw = function (line) {
+      // An order form opened from the summary was for the lines as they were.
+      if (self.orderForm && !self.orderForm.mode) self.closeOrderForm();
+      self.saveState();
+      var fresh = self.appendOrder(entry);
+      if (!fresh || !box.parentNode) return;
+      box.parentNode.insertBefore(fresh, box);
+      box.parentNode.removeChild(box);
+      var again = fresh.querySelector('.sa-order-pick[data-line="' + lines.indexOf(line) + '"]');
+      if (again) again.focus();
+    };
+
+    var addLine = function (list, line) {
+      var on = isOn(line);
+      var quantity = parseInt(line.quantity, 10) || 1;
+      var item = el("li", on ? "sa-order-line" : "sa-order-line sa-order-line-off");
+      if (ticks && line.key) {
+        var tick = el("input", "sa-order-pick");
+        tick.type = "checkbox";
+        tick.checked = on;
+        tick.setAttribute("data-line", String(lines.indexOf(line)));
+        tick.setAttribute("aria-label", "Include in this order: " + line.title);
+        tick.addEventListener("change", function () {
+          line.on = tick.checked;
+          redraw(line);
+        });
+        item.appendChild(tick);
+      }
+      // A line that cannot be changed from here just says how many.
+      if (!line.key || !on) item.appendChild(el("span", "sa-order-quantity", quantity + " ×"));
       item.appendChild(el("span", "sa-order-item", line.title));
       item.appendChild(el("span", "sa-order-amount", money(line.total)));
-      if (line.key) {
+      if (line.key && on) {
+        var edit = el("div", "sa-order-edit");
+        var stepper = el("div", "sa-stepper sa-stepper-small");
+        var less = el("button", "sa-stepper-button", "−");
+        less.type = "button";
+        less.setAttribute("aria-label", "One less: " + line.title);
+        less.disabled = quantity <= 1;
+        var count = el("span", "sa-stepper-count", String(quantity));
+        count.setAttribute("aria-label", "Quantity of " + line.title);
+        var more = el("button", "sa-stepper-button", "+");
+        more.type = "button";
+        more.setAttribute("aria-label", "One more: " + line.title);
+        more.disabled = quantity >= MAX_ITEM_QUANTITY;
+        less.addEventListener("click", function () {
+          busy();
+          self.setCartQuantity(line.key, quantity - 1);
+        });
+        more.addEventListener("click", function () {
+          busy();
+          self.setCartQuantity(line.key, quantity + 1);
+        });
+        stepper.appendChild(less);
+        stepper.appendChild(count);
+        stepper.appendChild(more);
+        edit.appendChild(stepper);
+
         var remove = el("button", "sa-order-remove", "Remove");
         remove.type = "button";
         remove.setAttribute("aria-label", "Remove " + line.title);
         remove.addEventListener("click", function () {
-          remove.disabled = true;
+          busy();
           self.removeFromCart(line.key);
         });
-        item.appendChild(remove);
+        edit.appendChild(remove);
+        item.appendChild(edit);
       }
       list.appendChild(item);
-    });
-    box.appendChild(list);
+    };
+
+    if (chosen.length) {
+      var list = el("ul", "sa-order-lines");
+      chosen.forEach(function (line) {
+        addLine(list, line);
+      });
+      box.appendChild(list);
+    } else {
+      box.appendChild(el("p", "sa-order-note", "Nothing is ticked yet."));
+    }
+    if (waiting.length) {
+      box.appendChild(
+        el("p", "sa-order-note sa-order-also", "Also in your cart. Tick anything you want in this order."),
+      );
+      var rest = el("ul", "sa-order-lines sa-order-waiting");
+      waiting.forEach(function (line) {
+        addLine(rest, line);
+      });
+      box.appendChild(rest);
+    }
     if (entry.more > 0) {
       box.appendChild(el("p", "sa-order-note", "Plus " + parseInt(entry.more, 10) + " more in your cart."));
     }
 
     var total = el("p", "sa-order-total");
     total.appendChild(el("span", null, "Subtotal"));
-    total.appendChild(el("strong", null, money(entry.subtotal)));
+    total.appendChild(
+      el(
+        "strong",
+        null,
+        money(
+          waiting.length
+            ? chosen.reduce(function (sum, line) {
+                return sum + (typeof line.total === "number" ? line.total : 0);
+              }, 0)
+            : entry.subtotal,
+        ),
+      ),
+    );
     box.appendChild(total);
-    box.appendChild(el("p", "sa-order-note", "Shipping and taxes are added at checkout."));
-
-    var actions = el("div", "sa-order-actions");
-    var pay = el("a", "sa-card-button sa-card-button-primary sa-order-checkout", "Go to checkout");
-    pay.href = this.config.checkoutUrl;
-    actions.appendChild(pay);
-    var cartHref = safeHref(this.config.cartUrl);
-    if (cartHref) {
-      var edit = el("a", "sa-card-button", "Edit cart");
-      edit.href = cartHref;
-      actions.appendChild(edit);
-    }
-    box.appendChild(actions);
 
     if (this.chatOrders) {
-      var here = el("button", "sa-card-button sa-order-here", "Order here, pay on delivery");
+      // The order is finished here in the chat. Paying by card is only
+      // possible on the store's checkout page, so that stays a quiet link
+      // that opens beside the chat instead of replacing it.
+      box.appendChild(el("p", "sa-order-note", "Delivery and taxes are added in the next step."));
+      var here = el(
+        "button",
+        "sa-card-button sa-card-button-primary sa-order-here",
+        "Order here, pay on delivery",
+      );
       here.type = "button";
+      here.disabled = chosen.length === 0;
       here.addEventListener("click", function () {
         self.openOrderForm();
       });
       box.appendChild(here);
+
+      var online = el("p", "sa-order-note sa-order-online-note");
+      online.appendChild(
+        this.checkoutControl("sa-order-online", "Pay online at checkout instead", {
+          partial: waiting.length > 0,
+          newTab: true,
+        }),
+      );
+      box.appendChild(online);
+    } else {
+      box.appendChild(el("p", "sa-order-note", "Shipping and taxes are added at checkout."));
+      var actions = el("div", "sa-order-actions");
+      var pay = this.checkoutControl(
+        "sa-card-button sa-card-button-primary sa-order-checkout",
+        "Go to checkout",
+        { partial: waiting.length > 0, newTab: false },
+      );
+      if (!chosen.length) pay.disabled = true;
+      actions.appendChild(pay);
+      box.appendChild(actions);
     }
 
     this.messagesEl.appendChild(box);
     return box;
   };
 
+  /**
+   * The way to the store's checkout. With everything in the cart ticked it
+   * is a plain link to the checkout. With some lines left unticked it is a
+   * button: Shopify's checkout always takes a whole cart, so the app is
+   * asked for a checkout holding just the ticked lines.
+   */
+  Widget.prototype.checkoutControl = function (className, label, options) {
+    var self = this;
+    if (!options.partial) {
+      var link = el("a", className, label);
+      link.href = this.config.checkoutUrl;
+      if (options.newTab) {
+        link.target = "_blank";
+        link.rel = "noopener";
+      }
+      return link;
+    }
+    var button = el("button", className + " sa-order-partial", label);
+    button.type = "button";
+    button.addEventListener("click", function () {
+      if (button.disabled) return;
+      button.disabled = true;
+      var enable = function () {
+        button.disabled = false;
+      };
+      self.checkoutTicked(options.newTab).then(enable, enable);
+    });
+    return button;
+  };
+
+  /**
+   * Opens the store's checkout for the ticked lines only. In a new tab the
+   * tab is opened at once, while the press still counts as the shopper's
+   * own, and pointed at the checkout when the app has answered.
+   */
+  Widget.prototype.checkoutTicked = function (newTab) {
+    var self = this;
+    var tab = newTab ? window.open("", "_blank") : null;
+    if (tab) tab.opener = null;
+    var fail = function (message) {
+      if (tab) tab.close();
+      self.pushEntry({
+        role: "notice",
+        tone: "error",
+        text: message || "The checkout couldn't be opened. Please try again.",
+      });
+    };
+
+    return this.fetchCart()
+      .then(function (cart) {
+        var ticked = self.tickedLines();
+        var lines = !cart
+          ? []
+          : !ticked
+            ? cart.items
+            : cart.items.filter(function (line) {
+                return ticked[line.key] === true;
+              });
+        if (!lines.length) return null;
+        var codes = (Array.isArray(cart.discount_codes) ? cart.discount_codes : [])
+          .filter(function (entry) {
+            return entry && entry.applicable !== false && typeof entry.code === "string" && entry.code;
+          })
+          .map(function (entry) {
+            return entry.code;
+          })
+          .slice(0, 5);
+        var payload = {
+          step: "checkout",
+          items: lines.map(function (line) {
+            var item = { variantId: String(line.variant_id), quantity: Number(line.quantity) };
+            // A subscription or a personalisation goes with its line.
+            var plan = line.selling_plan_allocation && line.selling_plan_allocation.selling_plan;
+            if (plan && plan.id) item.sellingPlanId = String(plan.id);
+            if (line.properties && Object.keys(line.properties).length) {
+              item.properties = {};
+              Object.keys(line.properties).forEach(function (name) {
+                item.properties[name] = String(line.properties[name]);
+              });
+            }
+            return item;
+          }),
+        };
+        if (/^[A-Za-z]{2}$/.test(self.config.country || "")) payload.country = self.config.country;
+        if (codes.length) payload.discountCodes = codes;
+        return self.postOrder(payload);
+      })
+      .then(function (result) {
+        if (!result) return fail("Tick what you want to buy first.");
+        var url = result.ok && typeof result.body.checkoutUrl === "string" ? result.body.checkoutUrl : "";
+        if (!/^https:\/\/[^\s]+$/.test(url)) {
+          var error = result.body && result.body.error;
+          return fail(error && typeof error.message === "string" ? error.message : "");
+        }
+        if (tab) tab.location.replace(url);
+        else window.open(url, "_self");
+      });
+  };
+
+  /** A − / count / + control for one quantity. `change` hears every new value. */
+  function quantityStepper(name, change) {
+    var box = el("div", "sa-stepper");
+    var less = el("button", "sa-stepper-button", "−");
+    less.type = "button";
+    less.setAttribute("aria-label", "One less: " + name);
+    var count = el("span", "sa-stepper-count", "0");
+    count.setAttribute("aria-label", "Quantity of " + name);
+    var more = el("button", "sa-stepper-button", "+");
+    more.type = "button";
+    more.setAttribute("aria-label", "One more: " + name);
+
+    var value = 0;
+    var set = function (quantity) {
+      value = Math.max(0, Math.min(MAX_ITEM_QUANTITY, quantity));
+      count.textContent = String(value);
+      less.disabled = value === 0;
+      more.disabled = value === MAX_ITEM_QUANTITY;
+      box.classList.toggle("sa-stepper-on", value > 0);
+      change(value);
+    };
+    less.addEventListener("click", function () {
+      set(value - 1);
+    });
+    more.addEventListener("click", function () {
+      set(value + 1);
+    });
+
+    box.appendChild(less);
+    box.appendChild(count);
+    box.appendChild(more);
+    return { node: box, set: set };
+  }
+
+  /** "3 items · $44.85" for what has been picked, or `empty` when nothing has. */
+  function pickedText(lines, empty, locale) {
+    var count = 0;
+    var sum = 0;
+    var currency = null;
+    var priced = true;
+    lines.forEach(function (line) {
+      count += line.quantity;
+      if (line.price && (!currency || currency === line.price.currencyCode)) {
+        currency = line.price.currencyCode;
+        sum += line.quantity * Number(line.price.amount);
+      } else {
+        priced = false;
+      }
+    });
+    if (!count) return empty;
+    return (
+      count +
+      (count === 1 ? " item" : " items") +
+      (priced && currency
+        ? " · " + formatMoney({ amount: String(sum), currencyCode: currency }, locale)
+        : "")
+    );
+  }
+
+  /**
+   * "Add to cart" and, where the store allows it, "Buy now", acting on
+   * whatever `picked` returns when one of them is pressed.
+   */
+  Widget.prototype.buyButtons = function (picked) {
+    var self = this;
+    var add = el("button", "sa-card-button sa-card-button-primary", "Add to cart");
+    add.type = "button";
+    add.addEventListener("click", function () {
+      var items = picked();
+      if (!items.length) return;
+      add.disabled = true;
+      add.textContent = "Adding…";
+      self
+        .addItems(
+          items.map(function (entry) {
+            return { id: Number(entry.variantId), quantity: entry.quantity };
+          }),
+        )
+        .then(function (result) {
+          add.textContent = result.ok ? "Added" : "Add to cart";
+          add.disabled = result.ok;
+          if (result.ok) {
+            window.setTimeout(function () {
+              add.textContent = "Add to cart";
+              add.disabled = picked().length === 0;
+            }, 2500);
+          } else {
+            self.appendNotice(result.message, "error");
+            self.scrollToEnd();
+          }
+        });
+    });
+    if (!self.buyNow) return [add];
+
+    // The same as asking the assistant to order it: the items go in the
+    // cart and the order summary appears.
+    var buy = el("button", "sa-card-button", "Buy now");
+    buy.type = "button";
+    buy.addEventListener("click", function () {
+      var items = picked().map(function (entry) {
+        return { variantId: entry.variantId, quantity: entry.quantity };
+      });
+      if (!items.length) return;
+      buy.disabled = true;
+      var done = function () {
+        buy.disabled = picked().length === 0;
+      };
+      // The shopper set these numbers, so the order holds exactly that many.
+      self.runAction({ type: "order", items: items, exact: true }).then(done, done);
+    });
+    return [add, buy];
+  };
+
   Widget.prototype.appendCards = function (cards) {
     var self = this;
+    var locale = this.config.locale;
     var list = el("ul", "sa-cards");
     list.setAttribute("aria-label", "Suggested products");
 
-    cards.slice(0, 6).forEach(function (card) {
-      if (!card || typeof card.title !== "string") return;
+    var shown = cards.slice(0, 6).filter(function (card) {
+      return card && typeof card.title === "string";
+    });
+    // A list of products shares one set of buttons, under the last card, for
+    // everything picked across the cards. A product shown on its own keeps
+    // the buttons on its card.
+    var several = shown.length > 1;
+    var pickers = [];
+    var refreshAll = function () {};
+
+    shown.forEach(function (card) {
       var item = el("li", "sa-card");
       var href = safeHref(card.url);
 
@@ -805,10 +1202,38 @@
       if (href) title.href = href;
       body.appendChild(title);
 
+      // The versions to pick between, each with its own quantity. A product
+      // that comes in one version has just that one to buy.
+      var choices = card.available ? cardVariants(card) : [];
+      var single =
+        !choices.length && card.available && /^\d+$/.test(String(card.variantId))
+          ? String(card.variantId)
+          : null;
+      var options = single
+        ? [{ id: single, title: card.title, price: card.price || null, available: true }]
+        : choices;
+      var quantities = {};
+      // On its own card, a product with one version is bought one at a time.
+      if (single && !several) quantities[single] = 1;
+      /** Every version the shopper gave a quantity. */
+      var lines = function () {
+        return options
+          .filter(function (option) {
+            return quantities[option.id] > 0;
+          })
+          .map(function (option) {
+            return { variantId: option.id, quantity: quantities[option.id], price: option.price };
+          });
+      };
+      if (options.length) pickers.push(lines);
+      var pricesDiffer = choices.some(function (choice) {
+        return !choice.price || !choices[0].price || choice.price.amount !== choices[0].price.amount;
+      });
+
       var price = el("div", "sa-card-price");
-      price.appendChild(el("span", null, formatMoney(card.price, self.config.locale)));
+      price.appendChild(el("span", null, (pricesDiffer ? "From " : "") + formatMoney(card.price, locale)));
       if (card.compareAtPrice) {
-        var was = el("s", null, formatMoney(card.compareAtPrice, self.config.locale));
+        var was = el("s", null, formatMoney(card.compareAtPrice, locale));
         was.setAttribute("aria-label", "Was " + was.textContent);
         price.appendChild(was);
       }
@@ -816,45 +1241,160 @@
       body.appendChild(price);
 
       var actions = el("div", "sa-card-actions");
-      if (card.available && card.variantId && /^\d+$/.test(String(card.variantId))) {
-        var add = el("button", "sa-card-button sa-card-button-primary", "Add to cart");
-        add.type = "button";
-        add.addEventListener("click", function () {
-          add.disabled = true;
-          add.textContent = "Adding…";
-          self.addToCart(card.variantId, 1).then(function (result) {
-            add.textContent = result.ok ? "Added" : "Add to cart";
-            add.disabled = result.ok;
-            if (result.ok) {
-              window.setTimeout(function () {
-                add.textContent = "Add to cart";
-                add.disabled = false;
-              }, 2500);
-            } else {
-              self.appendNotice(result.message, "error");
-              self.scrollToEnd();
-            }
-          });
+      var ownButtons = [];
+      if (!options.length) {
+        // Too many versions for a card: they are chosen on the product page.
+        if (href && card.available) {
+          var choose = el("a", "sa-card-button", "Choose options");
+          choose.href = href;
+          actions.appendChild(choose);
+        }
+      } else if (!several) {
+        ownButtons = self.buyButtons(lines);
+        ownButtons.forEach(function (button) {
+          actions.appendChild(button);
         });
-        actions.appendChild(add);
-      } else if (href && card.available) {
-        var choose = el("a", "sa-card-button", "Choose options");
-        choose.href = href;
-        actions.appendChild(choose);
       }
+
+      var total = null;
+      var refresh = function () {
+        var picked = lines();
+        ownButtons.forEach(function (button) {
+          button.disabled = picked.length === 0;
+        });
+        if (total) total.textContent = pickedText(picked, "Set how many you want of each.", locale);
+        item.classList.toggle("sa-card-on", several && picked.length > 0);
+        refreshAll();
+      };
+
+      // The picker takes the card's full width, under the picture and title.
+      var picker = null;
+      if (choices.length) {
+        picker = el("div", "sa-card-pick");
+        var rows = el("ol", "sa-card-variants");
+        rows.setAttribute("aria-label", "Options for " + card.title);
+        if (!several) {
+          total = el("div", "sa-card-total");
+          total.setAttribute("role", "status");
+        }
+
+        choices.forEach(function (choice, index) {
+          var row = el("li", "sa-variant");
+          var label = el("span", "sa-variant-name");
+          label.appendChild(el("span", "sa-variant-number", index + 1 + "."));
+          label.appendChild(el("span", null, choice.title));
+          row.appendChild(label);
+
+          if (!choice.available) {
+            row.classList.add("sa-variant-off");
+            row.appendChild(el("span", "sa-variant-note", "Sold out"));
+            rows.appendChild(row);
+            return;
+          }
+          // One price for every version is on the card already.
+          if (pricesDiffer && choice.price) {
+            row.appendChild(el("span", "sa-variant-note", formatMoney(choice.price, locale)));
+          }
+
+          var control = quantityStepper(choice.title, function (value) {
+            quantities[choice.id] = value;
+            row.classList.toggle("sa-variant-on", value > 0);
+            refresh();
+          });
+          choice.set = control.set;
+          row.appendChild(control.node);
+          rows.appendChild(row);
+        });
+
+        // On its own card, one version left in stock is nothing to choose:
+        // start it at one. Otherwise everything starts at none.
+        var inStock = choices.filter(function (choice) {
+          return choice.available;
+        });
+        inStock.forEach(function (choice) {
+          choice.set(!several && inStock.length === 1 ? 1 : 0);
+        });
+        refresh();
+
+        picker.appendChild(rows);
+        if (total) picker.appendChild(total);
+        item.classList.add("sa-card-choices");
+      }
+
+      var view = null;
       if (href) {
-        var view = el("a", "sa-card-button", "View");
+        view = el("a", "sa-card-button", "View");
         view.href = href;
         view.setAttribute("aria-label", "View " + card.title);
-        actions.appendChild(view);
       }
-      body.appendChild(actions);
+      if (several && options.length) {
+        var bar = el("div", "sa-card-actions");
+        if (picker) {
+          // In a list of products the picker stays folded away until it is
+          // asked for, so the list stays short enough to scan.
+          var unfold = el(
+            "button",
+            "sa-card-button sa-card-button-primary",
+            "Choose from " + choices.length + " options",
+          );
+          unfold.type = "button";
+          unfold.addEventListener("click", function () {
+            picker.hidden = false;
+            bar.removeChild(unfold);
+            var first = picker.querySelector("button:not([disabled])");
+            if (first) first.focus();
+          });
+          bar.appendChild(unfold);
+          picker.hidden = true;
+        } else {
+          var only = quantityStepper(card.title, function (value) {
+            quantities[single] = value;
+            refresh();
+          });
+          only.set(0);
+          bar.appendChild(only.node);
+        }
+        if (view) bar.appendChild(view);
+        body.appendChild(bar);
+      } else {
+        if (view) actions.appendChild(view);
+        (picker || body).appendChild(actions);
+      }
 
       item.appendChild(body);
+      if (picker) item.appendChild(picker);
       list.appendChild(item);
     });
 
-    if (list.children.length) this.messagesEl.appendChild(list);
+    if (!list.children.length) return;
+    this.messagesEl.appendChild(list);
+    if (!several || !pickers.length) return;
+
+    // One place to add or buy everything picked on the cards above.
+    var everything = function () {
+      return pickers.reduce(function (found, lines) {
+        return found.concat(lines());
+      }, []);
+    };
+    var basket = el("div", "sa-cards-bar");
+    var sum = el("div", "sa-card-total");
+    sum.setAttribute("role", "status");
+    var both = el("div", "sa-card-actions");
+    var buttons = self.buyButtons(everything);
+    buttons.forEach(function (button) {
+      both.appendChild(button);
+    });
+    refreshAll = function () {
+      var picked = everything();
+      sum.textContent = pickedText(picked, "Set how many you want of each product above.", locale);
+      buttons.forEach(function (button) {
+        button.disabled = picked.length === 0;
+      });
+    };
+    refreshAll();
+    basket.appendChild(sum);
+    basket.appendChild(both);
+    this.messagesEl.appendChild(basket);
   };
 
   Widget.prototype.showTyping = function () {
@@ -897,6 +1437,9 @@
 
     this.lastFailedMessage = null;
     this.removeRetry();
+    // Answered, by a button or in their own words: the buttons have done their job.
+    this.dropChoices();
+    this.input.placeholder = "Ask a question…";
     this.state.messages.push({ role: "user", text: text });
     this.saveState();
     this.appendBubble("user", text);
@@ -925,6 +1468,9 @@
           conversationId: self.state.conversationId,
           country: self.config.country,
           language: (self.config.locale || "").slice(0, 2),
+          // What this version of the widget can draw besides text and cards.
+          // The app holds back anything a widget has not said it can show.
+          supports: WIDGET_SUPPORTS,
         };
         if (cart) payload.cart = cartSnapshot(cart);
         return window.fetch(self.config.endpoint, {
@@ -970,6 +1516,7 @@
         // A failed action reports itself in the chat. It must never look like
         // the reply failed, so nothing here reaches the handler below.
         self.runActions(Array.isArray(body.actions) ? body.actions : []).catch(function () {});
+        if (!self.remoteLoaded) self.loadRemoteConfig();
       })
       .catch(function () {
         window.clearTimeout(timer);
@@ -1011,6 +1558,101 @@
    * Runs the assistant's actions one after another, so the order summary
    * reads the cart only after every item before it has been added.
    */
+  /** Takes the answer buttons off the screen. They are never saved. */
+  Widget.prototype.dropChoices = function () {
+    var shown = this.messagesEl.querySelectorAll(".sa-choices");
+    for (var i = 0; i < shown.length; i += 1) shown[i].parentNode.removeChild(shown[i]);
+  };
+
+  /**
+   * The answers to the assistant's question as buttons under its reply.
+   * Pressing one sends it as the shopper's message; "Other" hands them the
+   * text box instead. They go away as soon as the shopper answers either way.
+   */
+  Widget.prototype.showChoices = function (action) {
+    var self = this;
+    var seen = {};
+    var options = (Array.isArray(action.options) ? action.options : [])
+      .filter(function (option) {
+        var text = typeof option === "string" ? option.trim() : "";
+        if (!text || seen[text.toLowerCase()]) return false;
+        seen[text.toLowerCase()] = true;
+        return true;
+      })
+      .slice(0, 8);
+    this.dropChoices();
+    if (options.length < 2) return;
+
+    var group = el("div", "sa-choices");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Answers to choose from");
+    var typeInstead = function () {
+      self.dropChoices();
+      self.input.placeholder = "Type your answer…";
+      self.input.focus();
+    };
+
+    // A handful of answers are buttons, one press each. More than that is a
+    // list to choose from and send, so the chat is not filled with buttons.
+    if (options.length > MAX_CHOICE_BUTTONS) {
+      group.classList.add("sa-choices-list");
+      var select = el("select", "sa-choice-select");
+      select.setAttribute("aria-label", "Choose an answer");
+      var prompt = el("option", null, "Choose an answer…");
+      prompt.value = "";
+      select.appendChild(prompt);
+      options.forEach(function (option, index) {
+        var entry = el("option", null, option.trim().slice(0, 60));
+        entry.value = String(index);
+        select.appendChild(entry);
+      });
+      if (action.other === true) {
+        var own = el("option", null, "Other (type your own)");
+        own.value = "other";
+        select.appendChild(own);
+      }
+      var sendChoice = el("button", "sa-card-button sa-card-button-primary sa-choice-send", "Send");
+      sendChoice.type = "button";
+      sendChoice.disabled = true;
+      select.addEventListener("change", function () {
+        // Their own answer needs the text box, not this list.
+        if (select.value === "other") return typeInstead();
+        sendChoice.disabled = select.value === "";
+        return undefined;
+      });
+      sendChoice.addEventListener("click", function () {
+        var picked = options[Number(select.value)];
+        if (self.pending || select.value === "" || !picked) return;
+        self.send(picked.trim().slice(0, 60));
+      });
+      group.appendChild(select);
+      group.appendChild(sendChoice);
+      this.messagesEl.appendChild(group);
+      this.scrollToEnd();
+      return;
+    }
+
+    options.forEach(function (option) {
+      var text = option.trim().slice(0, 60);
+      var button = el("button", "sa-chip sa-choice", text);
+      button.type = "button";
+      button.addEventListener("click", function () {
+        if (self.pending) return;
+        self.send(text);
+      });
+      group.appendChild(button);
+    });
+    if (action.other === true) {
+      var other = el("button", "sa-chip sa-choice sa-choice-other", "Other…");
+      other.type = "button";
+      other.setAttribute("aria-label", "Other: type your own answer");
+      other.addEventListener("click", typeInstead);
+      group.appendChild(other);
+    }
+    this.messagesEl.appendChild(group);
+    this.scrollToEnd();
+  };
+
   Widget.prototype.runActions = function (actions) {
     var self = this;
     return actions.reduce(function (chain, action) {
@@ -1047,14 +1689,29 @@
                 }),
               );
             })
-          : this.ensureInCart(items);
+          : this.ensureInCart(items, action.exact === true);
       return filled.then(function (result) {
         if (!result.ok) {
           self.pushEntry({ role: "notice", tone: "error", text: result.message });
           return null;
         }
-        return self.showOrderSummary();
+        // These are the order; anything else in the cart waits to be ticked.
+        return self.showOrderSummary(
+          items.map(function (item) {
+            return item.variantId;
+          }),
+        );
       });
+    }
+
+    if (action.type === "order_action") {
+      this.showOrderAction(action);
+      return Promise.resolve();
+    }
+
+    if (action.type === "choices") {
+      this.showChoices(action);
+      return Promise.resolve();
     }
 
     if (action.type === "clear_cart") {
@@ -1123,28 +1780,59 @@
   /**
    * Makes sure the cart holds at least the quantity asked for of each item.
    * Only what is missing is added, so an order that is repeated, or that
-   * names something the shopper already added, never doubles up.
+   * names something the shopper already added, never doubles up. With
+   * `exact`, a line holding more than was asked for comes down to it.
    */
-  Widget.prototype.ensureInCart = function (items) {
+  Widget.prototype.ensureInCart = function (items, exact) {
     var self = this;
     return this.fetchCart().then(function (cart) {
       var inCart = {};
+      var keys = {};
       (cart ? cart.items : []).forEach(function (line) {
         var id = String(line.variant_id);
         inCart[id] = (inCart[id] || 0) + (parseInt(line.quantity, 10) || 0);
+        (keys[id] = keys[id] || []).push(line.key);
       });
 
       var missing = [];
+      var lower = [];
       items.forEach(function (item) {
-        var needed = item.quantity - (inCart[item.variantId] || 0);
-        if (needed > 0) missing.push({ id: Number(item.variantId), quantity: needed });
+        var have = inCart[item.variantId] || 0;
+        if (have < item.quantity) {
+          missing.push({ id: Number(item.variantId), quantity: item.quantity - have });
+        } else if (
+          exact &&
+          have > item.quantity &&
+          keys[item.variantId].length === 1 &&
+          typeof keys[item.variantId][0] === "string"
+        ) {
+          lower.push({ key: keys[item.variantId][0], quantity: item.quantity });
+        }
       });
-      return missing.length ? self.addItems(missing) : { ok: true };
+      return Promise.resolve(missing.length ? self.addItems(missing) : { ok: true }).then(
+        function (result) {
+          if (!result.ok) return result;
+          // One after another: each change answers with the whole cart.
+          return lower
+            .reduce(function (chain, change) {
+              return chain.then(function () {
+                return self.changeCartLine(change.key, change.quantity);
+              });
+            }, Promise.resolve())
+            .then(function () {
+              return { ok: true };
+            });
+        },
+      );
     });
   };
 
-  /** Shows what is in the cart with a checkout button, or says it is empty. */
-  Widget.prototype.showOrderSummary = function () {
+  /**
+   * Shows what is in the cart with the buttons to order it, or says it is
+   * empty. `picked` lists the variants just asked for: they are ticked for
+   * the order and the rest of the cart is listed unticked.
+   */
+  Widget.prototype.showOrderSummary = function (picked) {
     var self = this;
     return this.fetchCart().then(function (cart) {
       if (!cart) {
@@ -1156,6 +1844,22 @@
         });
         return;
       }
+      // What was ticked in the summary on screen stays ticked in the new one.
+      var before = null;
+      self.state.messages.forEach(function (message) {
+        if (message.role !== "order" || !Array.isArray(message.lines)) return;
+        before = {};
+        message.lines.forEach(function (line) {
+          if (line && line.key) before[line.key] = line.on !== false;
+        });
+      });
+      var chosen = null;
+      if (Array.isArray(picked)) {
+        chosen = {};
+        picked.forEach(function (variantId) {
+          chosen[String(variantId)] = true;
+        });
+      }
       // One summary at a time: an older one would show a cart that has changed.
       self.dropOrderSummary();
 
@@ -1166,8 +1870,39 @@
         });
         return;
       }
-      self.pushEntry(orderSummary(cart));
+      self.pushEntry(orderSummary(cart, chosen, before));
     });
+  };
+
+  /**
+   * The cart lines ticked for the order, by line key. Null when the order is
+   * the whole cart: nothing is unticked, or there is nothing to tick.
+   */
+  Widget.prototype.tickedLines = function () {
+    var ticked = null;
+    this.state.messages.forEach(function (message) {
+      if (message.role !== "order" || !Array.isArray(message.lines)) return;
+      var keys = {};
+      var some = false;
+      message.lines.forEach(function (line) {
+        if (!line || !line.key) return;
+        if (line.on === false) some = true;
+        else keys[line.key] = true;
+      });
+      ticked = some ? keys : null;
+    });
+    return ticked;
+  };
+
+  /** Takes these lines out of the storefront cart, leaving the rest. */
+  Widget.prototype.removeCartLines = function (keys) {
+    var self = this;
+    // One after another: each change gives the remaining lines new positions.
+    return keys.reduce(function (chain, key) {
+      return chain.then(function () {
+        return self.changeCartLine(key);
+      });
+    }, Promise.resolve());
   };
 
   /**
@@ -1184,14 +1919,17 @@
     for (var i = 0; i < stale.length; i += 1) stale[i].parentNode.removeChild(stale[i]);
   };
 
-  /** Sets one cart line's quantity to zero. Resolves true when Shopify agreed. */
-  Widget.prototype.changeCartLine = function (key) {
+  /**
+   * Sets one cart line's quantity; none given takes the line out. Resolves
+   * true when Shopify agreed.
+   */
+  Widget.prototype.changeCartLine = function (key, quantity) {
     return window
       .fetch(this.config.cartUrl + "/change.js", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ id: key, quantity: 0 }),
+        body: JSON.stringify({ id: key, quantity: quantity > 0 ? quantity : 0 }),
       })
       .then(function (response) {
         return response.ok ? response.json() : null;
@@ -1213,6 +1951,23 @@
     // The summary is read from the cart again, so it shows the truth either way.
     return this.changeCartLine(key).then(function () {
       return self.showOrderSummary();
+    });
+  };
+
+  /** Changes how many of one line the cart holds, then shows the summary again. */
+  Widget.prototype.setCartQuantity = function (key, quantity) {
+    var self = this;
+    return this.changeCartLine(key, quantity).then(function (changed) {
+      return self.showOrderSummary().then(function () {
+        // Shopify says no when, for one, there is not that much in stock.
+        if (!changed) {
+          self.pushEntry({
+            role: "notice",
+            tone: "error",
+            text: "That quantity couldn't be set. Your order is as shown above.",
+          });
+        }
+      });
     });
   };
 
@@ -1279,20 +2034,90 @@
 
   // ------------------------------------------------- pay-on-delivery orders
 
-  // The same fields, in the same order, as Shopify's own checkout.
-  var ORDER_FIELDS = [
-    { name: "email", label: "Email (optional, for order updates)", autocomplete: "email", type: "email" },
-    { name: "countryCode", label: "Country / region", autocomplete: "country", kind: "country" },
-    { name: "firstName", label: "First name (optional)", autocomplete: "given-name" },
-    { name: "lastName", label: "Last name", autocomplete: "family-name", required: true },
-    { name: "address1", label: "Address", autocomplete: "address-line1", required: true },
-    { name: "address2", label: "Apartment, suite, etc. (optional)", autocomplete: "address-line2" },
-    { name: "city", label: "City", autocomplete: "address-level2", required: true },
+  // How the browser should treat each field of the order form. Which of them
+  // a delivery gets, in what order and under what names, comes from the app:
+  // it follows the delivery country's address format and the store's settings.
+  var FIELD_KINDS = {
+    firstName: { autocomplete: "given-name" },
+    lastName: { autocomplete: "family-name" },
+    company: { autocomplete: "organization" },
+    address1: { autocomplete: "address-line1" },
+    address2: { autocomplete: "address-line2" },
+    city: { autocomplete: "address-level2" },
     // A list where Shopify knows the country's states, free text elsewhere.
-    { name: "province", label: "State / province", autocomplete: "address-level1", kind: "province" },
-    { name: "zip", label: "ZIP / postal code", autocomplete: "postal-code" },
-    { name: "phone", label: "Phone", autocomplete: "tel", type: "tel", required: true },
+    province: { autocomplete: "address-level1" },
+    zip: { autocomplete: "postal-code" },
+    phone: { autocomplete: "tel", type: "tel" },
+  };
+  // The form for a country the app sent no layout for. The app still checks
+  // what is sent against that country's rules.
+  var DEFAULT_LAYOUT = [
+    [
+      { name: "firstName", label: "First name (optional)", required: false },
+      { name: "lastName", label: "Last name", required: true },
+    ],
+    [{ name: "address1", label: "Address", required: true }],
+    [{ name: "address2", label: "Apartment, suite, etc. (optional)", required: false }],
+    [
+      { name: "city", label: "City", required: true },
+      { name: "province", label: "State / province", required: false },
+      { name: "zip", label: "Postal code", required: false },
+    ],
+    [{ name: "phone", label: "Phone", required: true }],
   ];
+
+  /**
+   * How the order is paid for, as the app sent it: what the store calls
+   * paying on delivery, its instructions, and the cards and wallets its
+   * checkout takes. Shopify's own name stands in until the app has said.
+   */
+  function cleanPayment(payment) {
+    var given = payment && typeof payment === "object" ? payment : {};
+    return {
+      name:
+        typeof given.name === "string" && given.name.trim()
+          ? given.name.trim().slice(0, 60)
+          : "Cash on Delivery (COD)",
+      note: typeof given.note === "string" ? given.note.trim().slice(0, 300) : "",
+      online: (Array.isArray(given.online) ? given.online : [])
+        .filter(function (name) {
+          return typeof name === "string" && name;
+        })
+        .slice(0, 12)
+        .map(function (name) {
+          return name.slice(0, 40);
+        }),
+    };
+  }
+
+  /** A layout as the app sent it, kept only if it is well formed. */
+  function cleanLayout(rows) {
+    if (!Array.isArray(rows)) return null;
+    var seen = {};
+    var layout = [];
+    rows.slice(0, 12).forEach(function (row) {
+      var fields = (Array.isArray(row) ? row : []).filter(function (entry) {
+        if (
+          !entry ||
+          !Object.prototype.hasOwnProperty.call(FIELD_KINDS, entry.name) ||
+          seen[entry.name]
+        ) {
+          return false;
+        }
+        if (typeof entry.label !== "string" || !entry.label) return false;
+        seen[entry.name] = true;
+        return true;
+      });
+      if (fields.length) {
+        layout.push(
+          fields.map(function (entry) {
+            return { name: entry.name, label: entry.label.slice(0, 80), required: entry.required === true };
+          }),
+        );
+      }
+    });
+    return layout.length ? layout : null;
+  }
   var USE_CHECKOUT = " Please use the checkout instead.";
 
   // Made-up people at real, well-known addresses, offered only on development
@@ -1389,6 +2214,7 @@
 
   /** The countries the store sells to, for the form's country list. */
   Widget.prototype.loadCountries = function () {
+    var self = this;
     var fallback = /^[A-Za-z]{2}$/.test(this.config.country)
       ? [{ code: this.config.country.toUpperCase(), name: this.config.country.toUpperCase() }]
       : [];
@@ -1400,11 +2226,15 @@
         return response.ok ? response.json() : null;
       })
       .then(function (body) {
-        var countries = (body && Array.isArray(body.countries) ? body.countries : []).filter(
-          function (country) {
+        self.orderPayment = cleanPayment(body && body.payment);
+        var forms = body && Array.isArray(body.forms) ? body.forms : [];
+        var countries = (body && Array.isArray(body.countries) ? body.countries : [])
+          .filter(function (country) {
             return country && /^[A-Z]{2}$/.test(country.code) && typeof country.name === "string";
-          },
-        );
+          })
+          .map(function (country) {
+            return { code: country.code, name: country.name, layout: cleanLayout(forms[country.form]) };
+          });
         return countries.length ? countries : fallback;
       })
       .catch(function () {
@@ -1415,6 +2245,8 @@
   /** Opens the delivery details form under the chat, once. */
   Widget.prototype.openOrderForm = function () {
     var self = this;
+    // A form for something else (a new address) makes way for this one.
+    if (this.orderForm && this.orderForm.mode) this.closeOrderForm();
     if (this.orderForm) {
       var first = this.orderForm.el.querySelector("input, button");
       if (first) first.focus();
@@ -1483,9 +2315,11 @@
     var form = state.el;
     form.textContent = "";
     state.inputs = {};
-    form.appendChild(el("h3", "sa-order-title", "Delivery details"));
+    var forAddress = state.mode === "address";
+    var deliveryTitle = forAddress ? "New delivery address" : "Delivery";
 
     if (!state.countries.length) {
+      form.appendChild(el("h3", "sa-order-title", deliveryTitle));
       form.appendChild(
         el("p", "sa-order-status sa-order-status-error", "Ordering here isn't available right now." + USE_CHECKOUT),
       );
@@ -1498,6 +2332,17 @@
       })[0] || state.countries[0];
     state.values.countryCode = country.code;
     var provinces = provincesOf(state.regions, country);
+    var layout = country.layout || DEFAULT_LAYOUT;
+    // What was typed into a field this country's form does not have is dropped.
+    var shown = {};
+    layout.forEach(function (row) {
+      row.forEach(function (entry) {
+        shown[entry.name] = true;
+      });
+    });
+    Object.keys(FIELD_KINDS).forEach(function (name) {
+      if (!shown[name]) delete state.values[name];
+    });
 
     /** Keeps what has been typed, so the form can be drawn again. */
     var keepValues = function () {
@@ -1534,6 +2379,7 @@
           email: "test.buyer@example.com",
           firstName: "Test",
           lastName: "Buyer",
+          company: "Test Company",
           phone: sample.phone,
           address1: sample.address1,
           address2: "",
@@ -1547,8 +2393,16 @@
       form.appendChild(fillTest);
     }
 
+    // Each part of the form has a heading and its fields in a two-column grid.
+    var fields = null;
+    var section = function (title) {
+      form.appendChild(el("h3", "sa-order-title", title));
+      fields = el("div", "sa-fields");
+      form.appendChild(fields);
+    };
+
     var addField = function (spec, control) {
-      var wrap = el("div", "sa-field");
+      var wrap = el("div", spec.half ? "sa-field sa-field-half" : "sa-field");
       var id = "sa-order-" + spec.name;
       var label = el("label", null, spec.label);
       label.htmlFor = id;
@@ -1567,54 +2421,79 @@
         wrap.appendChild(error);
       }
       state.inputs[spec.name] = control;
-      form.appendChild(wrap);
+      fields.appendChild(wrap);
       return wrap;
     };
 
-    ORDER_FIELDS.forEach(function (spec) {
-      if (spec.kind === "country") {
-        var countries = el("select");
-        state.countries.forEach(function (entry) {
-          var option = el("option", null, entry.name);
-          option.value = entry.code;
-          option.selected = entry.code === country.code;
-          countries.appendChild(option);
-        });
-        // Another country has other states: draw the form again for it.
-        countries.addEventListener("change", function () {
-          keepValues();
-          state.values.province = "";
-          delete state.errors.province;
-          self.renderOrderDetails();
-          state.inputs.countryCode.focus();
-        });
-        // One country to deliver to needs no choice.
-        addField(spec, countries).hidden = state.countries.length === 1;
-        return;
-      }
+    if (!forAddress) {
+      // A new address for an existing order: the store already has the email.
+      section("Contact");
+      var email = el("input");
+      email.type = "email";
+      email.value = state.values.email || "";
+      addField(
+        { name: "email", label: "Email (optional, for order updates)", autocomplete: "email" },
+        email,
+      );
+    }
 
-      if (spec.kind === "province" && provinces.length) {
-        var states = el("select");
-        var prompt = el("option", null, "Select…");
-        prompt.value = "";
-        states.appendChild(prompt);
-        var chosen = regionKey(state.values.province);
-        provinces.forEach(function (province) {
-          var option = el("option", null, province.label);
-          option.value = province.value;
-          option.selected =
-            Boolean(chosen) &&
-            (regionKey(province.value) === chosen || regionKey(province.label) === chosen);
-          states.appendChild(option);
-        });
-        addField({ name: spec.name, label: spec.label, autocomplete: spec.autocomplete, required: true }, states);
-        return;
-      }
+    section(deliveryTitle);
+    var countries = el("select");
+    state.countries.forEach(function (entry) {
+      var option = el("option", null, entry.name);
+      option.value = entry.code;
+      option.selected = entry.code === country.code;
+      countries.appendChild(option);
+    });
+    // Another country has another form: draw it again for that one.
+    countries.addEventListener("change", function () {
+      keepValues();
+      state.values.province = "";
+      state.errors = {};
+      self.renderOrderDetails();
+      state.inputs.countryCode.focus();
+    });
+    // One country to deliver to needs no choice.
+    addField(
+      { name: "countryCode", label: "Country/region", autocomplete: "country" },
+      countries,
+    ).hidden = state.countries.length === 1;
 
-      var input = el("input");
-      input.type = spec.type || "text";
-      input.value = state.values[spec.name] || "";
-      addField(spec, input);
+    layout.forEach(function (row) {
+      row.forEach(function (entry, position) {
+        var kind = FIELD_KINDS[entry.name];
+        var spec = {
+          name: entry.name,
+          label: entry.label,
+          autocomplete: kind.autocomplete,
+          required: entry.required,
+          // Two to a row; in a row of three the first has a row to itself.
+          half: row.length > 1 && !(row.length % 2 === 1 && position === 0),
+        };
+
+        if (entry.name === "province" && provinces.length) {
+          var states = el("select");
+          var prompt = el("option", null, "Select…");
+          prompt.value = "";
+          states.appendChild(prompt);
+          var chosen = regionKey(state.values.province);
+          provinces.forEach(function (province) {
+            var option = el("option", null, province.label);
+            option.value = province.value;
+            option.selected =
+              Boolean(chosen) &&
+              (regionKey(province.value) === chosen || regionKey(province.label) === chosen);
+            states.appendChild(option);
+          });
+          addField(spec, states);
+          return;
+        }
+
+        var input = el("input");
+        input.type = kind.type || "text";
+        input.value = state.values[entry.name] || "";
+        addField(spec, input);
+      });
     });
 
     state.statusEl = el("p", "sa-order-status");
@@ -1622,7 +2501,11 @@
     form.appendChild(state.statusEl);
 
     var actions = el("div", "sa-order-actions");
-    var review = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Review order");
+    var review = el(
+      "button",
+      "sa-card-button sa-card-button-primary sa-order-checkout",
+      forAddress ? "Save address" : "Continue to shipping",
+    );
     review.type = "submit";
     var cancel = el("button", "sa-card-button", "Cancel");
     cancel.type = "button";
@@ -1638,12 +2521,207 @@
       if (state.busy) return;
       keepValues();
       state.errors = {};
-      self.quoteOrder();
+      if (forAddress) self.saveAddress();
+      else self.quoteOrder();
     };
 
     var firstInvalid = form.querySelector('[aria-invalid="true"]');
-    (firstInvalid || state.inputs.email).focus();
+    (firstInvalid || state.inputs.email || state.inputs.firstName || state.inputs.countryCode).focus();
     this.scrollToEnd();
+  };
+
+  // ------------------------------------------- changes to an existing order
+
+  var ORDER_ACTION_KINDS = { cancel: true, cancel_request: true, address: true, edit: true };
+
+  /** Takes any confirmation card off the screen. Cards are never saved. */
+  Widget.prototype.dropActionCards = function () {
+    var cards = this.messagesEl.querySelectorAll(".sa-action");
+    for (var i = 0; i < cards.length; i += 1) cards[i].parentNode.removeChild(cards[i]);
+  };
+
+  /**
+   * A card asking the shopper to confirm a change to their own order: cancel
+   * it, change its items, or send it somewhere else. The assistant only
+   * proposes; nothing happens to the order until the button here is pressed,
+   * and then it is the store's server, not this page, that decides.
+   */
+  Widget.prototype.showOrderAction = function (action) {
+    var self = this;
+    if (
+      !ORDER_ACTION_KINDS[action.kind] ||
+      typeof action.token !== "string" ||
+      typeof action.title !== "string"
+    ) {
+      return;
+    }
+    // One at a time: an older card may describe an order that has since changed.
+    this.dropActionCards();
+    if (this.orderForm && this.orderForm.mode) this.closeOrderForm();
+
+    var card = el("section", "sa-action");
+    card.setAttribute("aria-label", action.title.slice(0, 200));
+    card.appendChild(el("h3", "sa-order-title", action.title.slice(0, 200)));
+
+    var lines = (Array.isArray(action.lines) ? action.lines : []).filter(function (line) {
+      return typeof line === "string";
+    });
+    if (lines.length) {
+      var list = el("ul", "sa-order-lines");
+      lines.slice(0, 20).forEach(function (line) {
+        list.appendChild(el("li", "sa-order-line", line.slice(0, 200)));
+      });
+      card.appendChild(list);
+    }
+    if (typeof action.note === "string" && action.note) {
+      card.appendChild(el("p", "sa-order-note", action.note.slice(0, 300)));
+    }
+
+    var status = el("p", "sa-order-status");
+    status.hidden = true;
+    card.appendChild(status);
+    var say = function (text, isError) {
+      status.textContent = text;
+      status.hidden = !text;
+      status.className = "sa-order-status" + (isError ? " sa-order-status-error" : "");
+      if (isError) status.setAttribute("role", "alert");
+      else status.removeAttribute("role");
+    };
+
+    var actions = el("div", "sa-order-actions");
+    var confirm = el(
+      "button",
+      "sa-card-button sa-order-checkout " +
+        (action.kind === "cancel" ? "sa-card-button-danger" : "sa-card-button-primary"),
+      typeof action.confirmLabel === "string" ? action.confirmLabel.slice(0, 40) : "Confirm",
+    );
+    confirm.type = "button";
+    var dismiss = el("button", "sa-card-button", action.kind === "cancel" ? "Keep my order" : "Not now");
+    dismiss.type = "button";
+    dismiss.addEventListener("click", function () {
+      if (self.orderForm && self.orderForm.card === card) self.closeOrderForm();
+      if (card.parentNode) card.parentNode.removeChild(card);
+    });
+
+    confirm.addEventListener("click", function () {
+      if (action.kind === "address") {
+        self.openAddressForm(action, card);
+        return;
+      }
+      confirm.disabled = true;
+      dismiss.disabled = true;
+      say("One moment…", false);
+      self.postOrder({ step: action.kind, token: action.token }).then(function (result) {
+        if (result.ok && typeof result.body.message === "string") {
+          if (card.parentNode) card.parentNode.removeChild(card);
+          self.pushEntry({ role: "notice", tone: "success", text: result.body.message });
+          return;
+        }
+        var error = result.body.error || {};
+        say(
+          typeof error.message === "string"
+            ? error.message
+            : "We couldn't reach the store. Check your connection and try again.",
+          true,
+        );
+        dismiss.disabled = false;
+        // An expired or refused request will not succeed on a second press.
+        confirm.disabled = error.code === "invalid_request" || error.code === "unavailable";
+      });
+    });
+
+    actions.appendChild(confirm);
+    actions.appendChild(dismiss);
+    card.appendChild(actions);
+    this.messagesEl.appendChild(card);
+    this.scrollToEnd();
+  };
+
+  /** Opens the address form for an order whose delivery address may change. */
+  Widget.prototype.openAddressForm = function (action, card) {
+    var self = this;
+    if (this.orderForm && this.orderForm.card === card) {
+      var first = this.orderForm.el.querySelector("input, select");
+      if (first) first.focus();
+      return Promise.resolve();
+    }
+    this.closeOrderForm();
+
+    var form = el("form", "sa-order sa-order-form");
+    form.noValidate = true;
+    form.setAttribute("aria-label", "New delivery address");
+    var locked = /^[A-Z]{2}$/.test(action.countryCode || "") ? action.countryCode : "";
+    var state = {
+      el: form,
+      mode: "address",
+      token: action.token,
+      card: card,
+      values: { countryCode: locked },
+      inputs: {},
+      errors: {},
+      busy: false,
+      regions: readRegions(),
+    };
+    this.orderForm = state;
+    this.messagesEl.appendChild(form);
+
+    return this.loadCountries().then(function (countries) {
+      if (self.orderForm !== state) return;
+      // The address may change, the country may not: offer only that one.
+      var same = countries.filter(function (country) {
+        return country.code === locked;
+      });
+      if (!same.length && locked) {
+        var name = locked;
+        try {
+          name = new Intl.DisplayNames([self.config.locale || "en"], { type: "region" }).of(locked) || locked;
+        } catch (error) {
+          name = locked;
+        }
+        same = [{ code: locked, name: name }];
+      }
+      state.countries = same.length ? same : countries;
+      self.renderOrderDetails();
+    });
+  };
+
+  /** Sends the new address for the order the form was opened for. */
+  Widget.prototype.saveAddress = function () {
+    var self = this;
+    var state = this.orderForm;
+    var values = state.values;
+    this.setOrderBusy(true);
+    this.setOrderStatus("Saving your new address…");
+
+    return this.postOrder({
+      step: "address",
+      token: state.token,
+      contact: {
+        firstName: values.firstName || "",
+        lastName: values.lastName || "",
+        phone: values.phone || "",
+        email: "",
+      },
+      address: {
+        company: values.company || "",
+        address1: values.address1 || "",
+        address2: values.address2 || "",
+        city: values.city || "",
+        province: values.province || "",
+        zip: values.zip || "",
+        countryCode: values.countryCode,
+      },
+    }).then(function (result) {
+      if (self.orderForm !== state) return;
+      self.setOrderBusy(false);
+      if (result.ok && typeof result.body.message === "string") {
+        self.closeOrderForm();
+        if (state.card && state.card.parentNode) state.card.parentNode.removeChild(state.card);
+        self.pushEntry({ role: "notice", tone: "success", text: result.body.message });
+        return;
+      }
+      self.showOrderError(result.body);
+    });
   };
 
   /** What the app needs to price or place the order. */
@@ -1655,14 +2733,15 @@
       items: state.items,
       contact: {
         firstName: values.firstName || "",
-        lastName: values.lastName,
-        phone: values.phone,
+        lastName: values.lastName || "",
+        phone: values.phone || "",
         email: values.email || "",
       },
       address: {
-        address1: values.address1,
+        company: values.company || "",
+        address1: values.address1 || "",
         address2: values.address2 || "",
-        city: values.city,
+        city: values.city || "",
         province: values.province || "",
         zip: values.zip || "",
         countryCode: values.countryCode,
@@ -1681,12 +2760,24 @@
     return this.fetchCart()
       .then(function (cart) {
         if (self.orderForm !== state) return null;
+        // The order is the lines the shopper ticked, or the whole cart.
+        var ticked = self.tickedLines();
+        var lines = !cart
+          ? []
+          : !ticked
+            ? cart.items
+            : cart.items.filter(function (line) {
+                return ticked[line.key] === true;
+              });
+        if (cart && cart.items.length && !lines.length) {
+          return { ok: false, body: { error: { message: "Tick what you want to order first." } } };
+        }
         var problem = !cart
           ? "Your cart couldn't be read."
           : !cart.items.length
             ? "Your cart is empty."
-            : cart.items.length > MAX_ORDER_ITEMS ||
-                cart.items.some(function (line) {
+            : lines.length > MAX_ORDER_ITEMS ||
+                lines.some(function (line) {
                   return (
                     line.quantity > MAX_ITEM_QUANTITY ||
                     line.selling_plan_allocation ||
@@ -1697,9 +2788,15 @@
               : "";
         if (problem) return { ok: false, body: { error: { message: problem + USE_CHECKOUT } } };
 
-        state.items = cart.items.map(function (line) {
+        state.items = lines.map(function (line) {
           return { variantId: String(line.variant_id), quantity: Number(line.quantity) };
         });
+        // What to take out of the cart once the order is placed.
+        state.lineKeys = ticked
+          ? lines.map(function (line) {
+              return line.key;
+            })
+          : null;
         return self.postOrder(self.orderPayload("quote"));
       })
       .then(function (result) {
@@ -1750,22 +2847,48 @@
     state.shippingRateHandle = quote.shippingRateHandle;
 
     form.textContent = "";
-    form.appendChild(el("h3", "sa-order-title", "Review your order"));
 
-    var list = el("ul", "sa-order-lines");
-    (Array.isArray(quote.lines) ? quote.lines : []).forEach(function (line) {
-      var item = el("li", "sa-order-line");
-      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " ×"));
-      item.appendChild(el("span", "sa-order-item", String(line.title || "Item")));
-      item.appendChild(el("span", "sa-order-amount", money(line.total)));
-      list.appendChild(item);
-    });
-    form.appendChild(list);
+    // Who the order is for and where it goes, each with a way back to change it.
+    var values = state.values;
+    var country = state.countries.filter(function (entry) {
+      return entry.code === values.countryCode;
+    })[0];
+    var recap = el("div", "sa-order-recap");
+    var addRecap = function (label, text) {
+      var row = el("div", "sa-order-recap-row");
+      row.appendChild(el("span", "sa-order-recap-label", label));
+      row.appendChild(el("span", "sa-order-recap-value", text));
+      var change = el("button", "sa-order-change", "Change");
+      change.type = "button";
+      change.setAttribute("aria-label", "Change: " + label);
+      change.addEventListener("click", function () {
+        self.renderOrderDetails();
+      });
+      row.appendChild(change);
+      recap.appendChild(row);
+    };
+    addRecap("Contact", [values.email, values.phone].filter(Boolean).join(" · "));
+    addRecap(
+      "Ship to",
+      [
+        [values.firstName, values.lastName].filter(Boolean).join(" "),
+        values.company,
+        values.address1,
+        values.address2,
+        values.city,
+        values.province,
+        values.zip,
+        country && country.name,
+      ]
+        .filter(Boolean)
+        .join(", "),
+    );
+    form.appendChild(recap);
 
     var rates = Array.isArray(quote.shippingRates) ? quote.shippingRates : [];
-    if (rates.length > 1) {
+    if (rates.length) {
       var options = el("fieldset", "sa-order-rates");
-      options.appendChild(el("legend", null, "Delivery"));
+      options.appendChild(el("legend", "sa-order-title", "Shipping method"));
       rates.forEach(function (rate, index) {
         var label = el("label", "sa-order-rate");
         var radio = el("input");
@@ -1785,50 +2908,57 @@
       form.appendChild(options);
     }
 
+    // The store's own name and instructions for paying on delivery, then
+    // what its checkout takes for paying online.
+    var pay = this.orderPayment || cleanPayment(null);
+    form.appendChild(el("h3", "sa-order-title", "Payment"));
+    var payment = el("div", "sa-order-pay sa-order-pay-on");
+    payment.appendChild(el("strong", null, pay.name));
+    payment.appendChild(
+      el("span", null, "You pay " + money(quote.total) + " when your order arrives."),
+    );
+    if (pay.note) payment.appendChild(el("span", "sa-order-pay-note", pay.note));
+    form.appendChild(payment);
+    if (pay.online.length) {
+      var online = this.checkoutControl("sa-order-pay sa-order-pay-online", "", {
+        partial: Boolean(this.tickedLines()),
+        newTab: true,
+      });
+      online.appendChild(el("strong", null, "Pay online at checkout"));
+      online.appendChild(el("span", null, pay.online.join(", ")));
+      form.appendChild(online);
+    }
+
+    form.appendChild(el("h3", "sa-order-title", "Order summary"));
+    var list = el("ul", "sa-order-lines");
+    (Array.isArray(quote.lines) ? quote.lines : []).forEach(function (line) {
+      var item = el("li", "sa-order-line");
+      item.appendChild(el("span", "sa-order-quantity", (parseInt(line.quantity, 10) || 1) + " ×"));
+      item.appendChild(el("span", "sa-order-item", String(line.title || "Item")));
+      item.appendChild(el("span", "sa-order-amount", money(line.total)));
+      list.appendChild(item);
+    });
+    form.appendChild(list);
+
     var totals = el("dl", "sa-order-totals");
     var addTotal = function (label, value, strong) {
       totals.appendChild(el("dt", strong ? "sa-order-grand" : null, label));
       totals.appendChild(el("dd", strong ? "sa-order-grand" : null, money(value)));
     };
     addTotal("Subtotal", quote.subtotal);
-    addTotal("Delivery", quote.shipping);
+    addTotal("Shipping", quote.shipping);
     if (quote.tax) addTotal("Tax", quote.tax);
     addTotal("Total", quote.total, true);
     form.appendChild(totals);
-
-    var values = state.values;
-    form.appendChild(
-      el(
-        "p",
-        "sa-order-note",
-        "Deliver to " +
-          [
-            [values.firstName, values.lastName].filter(Boolean).join(" "),
-            values.address1,
-            values.address2,
-            values.city,
-            values.province,
-            values.zip,
-          ]
-            .filter(Boolean)
-            .join(", ") +
-          ". Phone " +
-          values.phone +
-          ".",
-      ),
-    );
-    form.appendChild(
-      el("p", "sa-order-note", "You pay " + money(quote.total) + " when your order arrives."),
-    );
 
     state.statusEl = el("p", "sa-order-status");
     state.statusEl.hidden = true;
     form.appendChild(state.statusEl);
 
     var actions = el("div", "sa-order-actions");
-    var place = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Place order");
+    var place = el("button", "sa-card-button sa-card-button-primary sa-order-checkout", "Complete order");
     place.type = "submit";
-    var edit = el("button", "sa-card-button", "Edit details");
+    var edit = el("button", "sa-card-button", "Back");
     edit.type = "button";
     edit.addEventListener("click", function () {
       self.renderOrderDetails();
@@ -1887,7 +3017,9 @@
           formatMoney(order.total, self.config.locale) +
           " on delivery.",
       });
-      self.clearCart();
+      // Lines that were not part of the order stay in the cart.
+      if (state.lineKeys) self.removeCartLines(state.lineKeys);
+      else self.clearCart();
     });
   };
 

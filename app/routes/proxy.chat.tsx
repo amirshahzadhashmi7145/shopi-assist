@@ -43,6 +43,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       greeting: settings.greeting,
       // Whether the order summary offers "Order here, pay on delivery".
       chatOrders,
+      // Whether product cards offer "Buy now", which starts an order.
+      buyNow: settings.allowCheckout && settings.allowAddToCart,
       // On a development store the order form offers to fill in test details.
       testMode:
         chatOrders && admin
@@ -85,6 +87,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       country: body.country,
       language: body.language,
       cart: body.cart,
+      supports: body.supports,
       customerId,
       ip,
       admin: toGraphqlFn(admin, "Admin"),

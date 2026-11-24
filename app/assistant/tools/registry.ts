@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { OrderActionGrant } from "../action-grant.server";
 import type { LlmToolCall, LlmToolSpec } from "../llm/provider";
 import type { RateLimiter } from "../rate-limit";
 import type {
@@ -32,7 +33,22 @@ export interface ToolContext {
     allowAddToCart: boolean;
     allowCheckout: boolean;
     allowReturns: boolean;
+    /** Changes to an existing order. All off unless the merchant opts in. */
+    allowOrderCancel?: boolean;
+    allowAddressChange?: boolean;
+    allowOrderEdit?: boolean;
   };
+  /**
+   * What the page showing the chat has said it can draw, beyond text and
+   * product cards. A shopper's browser can be running a widget older than
+   * this server, so nothing is handed to it that it has not asked for.
+   */
+  clientSupports?: readonly string[];
+  /**
+   * Whether Shopify says this is a development store. Asked only when a
+   * lookup limit is reached: such stores get more room for testing.
+   */
+  isTestStore?: () => Promise<boolean>;
   buyer: {
     /** ISO country code for localized prices, e.g. "US". */
     country?: string;
@@ -51,12 +67,26 @@ export interface ToolContext {
    * its order form, or proved to be the shopper's earlier in the chat.
    */
   knownOrders?: KnownOrder[];
+  /**
+   * Signs a grant for one change to one order, for the widget to bring back
+   * when the shopper confirms. Missing when the server cannot sign.
+   */
+  grantOrderAction?: (
+    grant: Pick<OrderActionGrant, "orderId" | "orderName" | "kind" | "reason" | "changes" | "countryCode">,
+  ) => string;
   /** Ties an order the shopper has just proved is theirs to the conversation. */
   rememberOrder?: (order: { id: string; name: string }) => Promise<void>;
   rateLimiter: RateLimiter;
   /** Counters that live for one chat turn, shared by every tool call in it. */
   turn: {
     orderLookups: number;
+    /** The different orders looked into this turn. */
+    orderNames?: string[];
+    /**
+     * The shopper's orders that had something returnable when this turn
+     * checked, by name ("#1008"). Unset when the turn did not check.
+     */
+    returnableOrders?: string[];
   };
   /** Injected clock for tests. */
   now: () => Date;

@@ -158,15 +158,23 @@ export function dedupeActions(actions: ClientAction[]): ClientAction[] {
   const adds = new Map<string, ClientAction>();
   const removes = new Map<string, ClientAction>();
   const orderItems = new Map<string, OrderItem>();
+  const cards = new Map<string, ClientAction>();
   let wantsCheckout = false;
   let clear = false;
   let replace = false;
+  let choices: ClientAction | null = null;
 
   for (const action of actions) {
     if (action.type === "add_to_cart") {
       if (!adds.has(action.variantId)) adds.set(action.variantId, action);
     } else if (action.type === "remove_from_cart") {
       if (!removes.has(action.variantId)) removes.set(action.variantId, action);
+    } else if (action.type === "order_action") {
+      // The latest card for an order replaces an earlier one in the same turn.
+      cards.set(action.order, action);
+    } else if (action.type === "choices") {
+      // One question at a time: the last set of answers offered is the one shown.
+      choices = action;
     } else if (action.type === "clear_cart") {
       clear = true;
     } else if (action.type === "order") {
@@ -199,7 +207,10 @@ export function dedupeActions(actions: ClientAction[]): ClientAction[] {
     ...(emptiesCart ? [] : removes.values()),
     ...adds.values(),
   ];
-  return summary
+  const cart = summary
     ? [...changes.slice(0, MAX_ACTIONS - 1), summary]
     : changes.slice(0, MAX_ACTIONS);
+  // Cards for changes to existing orders stand apart from the cart, and come
+  // after it. Buttons that answer the assistant's question go under everything.
+  return [...cart, ...[...cards.values()].slice(0, 2), ...(choices ? [choices] : [])];
 }

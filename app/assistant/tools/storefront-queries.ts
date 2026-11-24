@@ -16,6 +16,11 @@ const PRODUCT_CARD_FRAGMENT = `#graphql
     availableForSale
     onlineStoreUrl
     description(truncateAt: 220)
+    tags
+    options(first: 5) {
+      name
+      optionValues { name }
+    }
     featuredImage {
       url(transform: { maxWidth: 480 })
       altText
@@ -27,20 +32,43 @@ const PRODUCT_CARD_FRAGMENT = `#graphql
     compareAtPriceRange {
       maxVariantPrice { amount currencyCode }
     }
-    variants(first: 2) {
-      nodes { id availableForSale }
+    variants(first: 13) {
+      nodes {
+        id
+        title
+        availableForSale
+        price { amount currencyCode }
+      }
     }
   }
 `;
 
+/**
+ * Keyword search, optionally narrowed by the store's own filters. The
+ * filters that apply to the results come back with them, each value with the
+ * input that selects it, so a second search can ask for exactly that.
+ */
 export const SEARCH_PRODUCTS_QUERY = `#graphql
   query ShopiAssistSearchProducts(
     $query: String!
     $first: Int!
+    $filters: [ProductFilter!]
     $country: CountryCode
     $language: LanguageCode
   ) @inContext(country: $country, language: $language) {
-    search(query: $query, first: $first, types: [PRODUCT], unavailableProducts: LAST) {
+    search(
+      query: $query
+      first: $first
+      types: [PRODUCT]
+      unavailableProducts: LAST
+      productFilters: $filters
+    ) {
+      totalCount
+      productFilters {
+        label
+        type
+        values { label count input }
+      }
       nodes {
         ... on Product { ...ShopiAssistProductCard }
       }
@@ -73,6 +101,38 @@ export const COLLECTION_BEST_SELLERS_QUERY = `#graphql
       title
       handle
       products(first: $first, sortKey: BEST_SELLING) {
+        nodes { ...ShopiAssistProductCard }
+      }
+    }
+  }
+  ${PRODUCT_CARD_FRAGMENT}
+`;
+
+/** The products added to the store most recently, newest first. */
+export const NEWEST_PRODUCTS_QUERY = `#graphql
+  query ShopiAssistNewestProducts(
+    $first: Int!
+    $country: CountryCode
+    $language: LanguageCode
+  ) @inContext(country: $country, language: $language) {
+    products(first: $first, sortKey: CREATED_AT, reverse: true) {
+      nodes { ...ShopiAssistProductCard }
+    }
+  }
+  ${PRODUCT_CARD_FRAGMENT}
+`;
+
+export const COLLECTION_NEWEST_QUERY = `#graphql
+  query ShopiAssistCollectionNewest(
+    $handle: String!
+    $first: Int!
+    $country: CountryCode
+    $language: LanguageCode
+  ) @inContext(country: $country, language: $language) {
+    collection(handle: $handle) {
+      title
+      handle
+      products(first: $first, sortKey: CREATED, reverse: true) {
         nodes { ...ShopiAssistProductCard }
       }
     }
@@ -216,6 +276,35 @@ export const DELIVERY_COUNTRIES_QUERY = `#graphql
   @inContext(language: $language) {
     localization {
       availableCountries { isoCode name }
+    }
+  }
+`;
+
+/**
+ * A cart of its own for some of the shopper's items, to pay for at the
+ * store's checkout. The cart on the storefront is left as it is.
+ */
+export const CHECKOUT_CART_MUTATION = `#graphql
+  mutation ShopiAssistCheckoutCart($input: CartInput!, $country: CountryCode)
+  @inContext(country: $country) {
+    cartCreate(input: $input) {
+      cart {
+        checkoutUrl
+        totalQuantity
+      }
+      userErrors { code field message }
+    }
+  }
+`;
+
+/** The cards and wallets the store's checkout takes. */
+export const PAYMENT_SETTINGS_QUERY = `#graphql
+  query ShopiAssistPaymentSettings {
+    shop {
+      paymentSettings {
+        acceptedCardBrands
+        supportedDigitalWallets
+      }
     }
   }
 `;

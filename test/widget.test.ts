@@ -271,6 +271,232 @@ describe("chat widget", () => {
     expect((window as unknown as { hacked?: number }).hacked).toBeUndefined();
   });
 
+  it("lets the shopper set a quantity for each version on the card, then buy them", async () => {
+    const variants = [
+      { id: "201", title: "Regular", price: { amount: "24.95", currencyCode: "USD" }, available: true },
+      { id: "202", title: "Special", price: { amount: "49.95", currencyCode: "USD" }, available: false },
+      { id: "203", title: "Sample", price: { amount: "9.95", currencyCode: "USD" }, available: true },
+    ];
+    configMock.mockImplementation(() => appConfig({ buyNow: true }));
+    const { adds } = liveCart(
+      { 201: ["Ski Wax - Regular", 2495], 203: ["Ski Wax - Sample", 995] },
+      () =>
+        reply("Ski Wax comes in three versions.", {
+          cards: [
+            card({
+              title: "Ski Wax",
+              price: { amount: "9.95", currencyCode: "USD" },
+              variantId: null,
+              variants,
+            }),
+          ],
+        }),
+    );
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("ski wax?");
+    await flush();
+
+    const item = widget.$(".sa-card");
+    const rows = Array.from(item.querySelectorAll<HTMLElement>(".sa-variant"));
+    expect(rows.map((row) => row.querySelector(".sa-variant-name")!.textContent)).toEqual([
+      "1.Regular",
+      "2.Special",
+      "3.Sample",
+    ]);
+    expect(rows.map((row) => row.querySelector(".sa-variant-note")!.textContent)).toEqual([
+      "$24.95",
+      "Sold out",
+      "$9.95",
+    ]);
+    // A sold-out version has no quantity to set.
+    expect(rows.map((row) => row.querySelectorAll(".sa-stepper-button").length)).toEqual([2, 0, 2]);
+    expect(item.querySelector(".sa-card-price")!.textContent).toBe("From $9.95");
+    expect(item.textContent).not.toContain("Choose options");
+
+    // Nothing can be added until something has a quantity.
+    const [add, buy] = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-card-actions button"));
+    expect([add.textContent, buy.textContent]).toEqual(["Add to cart", "Buy now"]);
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
+    expect(item.querySelector(".sa-card-total")!.textContent).toBe("Set how many you want of each.");
+
+    const step = (row: HTMLElement, label: "+" | "−") =>
+      Array.from(row.querySelectorAll<HTMLButtonElement>(".sa-stepper-button"))
+        .find((button) => button.textContent === label)!
+        .click();
+    step(rows[0], "+");
+    step(rows[2], "+");
+    step(rows[2], "+");
+    step(rows[2], "+");
+    step(rows[2], "−");
+    expect(rows.map((row) => row.querySelector(".sa-stepper-count")?.textContent)).toEqual(["1", undefined, "2"]);
+    expect(item.querySelector(".sa-card-total")!.textContent).toBe("3 items · $44.85");
+    expect([add.disabled, buy.disabled]).toEqual([false, false]);
+
+    buy.click();
+    await flush();
+    expect(adds).toEqual([
+      [
+        { id: 201, quantity: 1 },
+        { id: 203, quantity: 2 },
+      ],
+    ]);
+    const summary = widget.$(".sa-order").textContent;
+    expect(summary).toContain("Ski Wax - Regular");
+    expect(summary).toContain("Ski Wax - Sample");
+
+    // Back to none: the buttons switch off again.
+    step(rows[0], "−");
+    step(rows[2], "−");
+    step(rows[2], "−");
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
+  });
+
+  it("adds the picked versions to the cart, starts the only one in stock at one, and offers Buy now only when allowed", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url === "/cart/add.js"
+        ? jsonResponse({ items: [] })
+        : reply("Ski Wax.", {
+            cards: [
+              card({
+                title: "Ski Wax",
+                variantId: null,
+                variants: [
+                  { id: "201", title: "Regular", price: { amount: "18.0", currencyCode: "USD" }, available: false },
+                  { id: "202", title: "Sample", price: { amount: "18.0", currencyCode: "USD" }, available: true },
+                  { id: "javascript:alert(1)", title: "Bad", price: null, available: true },
+                ],
+              }),
+            ],
+          }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("ski wax?");
+    await flush();
+
+    const item = widget.$(".sa-card");
+    const rows = Array.from(item.querySelectorAll<HTMLElement>(".sa-variant"));
+    // The malformed version is dropped. Same price for both: no "From".
+    expect(rows.map((row) => row.querySelector(".sa-variant-name")!.textContent)).toEqual(["1.Regular", "2.Sample"]);
+    expect(item.querySelector(".sa-card-price")!.textContent).toBe("$18.00");
+    expect(rows[1].querySelector(".sa-stepper-count")!.textContent).toBe("1");
+    expect(item.querySelector(".sa-card-total")!.textContent).toBe("1 item · $18.00");
+
+    const buttons = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-card-actions button"));
+    expect(buttons.map((button) => button.textContent)).toEqual(["Add to cart"]);
+    expect(buttons[0].disabled).toBe(false);
+    buttons[0].click();
+    await flush();
+
+    const cartCall = fetchMock.mock.calls.find((call) => call[0] === "/cart/add.js")!;
+    expect(JSON.parse((cartCall[1] as RequestInit).body as string)).toEqual({
+      items: [{ id: 202, quantity: 1 }],
+    });
+    expect(buttons[0].textContent).toBe("Added");
+  });
+
+  it("folds the picker away in a list of products, with one pair of buttons for the whole list", async () => {
+    const variants = ["Ice", "Dawn", "Powder"].map((title, index) => ({
+      id: String(301 + index),
+      title,
+      price: { amount: "699.95", currencyCode: "USD" },
+      available: true,
+    }));
+    const { adds } = liveCart(
+      { 101: ["Trail Mug", 1800], 303: ["The Complete Snowboard - Powder", 69995] },
+      () =>
+        reply("Trail Mug and The Complete Snowboard.", {
+          cards: [
+            card(),
+            card({ title: "The Complete Snowboard", handle: "complete", variantId: null, variants }),
+          ],
+        }),
+    );
+    configMock.mockImplementation(() => appConfig({ buyNow: true }));
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("cheapest?");
+    await flush();
+
+    const board = widget.all(".sa-card")[1];
+    const picker = board.querySelector<HTMLElement>(".sa-card-pick")!;
+    expect(picker.hidden).toBe(true);
+    const unfold = board.querySelector<HTMLButtonElement>(".sa-card-body button")!;
+    expect(unfold.textContent).toBe("Choose from 3 options");
+    expect(board.querySelector(".sa-card-body")!.textContent).toContain("View");
+
+    unfold.click();
+    expect(picker.hidden).toBe(false);
+    expect(board.querySelector(".sa-card-body button")).toBeNull();
+    // Every version costs the same, so the price stays on the card only.
+    expect(picker.querySelector(".sa-variant-note")).toBeNull();
+    expect(Array.from(picker.querySelectorAll(".sa-variant-name")).map((name) => name.textContent)).toEqual([
+      "1.Ice",
+      "2.Dawn",
+      "3.Powder",
+    ]);
+
+    // No card has buttons of its own: the list shares one pair, under it.
+    expect(widget.all(".sa-card").map((item) => item.textContent)).not.toContain("Add to cart");
+    expect(widget.all(".sa-card .sa-card-total")).toHaveLength(0);
+    const bar = widget.$(".sa-cards-bar");
+    const [add, buy] = Array.from(bar.querySelectorAll<HTMLButtonElement>("button"));
+    expect([add.textContent, buy.textContent]).toEqual(["Add to cart", "Buy now"]);
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
+    expect(bar.querySelector(".sa-card-total")!.textContent).toBe("Set how many you want of each product above.");
+
+    // A product with one version has its quantity on the card.
+    const mug = widget.all(".sa-card")[0];
+    const press = (scope: Element, label: "+" | "−") =>
+      Array.from(scope.querySelectorAll<HTMLButtonElement>(".sa-stepper-button"))
+        .find((button) => button.textContent === label)!
+        .click();
+    expect(mug.querySelector(".sa-stepper-count")!.textContent).toBe("0");
+    press(mug, "+");
+    press(mug, "+");
+    press(picker.querySelectorAll(".sa-variant")[2], "+");
+    expect(bar.querySelector(".sa-card-total")!.textContent).toBe("3 items · $735.95");
+    expect([add.disabled, buy.disabled]).toEqual([false, false]);
+    expect([mug.classList.contains("sa-card-on"), board.classList.contains("sa-card-on")]).toEqual([true, true]);
+
+    buy.click();
+    await flush();
+    expect(adds).toEqual([
+      [
+        { id: 101, quantity: 2 },
+        { id: 303, quantity: 1 },
+      ],
+    ]);
+    expect(widget.all(".sa-order")).toHaveLength(1);
+
+    press(mug, "−");
+    press(mug, "−");
+    press(picker.querySelectorAll(".sa-variant")[2], "−");
+    expect([add.disabled, buy.disabled]).toEqual([true, true]);
+  });
+
+  it("asks for the app's settings again after a reply when the page loaded without them", async () => {
+    // The app could not be reached when the page loaded.
+    configMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
+    configMock.mockImplementation(() => appConfig({ buyNow: true }));
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("mugs?");
+    await flush();
+    expect(widget.all(".sa-card")).toHaveLength(0);
+
+    fetchMock.mockImplementation(() => reply("Try the Trail Mug.", { cards: [card()] }));
+    widget.send("mugs?");
+    await flush();
+
+    expect(configMock).toHaveBeenCalledTimes(2);
+    expect(widget.$(".sa-card .sa-card-actions").textContent).toBe("Add to cartBuy nowView");
+  });
+
   it("shows the shopper's own message as plain text", async () => {
     const widget = mountWidget();
     widget.launcher.click();
@@ -319,7 +545,10 @@ describe("chat widget", () => {
     expect(cards[3].querySelector("a")).toBeNull();
     expect(cards[3].querySelector("img")).toBeNull();
 
-    const addButton = cards[0].querySelector("button")!;
+    // In a list the quantity is set on the card and added from under the list.
+    const more = Array.from(cards[0].querySelectorAll("button")).find((button) => button.textContent === "+")!;
+    more.click();
+    const addButton = widget.$(".sa-cards-bar button");
     expect(addButton.textContent).toBe("Add to cart");
     addButton.click();
     await flush();
@@ -329,6 +558,105 @@ describe("chat widget", () => {
       items: [{ id: 101, quantity: 1 }],
     });
     expect(addButton.textContent).toBe("Added");
+  });
+
+  it("shows the answers to the assistant's question as buttons, with Other for typing", async () => {
+    const choices = {
+      type: "choices",
+      options: ["Changed my mind", "Damaged or defective", " damaged or defective ", "<b>Too big</b>", ""],
+      other: true,
+    };
+    fetchMock.mockImplementation(() => reply("What is the reason for the return?", { actions: [choices] }));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("i want to return order 1012");
+    await flush();
+
+    const buttons = () => widget.all(".sa-choices button");
+    // Each answer once, as text; then the way out for anything else.
+    expect(buttons().map((button) => button.textContent)).toEqual([
+      "Changed my mind",
+      "Damaged or defective",
+      "<b>Too big</b>",
+      "Other…",
+    ]);
+    expect(widget.root.querySelector(".sa-choices b")).toBeNull();
+
+    // Pressing an answer sends it as the shopper's message and clears the buttons.
+    fetchMock.mockImplementation(() => reply("Thanks.", { actions: [choices] }));
+    buttons()[1].click();
+    expect(buttons()).toHaveLength(0);
+    await flush();
+    expect(lastBody(fetchMock).message).toBe("Damaged or defective");
+    expect(widget.bubbles().slice(-2)).toEqual(["Damaged or defective", "Thanks."]);
+    // Every message says this widget can draw answer buttons.
+    expect(lastBody(fetchMock).supports).toEqual(["choices"]);
+
+    // Other hands over the text box instead of sending anything.
+    const sent = fetchMock.mock.calls.length;
+    buttons().at(-1)!.click();
+    expect(buttons()).toHaveLength(0);
+    expect(fetchMock.mock.calls).toHaveLength(sent);
+    expect(widget.root.activeElement).toBe(widget.input);
+    expect(widget.input.placeholder).toBe("Type your answer…");
+    fetchMock.mockImplementation(() => reply("Noted.", { actions: [choices] }));
+    widget.send("the strap snapped");
+    expect(widget.input.placeholder).toBe("Ask a question…");
+    await flush();
+
+    // Typing an answer instead of pressing one clears the buttons too, and
+    // fewer than two answers are not worth buttons.
+    expect(buttons()).toHaveLength(4);
+    expect(widget.root.querySelector(".sa-choice-select")).toBeNull();
+    fetchMock.mockImplementation(() =>
+      reply("Okay.", { actions: [{ type: "choices", options: ["Only one"] }] }),
+    );
+    widget.send("something else");
+    expect(buttons()).toHaveLength(0);
+    await flush();
+    expect(widget.root.querySelector(".sa-choices")).toBeNull();
+  });
+
+  it("shows a longer set of answers as a list to choose from and send", async () => {
+    const reasons = ["Changed my mind", "Not as described", "Wrong item", "Damaged or defective", "Too small", "Too big"];
+    fetchMock.mockImplementation(() =>
+      reply("What is the reason for the return?", { actions: [{ type: "choices", options: reasons, other: true }] }),
+    );
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("1012");
+    await flush();
+
+    const select = () => widget.$<HTMLSelectElement>(".sa-choice-select");
+    const send = () => widget.$<HTMLButtonElement>(".sa-choice-send");
+    expect(widget.all(".sa-choices .sa-chip")).toHaveLength(0);
+    expect(Array.from(select().options).map((option) => option.textContent)).toEqual([
+      "Choose an answer…",
+      ...reasons,
+      "Other (type your own)",
+    ]);
+    // Nothing is sent until an answer is chosen.
+    expect(send().disabled).toBe(true);
+    const sent = fetchMock.mock.calls.length;
+    send().click();
+    expect(fetchMock.mock.calls).toHaveLength(sent);
+
+    const choose = (value: string) => {
+      select().value = value;
+      select().dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose("3");
+    expect(send().disabled).toBe(false);
+    send().click();
+    expect(widget.root.querySelector(".sa-choices")).toBeNull();
+    await flush();
+    expect(lastBody(fetchMock, -1).message).toBe("Damaged or defective");
+
+    // Their own answer: the list makes way for the text box.
+    choose("other");
+    expect(widget.root.querySelector(".sa-choices")).toBeNull();
+    expect(widget.root.activeElement).toBe(widget.input);
+    expect(widget.input.placeholder).toBe("Type your answer…");
   });
 
   it("runs an add_to_cart action from the assistant and confirms it", async () => {
@@ -399,7 +727,6 @@ describe("chat widget", () => {
     const links = Array.from(order.querySelectorAll("a"));
     expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
       ["Go to checkout", "/checkout"],
-      ["Edit cart", "/cart"],
     ]);
   });
 
@@ -673,6 +1000,62 @@ describe("chat widget", () => {
     );
   });
 
+  it("changes how many of a line the order holds, without leaving the chat", async () => {
+    const lines = [{ ...cartLine(101, 2, "Trail Mug", 1800), key: "101:abc" }];
+    let refuse = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url !== "/cart/change.js") return reply("Here.", { actions: [{ type: "checkout" }] });
+      if (refuse) return jsonResponse({ status: 422, description: "Sold out" }, 422);
+      const change = JSON.parse(init!.body as string);
+      lines[0] = { ...cartLine(101, change.quantity, "Trail Mug", 1800), key: "101:abc" };
+      return jsonResponse(cartJson(...lines));
+    });
+    cartMock.mockImplementation(() => jsonResponse(cartJson(...lines)));
+    const widget = mountWidget();
+    widget.launcher.click();
+    widget.send("checkout");
+    await flush();
+
+    const step = (label: string) =>
+      widget.all(".sa-order .sa-stepper-button").find((button) => button.textContent === label) as HTMLButtonElement;
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("2");
+    expect(step("+").getAttribute("aria-label")).toBe("One more: Trail Mug");
+    // No link out to the cart page.
+    expect(widget.$(".sa-order").textContent).not.toContain("Edit cart");
+
+    step("+").click();
+    await flush();
+    const changes = () =>
+      fetchMock.mock.calls
+        .filter((call) => call[0] === "/cart/change.js")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+    expect(changes()).toEqual([{ id: "101:abc", quantity: 3 }]);
+    expect(widget.all(".sa-order")).toHaveLength(1);
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("3");
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$54.00");
+
+    step("\u2212").click();
+    step("\u2212").click();
+    await flush();
+    // The second press landed on a disabled button: one change at a time.
+    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 2 });
+    expect(changes()).toHaveLength(2);
+
+    step("\u2212").click();
+    await flush();
+    // At one, less is off: Remove is the way to take the line out.
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
+    expect(step("\u2212").disabled).toBe(true);
+
+    refuse = true;
+    step("+").click();
+    await flush();
+    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
+    expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+      "That quantity couldn't be set. Your order is as shown above.",
+    );
+  });
+
   it("shows the app's message when an order step is refused, even as a 200", async () => {
     configMock.mockImplementation(() => appConfig({ chatOrders: true }));
     liveCart({ 101: ["Trail Mug", 1800] }, () => reply("Here.", { actions: [{ type: "checkout" }] }), {
@@ -745,7 +1128,7 @@ describe("chat widget", () => {
     await flush();
 
     expect(cartMock.mock.calls[0][0]).toBe("/fr/cart.js");
-    expect(widget.$(".sa-order a:last-child").getAttribute("href")).toBe("/fr/cart");
+    expect(widget.$(".sa-order-item").textContent).toBe("Tasse");
   });
 
   describe("pay-on-delivery order form", () => {
@@ -768,6 +1151,23 @@ describe("chat widget", () => {
         .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
         .map((call) => JSON.parse((call[1] as RequestInit).body as string));
 
+    /** A form layout as the app sends it: fields in rows, named for the country. */
+    const formFor = (province: string | null, zip: string, extra: string[] = []) => [
+      [
+        { name: "firstName", label: "First name (optional)", required: false },
+        { name: "lastName", label: "Last name", required: true },
+      ],
+      ...extra.map((name) => [{ name, label: "Company", required: true }]),
+      [{ name: "address1", label: "Address", required: true }],
+      [{ name: "address2", label: "Apartment, suite, etc (optional)", required: false }],
+      [
+        { name: "city", label: "City", required: true },
+        ...(province ? [{ name: "province", label: province, required: true }] : []),
+        { name: "zip", label: zip, required: true },
+      ],
+      [{ name: "phone", label: "Phone", required: true }],
+    ];
+
     /** A store that takes chat orders, with two mugs in the cart and the summary on screen. */
     async function openForm(
       respond: (body: Record<string, unknown>) => Promise<Response>,
@@ -787,9 +1187,15 @@ describe("chat widget", () => {
           : jsonResponse({
               ok: true,
               countries: [
-                { code: "CA", name: "Canada" },
-                { code: "US", name: "United States" },
+                { code: "CA", name: "Canada", form: 0 },
+                { code: "US", name: "United States", form: 1 },
               ],
+              forms: [formFor("Province", "Postal code"), formFor("State", "ZIP code")],
+              payment: {
+                name: "COD (cash or card at the door)",
+                note: "Have the exact amount ready.",
+                online: ["Visa", "Mastercard", "Shop Pay"],
+              },
             }),
       );
       const widget = mountWidget();
@@ -841,6 +1247,98 @@ describe("chat widget", () => {
       expect(widget.root.querySelector(".sa-order-here")).toBeNull();
     });
 
+    it("sends only the ticked lines to the store's checkout, wherever orders are taken", async () => {
+      const opened = vi.spyOn(window, "open");
+      try {
+        for (const chatOrders of [false, true]) {
+          document.body.textContent = "";
+          window.localStorage.clear();
+          configMock.mockImplementation(() => appConfig({ chatOrders, buyNow: true }));
+          const lines = [
+            { ...cartLine(101, 2, "Trail Mug", 1800), key: "101:k", properties: { Engraving: "Ada" } },
+            {
+              ...cartLine(103, 1, "Camp Blanket", 8950),
+              key: "103:k",
+              selling_plan_allocation: { selling_plan: { id: 77 } },
+            },
+          ];
+          cartMock.mockImplementation(() =>
+            jsonResponse({ ...cartJson(...lines), discount_codes: [{ code: "WELCOME", applicable: true }] }),
+          );
+          fetchMock.mockImplementation(() => reply("Here.", { actions: [{ type: "checkout" }] }));
+          orderMock.mockReset().mockImplementation((_url: string, init?: RequestInit) =>
+            init?.method === "POST"
+              ? jsonResponse({ ok: true, step: "checkout", checkoutUrl: "https://shop.example/cart/c/abc?key=1" })
+              : jsonResponse({ ok: true, countries: [] }),
+          );
+          const tab = { opener: {} as unknown, close: vi.fn(), location: { replace: vi.fn() } };
+          opened.mockReset().mockImplementation(() => tab as unknown as Window);
+
+          const widget = mountWidget();
+          await flush();
+          widget.launcher.click();
+          widget.send("checkout");
+          await flush();
+
+          const control = () => widget.$(chatOrders ? ".sa-order-online" : ".sa-order-checkout");
+          // The whole cart is ticked: a plain link to the checkout, and both lines can be unticked.
+          expect(control().getAttribute("href")).toBe("/checkout");
+          const ticks = widget.all(".sa-order-pick") as HTMLInputElement[];
+          expect(ticks.map((tick) => tick.checked)).toEqual([true, true]);
+
+          ticks[1].checked = false;
+          ticks[1].dispatchEvent(new Event("change", { bubbles: true }));
+          expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
+          expect(control().tagName).toBe("BUTTON");
+          expect(control().textContent).toBe(chatOrders ? "Pay online at checkout instead" : "Go to checkout");
+
+          control().click();
+          await flush();
+          expect(orderPosts()).toEqual([
+            {
+              step: "checkout",
+              items: [{ variantId: "101", quantity: 2, properties: { Engraving: "Ada" } }],
+              country: "US",
+              discountCodes: ["WELCOME"],
+            },
+          ]);
+          if (chatOrders) {
+            // A new tab, opened with the press and then sent to the checkout.
+            expect(opened.mock.calls).toEqual([["", "_blank"]]);
+            expect(tab.opener).toBeNull();
+            expect(tab.location.replace).toHaveBeenCalledWith("https://shop.example/cart/c/abc?key=1");
+          } else {
+            expect(opened.mock.calls).toEqual([["https://shop.example/cart/c/abc?key=1", "_self"]]);
+          }
+          // The cart on the storefront is not touched.
+          expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("/cart/"))).toBe(false);
+
+          // Refused, or an address that is not a checkout: say so and go nowhere.
+          opened.mockClear();
+          tab.close.mockClear();
+          orderMock.mockImplementation(() =>
+            jsonResponse({ ok: false, error: { code: "unavailable", message: "These items are sold out." } }),
+          );
+          control().click();
+          await flush();
+          expect(widget.all(".sa-notice").at(-1)!.textContent).toBe("These items are sold out.");
+          if (chatOrders) expect(tab.close).toHaveBeenCalled();
+          else expect(opened).not.toHaveBeenCalled();
+          orderMock.mockImplementation(() =>
+            jsonResponse({ ok: true, step: "checkout", checkoutUrl: "javascript:alert(1)" }),
+          );
+          control().click();
+          await flush();
+          expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+            "The checkout couldn't be opened. Please try again.",
+          );
+          expect(opened.mock.calls.every((call) => call[0] === "")).toBe(true);
+        }
+      } finally {
+        opened.mockRestore();
+      }
+    });
+
     it("takes the details, shows the total and places the order", async () => {
       const { widget, field, fill, submit } = await openForm((body) =>
         body.step === "quote"
@@ -851,16 +1349,28 @@ describe("chat widget", () => {
       // The form asks for what a delivery needs, with the browsing country chosen.
       expect(widget.all(".sa-order-form label").map((label) => label.textContent)).toEqual([
         "Email (optional, for order updates)",
-        "Country / region",
+        "Country/region",
         "First name (optional)",
         "Last name",
         "Address",
-        "Apartment, suite, etc. (optional)",
+        "Apartment, suite, etc (optional)",
         "City",
-        "State / province",
-        "ZIP / postal code",
+        "State",
+        "ZIP code",
         "Phone",
       ]);
+      // Laid out under the checkout's own headings, names and state/ZIP side by side.
+      expect(widget.all(".sa-order-form .sa-order-title").map((title) => title.textContent)).toEqual([
+        "Contact",
+        "Delivery",
+      ]);
+      expect(widget.all(".sa-field-half label").map((label) => label.textContent)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "State",
+        "ZIP code",
+      ]);
+      expect(widget.$('.sa-order-form button[type="submit"]').textContent).toBe("Continue to shipping");
       expect(field("countryCode").value).toBe("US");
       expect(field("phone").getAttribute("autocomplete")).toBe("tel");
 
@@ -877,6 +1387,7 @@ describe("chat widget", () => {
           email: "ada@example.com",
         },
         address: {
+          company: "",
           address1: "12 Analytical Way",
           address2: "",
           city: "Ottawa",
@@ -887,16 +1398,26 @@ describe("chat widget", () => {
       });
 
       // Review: lines, delivery options and what will be paid on delivery.
-      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("Review your order");
+      expect(widget.all(".sa-order-form .sa-order-title").map((title) => title.textContent)).toEqual([
+        "Shipping method",
+        "Payment",
+        "Order summary",
+      ]);
+      expect(widget.all(".sa-order-recap-row").map((row) => row.textContent)).toEqual([
+        "Contactada@example.com · +1 613 555 0111Change",
+        "Ship toAda Lovelace, 12 Analytical Way, Ottawa, ON, K1A 0B1, CanadaChange",
+      ]);
       expect(widget.$(".sa-order-totals").textContent).toBe(
-        "Subtotal$36.00Delivery$5.00Tax$3.60Total$44.60",
+        "Subtotal$36.00Shipping$5.00Tax$3.60Total$44.60",
       );
-      expect(widget.$(".sa-order-form").textContent).toContain(
-        "You pay $44.60 when your order arrives.",
-      );
-      expect(widget.$(".sa-order-form").textContent).toContain(
-        "Deliver to Ada Lovelace, 12 Analytical Way, Ottawa, ON, K1A 0B1. Phone +1 613 555 0111.",
-      );
+      // What the store calls it and tells buyers, then what its checkout takes.
+      expect(widget.all(".sa-order-pay").map((option) => option.textContent)).toEqual([
+        "COD (cash or card at the door)You pay $44.60 when your order arrives.Have the exact amount ready.",
+        "Pay online at checkoutVisa, Mastercard, Shop Pay",
+      ]);
+      const online = widget.$<HTMLAnchorElement>("a.sa-order-pay-online");
+      expect([online.getAttribute("href"), online.target]).toEqual(["/checkout", "_blank"]);
+      expect(widget.$('.sa-order-form button[type="submit"]').textContent).toBe("Complete order");
 
       // Picking faster delivery asks for a new total.
       const express = widget.all(".sa-order-rate input")[1] as HTMLInputElement;
@@ -935,6 +1456,249 @@ describe("chat widget", () => {
       expect(stored).toContain("Order #1001 is placed");
     });
 
+    it("orders what was just picked and leaves the rest of the cart unticked", async () => {
+      configMock.mockImplementation(() => appConfig({ chatOrders: true, buyNow: true }));
+      const catalog: Record<number, [string, number]> = {
+        101: ["Trail Mug", 1800],
+        102: ["Camp Kettle", 4500],
+        103: ["Camp Blanket", 8950],
+      };
+      // In the cart from before: two mugs and a blanket.
+      const held = new Map<number, number>([
+        [101, 2],
+        [103, 1],
+      ]);
+      const cartNow = () =>
+        cartJson(
+          ...[...held].map(([id, quantity]) => ({
+            ...cartLine(id, quantity, catalog[id][0], catalog[id][1]),
+            key: `${id}:k`,
+          })),
+        );
+      cartMock.mockImplementation(() => jsonResponse(cartNow()));
+      const cartCalls: Array<[string, unknown]> = [];
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!url.startsWith("/cart/")) {
+          return reply("Two picks.", {
+            cards: [
+              card(),
+              card({ title: "Camp Kettle", handle: "camp-kettle", variantId: "102", price: usd("45.0") }),
+            ],
+          });
+        }
+        const body = JSON.parse(init!.body as string);
+        cartCalls.push([url, body]);
+        if (url === "/cart/add.js") {
+          for (const item of body.items) held.set(item.id, (held.get(item.id) ?? 0) + item.quantity);
+          return jsonResponse({ items: [] });
+        }
+        if (url === "/cart/change.js") {
+          const id = Number(String(body.id).split(":")[0]);
+          if (body.quantity > 0) held.set(id, body.quantity);
+          else held.delete(id);
+        }
+        return jsonResponse(cartNow());
+      });
+      orderMock.mockImplementation((_url: string, init?: RequestInit) => {
+        if (init?.method !== "POST") {
+          return jsonResponse({ ok: true, countries: [{ code: "CA", name: "Canada" }] });
+        }
+        return JSON.parse(init.body as string).step === "quote"
+          ? jsonResponse({ ok: true, step: "quote", quote: quote() })
+          : jsonResponse({ ok: true, step: "place", order: { name: "#1003", total: usd("44.6") } });
+      });
+
+      const widget = mountWidget();
+      await flush();
+      widget.launcher.click();
+      widget.send("mugs?");
+      await flush();
+
+      // One of each, where the cart already holds two mugs.
+      for (const item of widget.all(".sa-card")) {
+        Array.from(item.querySelectorAll("button"))
+          .find((button) => button.textContent === "+")!
+          .click();
+      }
+      Array.from(widget.$(".sa-cards-bar").querySelectorAll("button"))
+        .find((button) => button.textContent === "Buy now")!
+        .click();
+      await flush();
+
+      // The cart now holds exactly what was picked of each, plus the blanket.
+      expect(cartCalls).toEqual([
+        ["/cart/add.js", { items: [{ id: 102, quantity: 1 }] }],
+        ["/cart/change.js", { id: "101:k", quantity: 1 }],
+      ]);
+
+      const names = (selector: string) => widget.all(`${selector} .sa-order-item`).map((item) => item.textContent);
+      const ticks = () => widget.all(".sa-order-pick") as HTMLInputElement[];
+      expect(names(".sa-order-lines:not(.sa-order-waiting)")).toEqual(["Trail Mug", "Camp Kettle"]);
+      expect(names(".sa-order-waiting")).toEqual(["Camp Blanket"]);
+      expect(ticks().map((tick) => tick.checked)).toEqual([true, true, false]);
+      expect(widget.$(".sa-order-also").textContent).toBe(
+        "Also in your cart. Tick anything you want in this order.",
+      );
+      // Only what is ticked is counted, and has a quantity to change.
+      expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
+      expect(widget.all(".sa-order-waiting .sa-stepper")).toHaveLength(0);
+      // Paying online takes only the ticked lines too: a button, not a plain link.
+      expect(widget.$(".sa-order-online").tagName).toBe("BUTTON");
+
+      const tick = (title: string, on: boolean) => {
+        const box = ticks().find((entry) => entry.getAttribute("aria-label")!.endsWith(title))!;
+        box.checked = on;
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      tick("Camp Blanket", true);
+      expect(widget.all(".sa-order")).toHaveLength(1);
+      expect(widget.all(".sa-order-waiting")).toHaveLength(0);
+      expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$152.50");
+      // Everything ticked is the whole cart: the plain link to the checkout.
+      expect(widget.$(".sa-order-online").getAttribute("href")).toBe("/checkout");
+      tick("Camp Blanket", false);
+      expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
+
+      // The ticks are kept with the chat, for the next page.
+      const saved = JSON.parse(Object.values({ ...window.localStorage }).join("")) as {
+        messages: Array<{ role: string; lines?: Array<{ on: boolean }> }>;
+      };
+      expect(saved.messages.find((message) => message.role === "order")!.lines!.map((line) => line.on)).toEqual([
+        true,
+        false,
+        true,
+      ]);
+
+      widget.$<HTMLButtonElement>(".sa-order-here").click();
+      await flush();
+      for (const [name, value] of Object.entries(DETAILS)) {
+        widget.$<HTMLInputElement>(`.sa-order-form [name="${name}"]`).value = value;
+      }
+      const submit = async () => {
+        widget
+          .$<HTMLFormElement>(".sa-order-form")
+          .dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        await flush();
+      };
+      await submit();
+      // The blanket is not part of the order.
+      expect(orderPosts()[0].items).toEqual([
+        { variantId: "101", quantity: 1 },
+        { variantId: "102", quantity: 1 },
+      ]);
+
+      await submit();
+      expect(widget.all(".sa-notice").at(-1)!.textContent).toContain("Order #1003 is placed.");
+      // What was ordered leaves the cart; the blanket stays in it.
+      expect(cartCalls.slice(2)).toEqual([
+        ["/cart/change.js", { id: "101:k", quantity: 0 }],
+        ["/cart/change.js", { id: "102:k", quantity: 0 }],
+      ]);
+      expect([...held.keys()]).toEqual([103]);
+    });
+
+    it("draws the form the app sends for the delivery country and the store", async () => {
+      const { widget, field, submit } = await openForm(
+        (body) => jsonResponse({ ok: true, step: "quote", quote: quote(body.shippingRateHandle as string) }),
+        {},
+        () =>
+          orderMock.mockImplementation((_url: string, init?: RequestInit) =>
+            init?.method === "POST"
+              ? jsonResponse({ ok: true, step: "quote", quote: quote() })
+              : jsonResponse({
+                  ok: true,
+                  countries: [
+                    { code: "AE", name: "United Arab Emirates", form: 0 },
+                    { code: "GB", name: "United Kingdom", form: 1 },
+                    { code: "ZZ", name: "Elsewhere", form: 9 },
+                  ],
+                  forms: [
+                    // No postal code in the Emirates; an emirate to pick.
+                    formFor("Emirate", "unused").map((row) => row.filter((entry) => entry.name !== "zip")),
+                    // No county in the United Kingdom, and this store asks for a company.
+                    formFor(null, "Postcode", ["company"]),
+                  ],
+                }),
+          ),
+      );
+      const labels = () => widget.all(".sa-order-form label").map((label) => label.textContent);
+      const pick = (code: string) => {
+        field("countryCode").value = code;
+        field("countryCode").dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      expect(field("countryCode").value).toBe("AE");
+      expect(labels().slice(2)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "Address",
+        "Apartment, suite, etc (optional)",
+        "City",
+        "Emirate",
+        "Phone",
+      ]);
+      expect(widget.root.querySelector('.sa-order-form [name="zip"]')).toBeNull();
+      field("lastName").value = "Lovelace";
+      field("province").value = "Dubai";
+
+      pick("GB");
+      expect(labels().slice(2)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "Company",
+        "Address",
+        "Apartment, suite, etc (optional)",
+        "City",
+        "Postcode",
+        "Phone",
+      ]);
+      // What was typed stays; what this country's form does not have goes.
+      expect(field("lastName").value).toBe("Lovelace");
+      expect(widget.root.querySelector('.sa-order-form [name="province"]')).toBeNull();
+      expect(field("company").required).toBe(true);
+      expect(field("company").getAttribute("autocomplete")).toBe("organization");
+      // City and postcode share a row; the company has one to itself.
+      expect(widget.all(".sa-field-half label").map((label) => label.textContent)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "City",
+        "Postcode",
+      ]);
+
+      field("company").value = "Analytical Engines";
+      field("address1").value = "1 High Street";
+      field("city").value = "London";
+      field("zip").value = "SE22 8DL";
+      field("phone").value = "+44 20 7946 0143";
+      await submit();
+      expect(orderPosts()[0].address).toEqual({
+        company: "Analytical Engines",
+        address1: "1 High Street",
+        address2: "",
+        city: "London",
+        province: "",
+        zip: "SE22 8DL",
+        countryCode: "GB",
+      });
+      expect(widget.$(".sa-order-recap").textContent).toContain(
+        "Lovelace, Analytical Engines, 1 High Street, London, SE22 8DL, United Kingdom",
+      );
+
+      // A country the app sent no form for gets every field; the app checks them.
+      widget.all(".sa-order-change")[0].click();
+      pick("ZZ");
+      expect(labels().slice(2)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "Address",
+        "Apartment, suite, etc. (optional)",
+        "City",
+        "State / province",
+        "Postal code",
+        "Phone",
+      ]);
+    });
+
     it("shows the store's field errors next to the fields and keeps what was typed", async () => {
       const { widget, field, fill, submit } = await openForm(() =>
         jsonResponse(
@@ -951,7 +1715,7 @@ describe("chat widget", () => {
       fill({ ...DETAILS, phone: "12" });
       await submit();
 
-      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("Delivery details");
+      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("Contact");
       expect(field("phone").getAttribute("aria-invalid")).toBe("true");
       expect(widget.$(".sa-field-error").textContent).toBe("Enter a phone number with 7 to 15 digits.");
       expect(field("phone").getAttribute("aria-describedby")).toBe(widget.$(".sa-field-error").id);
@@ -1152,8 +1916,187 @@ describe("chat widget", () => {
       const cancel = widget.all(".sa-order-form button").find((button) => button.textContent === "Cancel")!;
       cancel.click();
       expect(widget.root.querySelector(".sa-order-form")).toBeNull();
-      // The summary with its checkout button is still there.
-      expect(widget.$(".sa-order-checkout").getAttribute("href")).toBe("/checkout");
+      // The summary is still there, with paying online as the quiet second way.
+      expect(widget.$(".sa-order-here").textContent).toBe("Order here, pay on delivery");
+      const online = widget.$<HTMLAnchorElement>(".sa-order-online");
+      expect(online.getAttribute("href")).toBe("/checkout");
+      expect(online.target).toBe("_blank");
+      expect(widget.root.querySelector(".sa-order-checkout")).toBeNull();
+    });
+  });
+
+  describe("changes to an existing order", () => {
+    const cancelCard = (overrides: Record<string, unknown> = {}) => ({
+      type: "order_action",
+      kind: "cancel",
+      order: "#1005",
+      token: "signed-grant-for-1005",
+      title: "Cancel order #1005?",
+      lines: ["2 \u00d7 Trail Mug", '<img src=x onerror="window.hacked=1">'],
+      note: "Nothing has been charged for this order. Cancelling it cannot be undone.",
+      confirmLabel: "Cancel order",
+      ...overrides,
+    });
+    const orderPosts = () =>
+      orderMock.mock.calls
+        .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+
+    async function showCard(action: Record<string, unknown>) {
+      fetchMock.mockImplementation(() => reply("Press the button to confirm.", { actions: [action] }));
+      const widget = mountWidget();
+      widget.launcher.click();
+      widget.send("cancel my order 1005");
+      await flush();
+      const buttons = () =>
+        Array.from(widget.root.querySelectorAll<HTMLButtonElement>(".sa-action button"));
+      return { widget, buttons };
+    }
+
+    it("shows a card and changes nothing until the shopper presses its button", async () => {
+      orderMock.mockImplementation(() =>
+        jsonResponse({ ok: true, step: "cancel", order: { name: "#1005" }, message: "Order #1005 is cancelled." }),
+      );
+      const { widget, buttons } = await showCard(cancelCard());
+
+      const card = widget.$(".sa-action");
+      expect(card.querySelector(".sa-order-title")!.textContent).toBe("Cancel order #1005?");
+      expect(Array.from(card.querySelectorAll("li")).map((line) => line.textContent)).toEqual([
+        "2 \u00d7 Trail Mug",
+        '<img src=x onerror="window.hacked=1">',
+      ]);
+      // Whatever the server sends is shown as text, never as markup.
+      expect(card.querySelector("img")).toBeNull();
+      expect(buttons().map((button) => button.textContent)).toEqual(["Cancel order", "Keep my order"]);
+      // Showing the card asked the store for nothing.
+      expect(orderPosts()).toEqual([]);
+
+      buttons()[0].click();
+      await flush();
+
+      expect(orderPosts()).toEqual([{ step: "cancel", token: "signed-grant-for-1005" }]);
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      const notice = widget.all(".sa-notice").at(-1)!;
+      expect(notice.textContent).toBe("Order #1005 is cancelled.");
+      expect(notice.classList.contains("sa-notice-success")).toBe(true);
+
+      // The confirmation is kept for the next page; the grant is not.
+      const stored = JSON.stringify({ ...window.localStorage });
+      expect(stored).toContain("Order #1005 is cancelled.");
+      expect(stored).not.toContain("signed-grant-for-1005");
+    });
+
+    it("does nothing when the shopper keeps the order", async () => {
+      const { widget, buttons } = await showCard(cancelCard());
+      buttons()[1].click();
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      expect(orderPosts()).toEqual([]);
+    });
+
+    it("shows the store's reason when it is too late, and does not offer a second try", async () => {
+      orderMock.mockImplementation(() =>
+        jsonResponse({
+          ok: false,
+          error: {
+            code: "unavailable",
+            status: 409,
+            message: "Order #1005 is already being prepared or has shipped, so it can no longer be cancelled or changed here.",
+          },
+        }),
+      );
+      const { widget, buttons } = await showCard(cancelCard());
+      buttons()[0].click();
+      await flush();
+
+      expect(widget.$(".sa-action .sa-order-status-error").textContent).toMatch(/already being prepared/);
+      expect(buttons()[0].disabled).toBe(true);
+      expect(buttons()[1].disabled).toBe(false);
+      expect(widget.all(".sa-notice")).toHaveLength(0);
+    });
+
+    it("ignores a card that is not well formed", async () => {
+      const { widget } = await showCard(cancelCard({ kind: "refund_everything" }));
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      const noToken = await showCard(cancelCard({ token: undefined }));
+      expect(noToken.widget.root.querySelector(".sa-action")).toBeNull();
+    });
+
+    it("takes a new address in a form and sends it with the grant", async () => {
+      orderMock.mockImplementation((_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? jsonResponse({
+              ok: true,
+              step: "address",
+              order: { name: "#1005" },
+              message: "The delivery address for order #1005 is updated.",
+            })
+          : jsonResponse({
+              ok: true,
+              countries: [
+                { code: "CA", name: "Canada" },
+                { code: "US", name: "United States" },
+              ],
+            }),
+      );
+      const { widget, buttons } = await showCard(
+        cancelCard({
+          kind: "address",
+          title: "Change the delivery address for order #1005",
+          lines: [],
+          confirmLabel: "Enter new address",
+          countryCode: "US",
+        }),
+      );
+      buttons()[0].click();
+      await flush();
+
+      const form = widget.$<HTMLFormElement>(".sa-order-form");
+      expect(form.querySelector(".sa-order-title")!.textContent).toBe("New delivery address");
+      // No email, and no choice of country: the order stays where it is going.
+      expect(form.querySelector('[name="email"]')).toBeNull();
+      const country = form.querySelector<HTMLSelectElement>('[name="countryCode"]')!;
+      expect(Array.from(country.options).map((option) => option.value)).toEqual(["US"]);
+      expect(country.parentElement!.hidden).toBe(true);
+
+      const values: Record<string, string> = {
+        firstName: "Ada",
+        lastName: "Lovelace",
+        address1: "350 Fifth Avenue",
+        city: "New York",
+        province: "NY",
+        zip: "10118",
+        phone: "+1 202 555 0143",
+      };
+      for (const [name, value] of Object.entries(values)) {
+        form.querySelector<HTMLInputElement>(`[name="${name}"]`)!.value = value;
+      }
+      form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+      await flush();
+
+      expect(orderPosts()).toEqual([
+        {
+          step: "address",
+          token: "signed-grant-for-1005",
+          contact: { firstName: "Ada", lastName: "Lovelace", phone: "+1 202 555 0143", email: "" },
+          address: {
+            company: "",
+            address1: "350 Fifth Avenue",
+            address2: "",
+            city: "New York",
+            province: "NY",
+            zip: "10118",
+            countryCode: "US",
+          },
+        },
+      ]);
+      expect(widget.root.querySelector(".sa-order-form")).toBeNull();
+      expect(widget.root.querySelector(".sa-action")).toBeNull();
+      expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+        "The delivery address for order #1005 is updated.",
+      );
+      // The address itself is kept nowhere in the browser.
+      const stored = JSON.stringify({ ...window.localStorage }) + JSON.stringify({ ...window.sessionStorage });
+      expect(stored).not.toMatch(/Lovelace|Fifth Avenue|10118/);
     });
   });
 

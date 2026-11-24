@@ -253,6 +253,29 @@ describe("dedupeActions", () => {
   });
 });
 
+describe("dedupeActions and order cards", () => {
+  const card = (order: string, kind: "cancel" | "edit" = "cancel") => ({
+    type: "order_action" as const,
+    kind,
+    order,
+    token: `token-${order}-${kind}`,
+    title: "t",
+    lines: [],
+    confirmLabel: "Confirm",
+  });
+
+  it("keeps a card for a change to an order, after anything to do with the cart", () => {
+    expect(
+      dedupeActions([card("#1005"), { type: "checkout" }, { type: "add_to_cart", variantId: "1", quantity: 1 }]),
+    ).toEqual([{ type: "add_to_cart", variantId: "1", quantity: 1 }, { type: "checkout" }, card("#1005")]);
+  });
+
+  it("shows only the latest card for an order", () => {
+    expect(dedupeActions([card("#1005", "cancel"), card("#1005", "edit")])).toEqual([card("#1005", "edit")]);
+    expect(dedupeActions([card("#1"), card("#2"), card("#3")])).toHaveLength(2);
+  });
+});
+
 describe("selectCards", () => {
   it("matches titles case-insensitively, de-duplicates and caps the list", () => {
     const cards = [

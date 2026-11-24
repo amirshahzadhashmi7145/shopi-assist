@@ -26,11 +26,17 @@ function describeAction(action: ClientAction): string {
       : `On your storefront, the widget puts this in the shopper's cart and shows an order summary with a Go to checkout button: ${items}.`;
   }
   if (action.type === "clear_cart") return "On your storefront, the widget empties the shopper's cart.";
+  if (action.type === "order_action") {
+    return `On your storefront, the widget shows a card: "${action.title}" with a "${action.confirmLabel}" button. Nothing changes until the shopper presses it.`;
+  }
   if (action.type === "remove_from_cart") {
     return `On your storefront, the widget takes this out of the shopper's cart: ${action.title ?? "the item"}.`;
   }
   if (action.type === "checkout") {
     return "On your storefront, the widget shows a summary of the shopper's cart with a Go to checkout button.";
+  }
+  if (action.type === "choices") {
+    return `On your storefront, the widget shows these answers as buttons: ${action.options.join(", ")}${action.other ? ", and Other to type their own" : ""}.`;
   }
   return `On your storefront, the widget adds this to the shopper's cart: ${action.quantity} × ${action.title ?? "the item"}.`;
 }

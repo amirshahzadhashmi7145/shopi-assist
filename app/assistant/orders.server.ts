@@ -19,13 +19,24 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 
 import prisma from "../db.server";
+import {
+  addressErrors,
+  DEFAULT_FORM_OPTIONS,
+  formLayout,
+  formLayouts,
+  onlyFormFields,
+  type FormLayout,
+  type FormOptions,
+} from "./address-rules";
 import { clientKey, rateLimiter as defaultRateLimiter, type RateLimiter } from "./rate-limit";
-import { getSettings } from "./settings.server";
+import { getSettings, type AssistantSettings } from "./settings.server";
 import { isDevelopmentStore } from "./shopify-clients.server";
 import { appendExchange, findConversation, rememberOrder } from "./store.server";
 import { fingerprint } from "./tools/shopper";
 import {
+  CHECKOUT_CART_MUTATION,
   DELIVERY_COUNTRIES_QUERY,
+  PAYMENT_SETTINGS_QUERY,
   VARIANTS_FOR_ORDER_QUERY,
 } from "./tools/storefront-queries";
 import type { GraphqlFn, Money } from "./types";
@@ -126,6 +137,7 @@ export type OrderField =
   | "lastName"
   | "phone"
   | "email"
+  | "company"
   | "address1"
   | "address2"
   | "city"
@@ -164,7 +176,9 @@ export class OrderError extends Error {
 
 export type ChatOrderResult =
   | { ok: true; step: "quote"; quote: OrderQuote }
-  | { ok: true; step: "place"; order: { name: string; total: Money } };
+  | { ok: true; step: "place"; order: { name: string; total: Money } }
+  /** Where to pay for some of the cart's items on the store's own checkout. */
+  | { ok: true; step: "checkout"; checkoutUrl: string };
 
 export interface ChatOrderInput {
   /** Shop domain from the authenticated request. Never from the request body. */
@@ -218,7 +232,7 @@ const orderSchema = z.object({
     .min(1)
     .max(MAX_LINES),
   contact: z.object({
-    // As in Shopify's checkout: a last name is needed, a first name is not.
+    // Whether a first name is needed is the store's choice: see checkDelivery.
     firstName: line(40, "Keep the first name under 40 characters.").default(""),
     lastName: line(40, "Keep the last name under 40 characters.").min(1, "Enter your last name."),
     phone: z
@@ -231,13 +245,16 @@ const orderSchema = z.object({
       .union([z.literal(""), z.email("Enter a valid email address.").max(254)])
       .default(""),
   }),
+  // Only the limits are checked here. What each country and store needs
+  // filled in, and what a postal code looks like, is checked by checkDelivery.
   address: z.object({
+    company: line(80, "Keep the company name under 80 characters.").default(""),
     address1: line(120, "Keep the address under 120 characters.").min(
       3,
       "Enter your street address.",
     ),
     address2: line(120, "Keep this under 120 characters.").default(""),
-    city: line(80, "Keep the city under 80 characters.").min(1, "Enter your city."),
+    city: line(80, "Keep the city under 80 characters.").default(""),
     province: line(60, "Keep this under 60 characters.").default(""),
     zip: line(16, "Keep the postal code under 16 characters.").default(""),
     countryCode: z
@@ -273,11 +290,19 @@ const placeSchema = orderSchema.extend({
 
 type OrderDetails = z.infer<typeof orderSchema>;
 
+/** Who and where, as the forms collect them. Shared with address changes. */
+export const deliverySchema = z.object({
+  contact: orderSchema.shape.contact,
+  address: orderSchema.shape.address,
+});
+export type DeliveryDetails = z.infer<typeof deliverySchema>;
+
 const FORM_FIELDS: readonly OrderField[] = [
   "firstName",
   "lastName",
   "phone",
   "email",
+  "company",
   "address1",
   "address2",
   "city",
@@ -286,7 +311,7 @@ const FORM_FIELDS: readonly OrderField[] = [
   "countryCode",
 ];
 
-function parse<Schema extends z.ZodType>(schema: Schema, body: unknown): z.infer<Schema> {
+export function parse<Schema extends z.ZodType>(schema: Schema, body: unknown): z.infer<Schema> {
   const parsed = schema.safeParse(body);
   if (parsed.success) return parsed.data;
 
@@ -306,6 +331,58 @@ function parse<Schema extends z.ZodType>(schema: Schema, body: unknown): z.infer
     400,
     "Something went wrong with this order. Please start it again.",
   );
+}
+
+/** The store's choices for the order form, as the address rules take them. */
+export function orderFormOptions(
+  settings: Pick<AssistantSettings, "orderFirstName" | "orderCompany" | "orderAddress2">,
+): FormOptions {
+  return {
+    firstName: settings.orderFirstName,
+    company: settings.orderCompany,
+    address2: settings.orderAddress2,
+  };
+}
+
+/**
+ * Checks who and where against what the delivery country and the store ask
+ * for, the way Shopify's checkout does: every needed field filled in, and a
+ * postal code that looks like one. Returns the details with anything the
+ * form does not show for that country blanked.
+ */
+export function checkDelivery<Details extends DeliveryDetails>(
+  details: Details,
+  options: FormOptions,
+): Details {
+  const { contact, address } = details;
+  const typed = {
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    phone: contact.phone,
+    company: address.company,
+    address1: address.address1,
+    address2: address.address2,
+    city: address.city,
+    province: address.province,
+    zip: address.zip,
+  };
+  const fields = addressErrors(address.countryCode, typed, options);
+  if (Object.keys(fields).length) {
+    throw new OrderError("invalid_order", 422, "Please check the highlighted details.", { fields });
+  }
+  const kept = onlyFormFields(address.countryCode, typed, options);
+  return {
+    ...details,
+    contact: { ...contact, firstName: kept.firstName },
+    address: {
+      ...address,
+      company: kept.company,
+      address2: kept.address2,
+      city: kept.city,
+      province: kept.province,
+      zip: kept.zip,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +420,7 @@ function enforce(
 // Shopify calls
 // ---------------------------------------------------------------------------
 
-interface UserError {
+export interface UserError {
   field?: string[] | null;
   message: string;
 }
@@ -368,8 +445,8 @@ interface CalculatedDraftOrder {
   totalPriceSet: MoneySet;
 }
 
-function draftOrderInput(order: OrderDetails): Record<string, unknown> {
-  const { contact, address } = order;
+/** The delivery address in the shape Shopify's Admin API takes. */
+export function shippingAddressInput({ contact, address }: DeliveryDetails): Record<string, unknown> {
   // People type either "ON" or "Ontario". A short code goes in the code
   // field; a name goes in the older free-text field, which Shopify matches
   // against the country's provinces.
@@ -380,27 +457,32 @@ function draftOrderInput(order: OrderDetails): Record<string, unknown> {
       : {};
 
   return {
+    firstName: contact.firstName || null,
+    lastName: contact.lastName,
+    company: address.company || null,
+    address1: address.address1,
+    address2: address.address2 || null,
+    city: address.city,
+    zip: address.zip || null,
+    countryCode: address.countryCode,
+    phone: contact.phone,
+    ...province,
+  };
+}
+
+function draftOrderInput(order: OrderDetails): Record<string, unknown> {
+  return {
     lineItems: order.items.map((item) => ({
       variantId: `gid://shopify/ProductVariant/${item.variantId}`,
       quantity: item.quantity,
     })),
-    shippingAddress: {
-      firstName: contact.firstName || null,
-      lastName: contact.lastName,
-      address1: address.address1,
-      address2: address.address2 || null,
-      city: address.city,
-      zip: address.zip || null,
-      countryCode: address.countryCode,
-      phone: contact.phone,
-      ...province,
-    },
-    ...(contact.email ? { email: contact.email } : {}),
+    shippingAddress: shippingAddressInput(order),
+    ...(order.contact.email ? { email: order.contact.email } : {}),
   };
 }
 
 /** Shopify's own wording for a rejected address, mapped back to the form. */
-function fieldErrors(errors: UserError[]): Partial<Record<OrderField, string>> {
+export function fieldErrors(errors: UserError[]): Partial<Record<OrderField, string>> {
   const fields: Partial<Record<OrderField, string>> = {};
   const names: Record<string, OrderField> = {
     address1: "address1",
@@ -502,9 +584,18 @@ async function quoteOrder(input: ChatOrderInput, order: OrderDetails): Promise<O
     // Seen on a real store: Shopify returns no delivery options, and no error,
     // for an address without a state or postal code. Ask for what is missing
     // before telling the shopper the address cannot be delivered to.
+    // Only for what this country's form has: these are optional there, or
+    // they would have been asked for already.
+    const onForm = new Set(
+      formLayout(order.address.countryCode, DEFAULT_FORM_OPTIONS)
+        .flat()
+        .map((entry) => entry.name),
+    );
     const fields: Partial<Record<OrderField, string>> = {};
-    if (!order.address.zip) fields.zip = "Add your postal code so delivery can be worked out.";
-    if (!order.address.province) {
+    if (onForm.has("zip") && !order.address.zip) {
+      fields.zip = "Add your postal code so delivery can be worked out.";
+    }
+    if (onForm.has("province") && !order.address.province) {
       fields.province = "Add your state or province so delivery can be worked out.";
     }
     if (Object.keys(fields).length) {
@@ -686,6 +777,107 @@ async function placeOrder(
 }
 
 // ---------------------------------------------------------------------------
+// Checkout for part of the cart
+// ---------------------------------------------------------------------------
+
+// A cart, not an order: nothing is created in the store, so the limits are
+// those of a cart rather than of a pay-on-delivery order.
+const checkoutSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        variantId: z.string().regex(/^\d{1,20}$/),
+        quantity: z.number().int().min(1).max(999),
+        /** A subscription the line was added with. */
+        sellingPlanId: z.string().regex(/^\d{1,20}$/).optional(),
+        /** What the shopper chose or typed for the line, such as an engraving. */
+        properties: z.record(z.string().min(1).max(100), z.string().max(500)).optional(),
+      }),
+    )
+    .min(1)
+    .max(50),
+  country: z
+    .string()
+    .regex(/^[A-Za-z]{2}$/)
+    .optional(),
+  discountCodes: z.array(z.string().min(1).max(100)).max(5).optional(),
+});
+
+/**
+ * The store's checkout for just the items the shopper ticked. Shopify's
+ * checkout always takes a whole cart, so these go into a cart of their own;
+ * the cart on the storefront, with whatever was not ticked, stays as it is.
+ * Everything else (delivery, tax, how to pay) is the checkout's business.
+ */
+async function checkoutLink(
+  input: ChatOrderInput,
+  deps: ChatOrderDeps,
+): Promise<Extract<ChatOrderResult, { step: "checkout" }>> {
+  const parsed = checkoutSchema.safeParse(input.body);
+  if (!parsed.success) {
+    throw new OrderError("invalid_request", 400, "Something went wrong. Please try again.");
+  }
+  enforce(deps, [
+    {
+      key: `order:checkout:ip:${input.shop}:${clientKey(input.ip)}`,
+      max: 30,
+      windowMs: 10 * MINUTE_MS,
+    },
+    { key: `order:checkout:shop:${input.shop}`, max: 1200, windowMs: HOUR_MS },
+  ]);
+
+  const { items, country, discountCodes } = parsed.data;
+  const unavailable = new OrderError(
+    "unavailable",
+    409,
+    "The checkout couldn't be opened for these items. Please try again.",
+  );
+  let created: {
+    cart: { checkoutUrl: string; totalQuantity: number } | null;
+    userErrors: Array<{ code: string | null }>;
+  } | null;
+  try {
+    const data = await input.storefront<{ cartCreate: typeof created }>(CHECKOUT_CART_MUTATION, {
+      country: country?.toUpperCase() ?? null,
+      input: {
+        lines: items.map((item) => ({
+          merchandiseId: `gid://shopify/ProductVariant/${item.variantId}`,
+          quantity: item.quantity,
+          ...(item.sellingPlanId
+            ? { sellingPlanId: `gid://shopify/SellingPlan/${item.sellingPlanId}` }
+            : {}),
+          ...(item.properties && Object.keys(item.properties).length
+            ? {
+                attributes: Object.entries(item.properties)
+                  .slice(0, 25)
+                  .map(([key, value]) => ({ key, value })),
+              }
+            : {}),
+        })),
+        ...(discountCodes?.length ? { discountCodes } : {}),
+      },
+    });
+    created = data.cartCreate;
+  } catch (error) {
+    console.error(
+      `[shopi-assist] checkout cart failed shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    throw unavailable;
+  }
+
+  const cart = created?.cart;
+  if (!cart || created?.userErrors.length || !/^https:\/\/[^\s]+$/.test(cart.checkoutUrl)) {
+    const codes = (created?.userErrors ?? []).map((error) => error.code ?? "unknown").join(",");
+    console.error(`[shopi-assist] checkout cart refused shop=${input.shop} codes=${codes || "none"}`);
+    throw unavailable;
+  }
+  if (cart.totalQuantity < 1) {
+    throw new OrderError("unavailable", 409, "These items are sold out, so they can't be bought right now.");
+  }
+  return { ok: true, step: "checkout", checkoutUrl: cart.checkoutUrl };
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -705,11 +897,18 @@ export async function handleChatOrder(
   const now = deps.now().getTime();
 
   const settings = await getSettings(input.shop, deps.db);
+  const step = input.body.step;
+  // Paying at the store's checkout needs only the assistant's help with orders.
+  if (step === "checkout") {
+    if (!settings.enabled || !settings.allowCheckout) {
+      throw new OrderError("disabled", 403, "Ordering in the chat is not available for this store.");
+    }
+    return checkoutLink(input, deps);
+  }
   if (!settings.enabled || !settings.allowChatOrders || !settings.allowCheckout) {
     throw new OrderError("disabled", 403, "Ordering in the chat is not available for this store.");
   }
 
-  const step = input.body.step;
   if (step !== "quote" && step !== "place") {
     throw new OrderError("invalid_request", 400, "Something went wrong. Please reload the page.");
   }
@@ -717,7 +916,7 @@ export async function handleChatOrder(
 
   try {
     if (step === "quote") {
-      const order = parse(orderSchema, input.body);
+      const order = checkDelivery(parse(orderSchema, input.body), orderFormOptions(settings));
       enforce(deps, [
         { key: `order:quote:ip:${input.shop}:${address}`, max: 30, windowMs: 10 * MINUTE_MS },
         { key: `order:quote:shop:${input.shop}`, max: 600, windowMs: HOUR_MS },
@@ -725,7 +924,7 @@ export async function handleChatOrder(
       return { ok: true, step: "quote", quote: await quoteOrder(input, order) };
     }
 
-    const order = parse(placeSchema, input.body);
+    const order = checkDelivery(parse(placeSchema, input.body), orderFormOptions(settings));
 
     // A retry of a request that already went through gets the same answer
     // and does not count against the limits again.
@@ -787,6 +986,75 @@ export async function handleChatOrder(
 export interface DeliveryCountry {
   code: string;
   name: string;
+  /** Which of the `forms` sent with the countries this one uses. */
+  form: number;
+}
+
+/** How the order is paid for, as the form's payment step shows it. */
+export interface PaymentOptions {
+  /** What the store calls paying on delivery. */
+  name: string;
+  /** The store's instructions for it, or "". */
+  note: string;
+  /** The cards and wallets the store's checkout takes, by name. */
+  online: string[];
+}
+
+/** What the order form needs before it can be drawn. */
+export interface DeliveryOptions {
+  countries: DeliveryCountry[];
+  /** Each distinct layout once; a country points at its own by position. */
+  forms: FormLayout[];
+  payment: PaymentOptions;
+}
+
+/** Shopify's own name for the manual payment method, used until the store gives its own. */
+export const DEFAULT_PAYMENT_NAME = "Cash on Delivery (COD)";
+
+// Brand names for what Shopify reports in capitals.
+const PAYMENT_NAMES: Record<string, string> = {
+  AMERICAN_EXPRESS: "American Express",
+  DINERS_CLUB: "Diners Club",
+  DISCOVER: "Discover",
+  JCB: "JCB",
+  MASTERCARD: "Mastercard",
+  VISA: "Visa",
+  ANDROID_PAY: "Google Pay",
+  APPLE_PAY: "Apple Pay",
+  GOOGLE_PAY: "Google Pay",
+  SHOPIFY_PAY: "Shop Pay",
+};
+
+/** The cards and wallets the store's checkout takes. Empty when Shopify will not say. */
+async function onlinePaymentMethods(shop: string, storefront: GraphqlFn): Promise<string[]> {
+  try {
+    const data = await storefront<{
+      shop: {
+        paymentSettings: {
+          acceptedCardBrands?: string[] | null;
+          supportedDigitalWallets?: string[] | null;
+        } | null;
+      } | null;
+    }>(PAYMENT_SETTINGS_QUERY);
+    const settings = data.shop?.paymentSettings;
+    const names = [...(settings?.acceptedCardBrands ?? []), ...(settings?.supportedDigitalWallets ?? [])]
+      .filter((value): value is string => typeof value === "string" && /^[A-Z_]{2,40}$/.test(value))
+      .map(
+        (value) =>
+          PAYMENT_NAMES[value] ??
+          value
+            .toLowerCase()
+            .split("_")
+            .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(" "),
+      );
+    return [...new Set(names)].slice(0, 12);
+  } catch (error) {
+    console.error(
+      `[shopi-assist] payment settings failed shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    return [];
+  }
 }
 
 /**
@@ -797,7 +1065,7 @@ export interface DeliveryCountry {
 export async function listDeliveryCountries(
   input: { shop: string; language?: string | null; ip?: string; storefront: GraphqlFn },
   overrides: Partial<ChatOrderDeps> = {},
-): Promise<DeliveryCountry[]> {
+): Promise<DeliveryOptions> {
   const deps: ChatOrderDeps = {
     db: overrides.db ?? prisma,
     rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
@@ -818,19 +1086,33 @@ export async function listDeliveryCountries(
   ]);
 
   const language = /^[A-Za-z]{2}$/.test(input.language ?? "") ? input.language!.toUpperCase() : null;
+  const payment: PaymentOptions = {
+    name: settings.orderPaymentName || DEFAULT_PAYMENT_NAME,
+    note: settings.orderPaymentNote,
+    online: await onlinePaymentMethods(input.shop, input.storefront),
+  };
   try {
     const data = await input.storefront<{
       localization: { availableCountries: Array<{ isoCode: string; name: string }> } | null;
     }>(DELIVERY_COUNTRIES_QUERY, { language });
-    return (data.localization?.availableCountries ?? [])
+    const countries = (data.localization?.availableCountries ?? [])
       .filter((country) => /^[A-Z]{2}$/.test(country.isoCode) && country.name)
       .map((country) => ({ code: country.isoCode, name: country.name.slice(0, 80) }))
       .sort((a, b) => a.name.localeCompare(b.name));
+    const { forms, index } = formLayouts(
+      countries.map((country) => country.code),
+      orderFormOptions(settings),
+    );
+    return {
+      countries: countries.map((country) => ({ ...country, form: index[country.code] })),
+      forms,
+      payment,
+    };
   } catch (error) {
     console.error(
       `[shopi-assist] delivery countries failed shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
     );
-    return [];
+    return { countries: [], forms: [], payment };
   }
 }
 

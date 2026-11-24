@@ -1,4 +1,4 @@
-import type { GraphqlFn } from "./types";
+import type { GraphqlFn, KnownOrder } from "./types";
 
 /** The part of Shopify's admin and storefront clients that the assistant uses. */
 interface ShopifyGraphqlClient {
@@ -107,5 +107,38 @@ export async function isDevelopmentStore(
     // Do not ask again on every page view while Shopify cannot be reached.
     developmentStores.set(shop, { value: false, expiresAt: now + STORE_KIND_RETRY_MS });
     return false;
+  }
+}
+
+/**
+ * The recent orders of a shopper who is signed in to their store account.
+ *
+ * `customerId` must be the id Shopify's app proxy signed onto the request,
+ * never one from the request body: this is what lets a shopper ask about
+ * their orders without proving each one. Asked of Shopify on every message,
+ * never kept: which orders are theirs is what they are trusted on, so it has
+ * to be true now. An empty list on any failure.
+ */
+export async function ordersOfCustomer(
+  customerId: string,
+  admin: GraphqlFn,
+): Promise<KnownOrder[]> {
+  if (!/^\d{1,20}$/.test(customerId)) return [];
+
+  try {
+    const data = await admin<{ orders: { nodes: Array<{ id: string; name: string }> } }>(
+      `#graphql
+        query ShopiAssistCustomerOrders($query: String!) {
+          orders(first: 10, sortKey: PROCESSED_AT, reverse: true, query: $query) {
+            nodes { id name }
+          }
+        }`,
+      { query: `customer_id:${customerId}` },
+    );
+    return data.orders.nodes.map(
+      (order): KnownOrder => ({ id: order.id, name: order.name, source: "customer" }),
+    );
+  } catch {
+    return [];
   }
 }

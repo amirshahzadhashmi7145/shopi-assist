@@ -88,6 +88,144 @@ const expectChatError = async (promise: Promise<unknown>, code: string, status: 
 };
 
 describe("handleChatTurn", () => {
+  it("turns a question's answers into buttons only for a widget that can draw them", async () => {
+    const listed =
+      "What is the reason for the return? You can choose from these options:\n\n- Changed my mind\n- Too big\n- Other";
+    const provider = () => scriptedProvider([text(listed)]);
+
+    // An older widget, still open in a shopper's browser, says nothing about
+    // buttons: it gets the reply exactly as written, answers included.
+    const old = await turn({ message: "1012" }, { provider: provider() });
+    expect(old.reply).toBe(listed);
+    expect(old.actions).toEqual([]);
+
+    // Anything but a short list of plain names counts as saying nothing.
+    for (const supports of ["choices", [42], [{ choices: true }], ["CHOICES!"]]) {
+      const odd = await turn({ message: "1012", supports }, { provider: provider() });
+      expect(odd.reply).toBe(listed);
+    }
+
+    const current = await turn({ message: "1012", supports: ["choices"] }, { provider: provider() });
+    expect(current.reply).toBe("What is the reason for the return?");
+    expect(current.actions).toEqual([
+      { type: "choices", options: ["Changed my mind", "Too big", "Other"], other: true },
+    ]);
+    // The model still sees what it offered: the saved reply keeps the list.
+    const transcript = await getConversationTranscript(db, SHOP_A, current.conversationId);
+    expect(transcript!.messages.at(-1)!.content).toBe(listed);
+
+    // A plain yes-or-no question gets its two buttons the same way.
+    const yesNo = await turn(
+      { message: "ok", supports: ["choices"] },
+      { provider: scriptedProvider([text("It has not shipped yet. Would you like to cancel it instead?")]) },
+    );
+    expect(yesNo.actions).toEqual([{ type: "choices", options: ["Yes", "No"], other: true }]);
+    expect(yesNo.reply).toBe("It has not shipped yet. Would you like to cancel it instead?");
+  });
+
+  it("offers a signed-in shopper only the orders that can be returned right now", async () => {
+    await saveSettings(
+      SHOP_A,
+      { orderLookupEnabled: true, recogniseCustomers: true, allowReturns: true },
+      db,
+    );
+    const order = (number: number) => ({ id: `gid://shopify/Order/${number}`, name: `#${number}` });
+    const returnChecks: string[] = [];
+    // Their account has three orders; #3002 has not shipped.
+    const admin = (async (query: string, variables?: Record<string, unknown>) => {
+      if (query.includes("ShopiAssistCustomerOrders")) {
+        return { orders: { nodes: [order(3001), order(3002), order(3003)] } };
+      }
+      if (query.includes("ShopiAssistReturnableOrder")) {
+        const id = String(variables!.orderId);
+        returnChecks.push(id);
+        const shipped = !id.endsWith("/3002");
+        return {
+          order: { name: "x", cancelledAt: null, returnStatus: "NO_RETURN", fulfillments: shipped ? [{ id: "f" }] : [] },
+          returnableFulfillments: {
+            nodes: shipped
+              ? [
+                  {
+                    returnableFulfillmentLineItems: {
+                      nodes: [{ quantity: 1, fulfillmentLineItem: { lineItem: { title: "Trail Mug" } } }],
+                    },
+                  },
+                ]
+              : [],
+          },
+        };
+      }
+      return { shop: { name: "Shop A" } };
+    }) as NonNullable<ChatTurnInput["admin"]>;
+    const ask = (reply: string, visitorId: string) =>
+      turn(
+        { message: "i want to return an order", customerId: "7100", admin, supports: ["choices"], visitorId },
+        { provider: scriptedProvider([text(reply)]) },
+      );
+
+    const forReturn = await ask("Which order would you like to return?", "visitor-return-1");
+    expect(forReturn.actions).toEqual([{ type: "choices", options: ["#3001", "#3003"], other: true }]);
+    expect(returnChecks).toHaveLength(3);
+
+    // Any other question about their orders offers them all, and asks Shopify nothing more.
+    const other = await ask("Which order do you mean?", "visitor-return-2");
+    expect(other.actions).toEqual([
+      { type: "choices", options: ["#3001", "#3002", "#3003"], other: true },
+    ]);
+    expect(returnChecks).toHaveLength(3);
+  });
+
+  it("answers again when the model asks a known shopper for an email or phone number", async () => {
+    await saveSettings(SHOP_A, { orderLookupEnabled: true, recogniseCustomers: true }, db);
+    const admin = () =>
+      fakeGraphql({
+        shop: { name: "Shop A" },
+        orders: { nodes: [{ id: "gid://shopify/Order/4001", name: "#4001" }] },
+      });
+    const asking = "I'll need to confirm the order is yours. Could you give me the email address or phone number used on it?";
+    const usage = { inputTokens: 100, outputTokens: 10 };
+
+    // Signed in, the order is on their account: the draft is not sent.
+    const corrected = scriptedProvider([
+      { ...text(asking), usage },
+      { ...text("What is the reason for the return?"), usage },
+    ]);
+    const result = await turn(
+      { message: "it is damaged", customerId: "7200", admin: admin() },
+      { provider: corrected },
+    );
+    expect(result.reply).toBe("What is the reason for the return?");
+    expect(corrected.requests).toHaveLength(2);
+    const [first, second] = corrected.requests.map((request) => request.messages[0].content as string);
+    expect(first).not.toMatch(/Correction:/);
+    expect(second).toMatch(/Correction: your draft reply asked the shopper for an email address or phone number/);
+    expect(second.startsWith(first)).toBe(true);
+    // Only what was sent to the shopper is kept.
+    const transcript = await getConversationTranscript(db, SHOP_A, result.conversationId);
+    expect(transcript!.messages.map((message) => message.content)).toEqual([
+      "it is damaged",
+      "What is the reason for the return?",
+    ]);
+
+    // An order number that is not one of theirs may well need proof: asking is right.
+    const stranger = scriptedProvider([text(asking)]);
+    const other = await turn(
+      { message: "return order 9999", customerId: "7200", admin: admin(), visitorId: "visitor-proof-2" },
+      { provider: stranger },
+    );
+    expect(other.reply).toBe(asking);
+    expect(stranger.requests).toHaveLength(1);
+
+    // So is asking a guest this chat knows nothing about.
+    const guestProvider = scriptedProvider([text(asking)]);
+    const guest = await turn(
+      { message: "it is damaged", admin: admin(), visitorId: "visitor-proof-3" },
+      { provider: guestProvider },
+    );
+    expect(guest.reply).toBe(asking);
+    expect(guestProvider.requests).toHaveLength(1);
+  });
+
   it("answers, creates a conversation and stores the exchange", async () => {
     const result = await turn({ message: "  hello  " });
 
@@ -289,7 +427,7 @@ describe("handleChatTurn", () => {
     expect(changed.tools).toContain("request_return");
     expect(changed.system).toContain("You cannot add items to the cart");
     expect(changed.system).toContain("You cannot start a checkout");
-    expect(changed.system).toContain("it is a request the store will review");
+    expect(changed.system).toContain("a return is a request the store will review");
     expect(changed.system).toContain("Returns: accepted within 14 days of delivery.");
   });
 
@@ -324,8 +462,8 @@ describe("handleChatTurn", () => {
       { id: "gid://shopify/Order/1001", name: "#1001", source: "verified" },
     ]);
 
-    // Turn 2: "where is it?" The assistant is told the order is known and can
-    // look it up with the number alone.
+    // Turn 2: "where is it?" names no order, so the assistant is told which
+    // order the chat has already proved and looks it up with the number alone.
     const provider = scriptedProvider([
       callTool("get_order_status", { orderNumber: "1001" }),
       text("It has shipped."),
@@ -335,7 +473,7 @@ describe("handleChatTurn", () => {
       { provider },
     );
     const system = provider.requests[0].messages[0].content as string;
-    expect(system).toContain("Orders already known in this chat:\n- #1001 (already proved to be the shopper's)");
+    expect(system).toContain("it names no order number. #1001 (proved earlier in this chat) is an order already proved to be theirs");
     expect(system).toMatch(/the order number alone is enough/);
     const toolResult = provider.requests[1].messages.at(-1)!;
     expect(toolResult.content).toContain('"fulfillmentStatus":"FULFILLED"');
@@ -379,6 +517,80 @@ describe("handleChatTurn", () => {
 
     await saveSettings(SHOP_A, { orderLookupByNumber: true }, db);
     expect(await system()).toMatch(/with the order number alone, so look it up as soon as you have the number/);
+  });
+
+  it("recognises a signed-in customer's own orders, only when the merchant allows it", async () => {
+    const adminFor = (name: string) =>
+      fakeGraphql({
+        shop: { name: "Shop A" },
+        orders: { nodes: [{ id: `gid://shopify/Order/${name.slice(1)}`, name }] },
+      });
+    const prompt = async (overrides: Partial<ChatTurnInput>) => {
+      const provider = scriptedProvider([text("ok")]);
+      const admin = overrides.admin as ReturnType<typeof fakeGraphql>;
+      await turn(overrides, { provider });
+      return { system: provider.requests[0].messages[0].content as string, admin };
+    };
+
+    await saveSettings(SHOP_A, { orderLookupEnabled: true, recogniseCustomers: true }, db);
+    const signedIn = await prompt({ customerId: "7001", admin: adminFor("#2001") });
+    expect(signedIn.system).toContain("#2001 (on their account: they are signed in)");
+    expect(signedIn.system).toMatch(/This shopper is signed in/);
+    // Asked of Shopify by the customer id Shopify signed, and nothing else.
+    expect(signedIn.admin.calls.at(-1)!.variables).toEqual({ query: "customer_id:7001" });
+
+    // Asked again on every message, never remembered: an order that has since
+    // left the account, or joined it, is known at once.
+    const before = adminFor("#2001");
+    await prompt({ customerId: "7001", admin: before });
+    const later = adminFor("#2009");
+    const next = await prompt({ customerId: "7001", admin: later });
+    expect(later.calls.some((call) => call.variables?.query === "customer_id:7001")).toBe(true);
+    expect(next.system).toContain("#2009 (on their account: they are signed in)");
+    expect(next.system).not.toContain("#2001");
+
+    // A guest gets no such list.
+    const guest = await prompt({ visitorId: "visitor-0002", admin: adminFor("#2002") });
+    expect(guest.system).not.toMatch(/signed in/);
+    expect(guest.system).not.toContain("#2002");
+
+    // Nor does anyone while the merchant has it switched off.
+    await saveSettings(SHOP_A, { recogniseCustomers: false }, db);
+    const off = await prompt({ visitorId: "visitor-0003", customerId: "7003", admin: adminFor("#2003") });
+    expect(off.system).not.toContain("#2003");
+
+    // Staff trying the assistant in the admin are not a customer.
+    await saveSettings(SHOP_A, { recogniseCustomers: true }, db);
+    const preview = await prompt({ preview: true, customerId: "7004", admin: adminFor("#2004") });
+    expect(preview.system).not.toContain("#2004");
+  });
+
+  it("offers order changes only to shoppers on a server that can sign a grant", async () => {
+    await saveSettings(
+      SHOP_A,
+      { allowOrderCancel: true, allowAddressChange: true, allowOrderEdit: true },
+      db,
+    );
+    const tools = async (overrides: Partial<ChatTurnInput> = {}) => {
+      const provider = scriptedProvider([text("ok")]);
+      await turn({ admin: fakeGraphql({ shop: { name: "Shop A" } }), ...overrides }, { provider });
+      return provider.requests[0].tools.map((tool) => tool.name);
+    };
+    const changes = ["cancel_order", "change_delivery_address", "change_order_items"];
+    const before = process.env.SHOPIFY_API_SECRET;
+
+    try {
+      process.env.SHOPIFY_API_SECRET = "test-signing-secret";
+      expect(await tools()).toEqual(expect.arrayContaining(changes));
+      // The admin's "try it as a shopper" chat cannot change real orders.
+      for (const name of changes) expect(await tools({ preview: true })).not.toContain(name);
+
+      delete process.env.SHOPIFY_API_SECRET;
+      for (const name of changes) expect(await tools({ visitorId: "visitor-0009" })).not.toContain(name);
+    } finally {
+      if (before === undefined) delete process.env.SHOPIFY_API_SECRET;
+      else process.env.SHOPIFY_API_SECRET = before;
+    }
   });
 
   it("passes the shopper's cart to the assistant, and only a well-formed one", async () => {

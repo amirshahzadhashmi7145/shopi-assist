@@ -86,6 +86,36 @@ describe("audience boundary", () => {
 });
 
 describe("shopper tools", () => {
+  it("get_newest_products lists the latest products, newest first, in the store or one collection", async () => {
+    const storefront = fakeGraphql({ products: { nodes: [storefrontProduct()] } });
+    const result = await run("get_newest_products", { limit: 3 }, toolContext({ storefront }));
+
+    expect(result.ok).toBe(true);
+    expect(storefront.calls[0].query).toContain("sortKey: CREATED_AT, reverse: true");
+    expect(storefront.calls[0].variables).toMatchObject({ first: 3 });
+    expect(result.json).toMatchObject({ count: 1, rankedBy: "newest first" });
+    expect(result.cards).toHaveLength(1);
+
+    const inCollection = fakeGraphql({
+      collection: { title: "Boards", products: { nodes: [storefrontProduct()] } },
+    });
+    const boards = await run(
+      "get_newest_products",
+      { collectionHandle: "boards" },
+      toolContext({ storefront: inCollection }),
+    );
+    expect(inCollection.calls[0].query).toContain("sortKey: CREATED, reverse: true");
+    expect(inCollection.calls[0].variables).toMatchObject({ handle: "boards" });
+    expect(boards.json).toMatchObject({ collection: "Boards", rankedBy: "newest first" });
+
+    const missing = await run(
+      "get_newest_products",
+      { collectionHandle: "nope" },
+      toolContext({ storefront: fakeGraphql({ collection: null }) }),
+    );
+    expect(missing.ok).toBe(false);
+  });
+
   it("get_best_sellers sorts by best selling and returns cards", async () => {
     const storefront = fakeGraphql({
       products: {
@@ -112,7 +142,7 @@ describe("shopper tools", () => {
     expect(storefront.calls[0].variables).toEqual({ first: 4, country: "CA", language: "FR" });
     expect(result.json.count).toBe(2);
     expect(result.json.products).toEqual([
-      expect.objectContaining({ title: "Trail Mug", price: "18.0 USD", inStock: true }),
+      expect.objectContaining({ title: "Trail Mug", price: "$18.00", inStock: true }),
       expect.objectContaining({ title: "Camp Kettle" }),
     ]);
     expect(result.cards).toEqual([
@@ -150,9 +180,255 @@ describe("shopper tools", () => {
 
     const result = await run("search_products", { query: "mug" }, toolContext({ storefront }));
 
-    expect(result.json.products[0].price).toBe("from 18.0 USD");
+    expect(result.json.products[0].price).toBe("from $18.00");
     expect(result.cards[0].variantId).toBeNull();
     expect(result.cards[0].compareAtPrice).toEqual({ amount: "30.0", currencyCode: "USD" });
+  });
+
+  it("tells the model what each product's own data says, and which search words it does not have", async () => {
+    const storefront = fakeGraphql({
+      search: {
+        nodes: [
+          storefrontProduct({
+            title: "The Complete Snowboard",
+            handle: "complete",
+            description: "A board for every mountain.",
+            tags: ["Premium", "Winter"],
+            options: [{ name: "Color", optionValues: [{ name: "Ice" }, { name: "Dawn" }] }],
+            featuredImage: { url: "https://cdn.example/a.jpg", altText: "Top view in shades of teal." },
+          }),
+          storefrontProduct({
+            id: "gid://shopify/Product/2",
+            title: "The Polar Snowboards",
+            handle: "polar",
+            description: "",
+            // Shopify's placeholder for a product with nothing to choose.
+            options: [{ name: "Title", optionValues: [{ name: "Default Title" }] }],
+            featuredImage: { url: "https://cdn.example/b.jpg", altText: "A white deck with a grey logo." },
+          }),
+        ],
+      },
+    });
+    const result = await run(
+      "search_products",
+      { query: "some white snowboards" },
+      toolContext({ storefront }),
+    );
+    const [complete, polar] = result.json.products;
+
+    expect(complete).toMatchObject({
+      options: { Color: "Ice, Dawn" },
+      tags: ["Premium", "Winter"],
+      picture: "Top view in shades of teal.",
+      // "snowboards" is in "Snowboard"; "some" says nothing about a product.
+      doesNotMention: ["white"],
+    });
+    expect(polar.options).toBeUndefined();
+    expect(polar.picture).toBe("A white deck with a grey logo.");
+    expect(polar.doesNotMention).toBeUndefined();
+    // One of them has it, so there is nothing to warn about for the whole list.
+    expect(result.json.note).toBeUndefined();
+
+    const none = await run(
+      "search_products",
+      { query: "white snowboards" },
+      toolContext({
+        storefront: fakeGraphql({ search: { nodes: [storefrontProduct({ title: "The Complete Snowboard" })] } }),
+      }),
+    );
+    expect(none.json.note).toMatch(/None of these products mentions "white"/);
+  });
+
+  it("offer_choices hands the widget the answers to show as buttons", async () => {
+    const context = toolContext({ clientSupports: ["choices"] });
+    const result = await run(
+      "offer_choices",
+      { options: ["#1012", "#1008", "#1008 "], allowOther: true },
+      context,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.actions).toEqual([{ type: "choices", options: ["#1012", "#1008"], other: true }]);
+    expect(result.json.note).toMatch(/do not|without listing/);
+
+    const plain = await run("offer_choices", { options: ["Yes", "No"] }, context);
+    expect(plain.actions).toEqual([{ type: "choices", options: ["Yes", "No"] }]);
+    // One answer is not a choice.
+    expect((await run("offer_choices", { options: ["Yes"] }, context)).ok).toBe(false);
+
+    // A widget that has not said it can draw buttons is not offered the tool.
+    const names = (supports?: string[]) =>
+      toolsFor(allTools, toolContext({ clientSupports: supports })).map((tool) => tool.name);
+    expect(names(["choices"])).toContain("offer_choices");
+    expect(names()).not.toContain("offer_choices");
+    expect(names(["something_else"])).not.toContain("offer_choices");
+  });
+
+  it("returns only products whose own data mentions what was asked for", async () => {
+    const board = (id: number, title: string, altText: string, extra: Record<string, unknown> = {}) =>
+      storefrontProduct({
+        id: `gid://shopify/Product/${id}`,
+        title,
+        handle: `board-${id}`,
+        description: "",
+        featuredImage: { url: "https://cdn.example/b.jpg", altText },
+        ...extra,
+      });
+    const storefront = fakeGraphql({
+      search: {
+        nodes: [
+          board(1, "The Complete Snowboard", "Circles in shades of teal on top, purple and blue below."),
+          board(2, "The Hydrogen Snowboard", "Stylized hydrogen bonds."),
+          board(3, "The Videographer Snowboard", "Turquoise and black with trees."),
+          board(4, "The Kids Snowboard", "A plain deck.", {
+            options: [{ name: "Colour", optionValues: [{ name: "Purple" }, { name: "Grey" }] }],
+          }),
+        ],
+      },
+    });
+    const context = toolContext({ storefront });
+    const titles = (result: { json: { products: Array<{ title: string }> } }) =>
+      result.json.products.map((product) => product.title);
+
+    // Either colour will do; the picture and the options both count as the product's data.
+    const either = await run(
+      "search_products",
+      { query: "snowboard", limit: 5, mustMention: ["teal or purple"] },
+      context,
+    );
+    expect(titles(either)).toEqual(["The Complete Snowboard", "The Kids Snowboard"]);
+    expect(either.json).toMatchObject({ checked: 4, matching: 2 });
+    expect(either.cards.map((card) => card.title)).toEqual(titles(either));
+    // More are looked through than will be shown.
+    expect(storefront.calls[0].variables).toMatchObject({ query: "snowboard", first: 20 });
+
+    // Every entry has to be met; a synonym given as an alternative counts.
+    const both = await run(
+      "search_products",
+      { query: "snowboard", mustMention: ["teal or turquoise", "black"] },
+      context,
+    );
+    expect(titles(both)).toEqual(["The Videographer Snowboard"]);
+    expect(titles(await run("search_products", { query: "snowboard", mustMention: ["gray or grey"] }, context))).toEqual([
+      "The Kids Snowboard",
+    ]);
+
+    // Nothing has it: no products, a plain statement, and the closest ones marked as others.
+    const none = await run("search_products", { query: "snowboard", mustMention: ["white"] }, context);
+    expect(none.ok).toBe(true);
+    expect(none.json).toMatchObject({ count: 0, products: [], matching: 0, checked: 4 });
+    expect(none.json.note).toMatch(/No product .* mentions white/);
+    expect(none.json.others.map((product: { title: string }) => product.title)).toEqual([
+      "The Complete Snowboard",
+      "The Hydrogen Snowboard",
+      "The Videographer Snowboard",
+    ]);
+    expect(none.cards).toHaveLength(3);
+  });
+
+  it("offers the store's own filters with a search and narrows the next search by them", async () => {
+    const white = '{"variantOption":{"name":"color","value":"White"}}';
+    const storefront = fakeGraphql({
+      search: {
+        totalCount: 4,
+        productFilters: [
+          {
+            label: "Color",
+            type: "LIST",
+            values: [
+              { label: "White", count: 2, input: white },
+              { label: "Black", count: 0, input: '{"variantOption":{"name":"color","value":"Black"}}' },
+              // Some API versions hand the input back as an object.
+              { label: "Blue", count: 1, input: { variantOption: { name: "color", value: "Blue" } } },
+            ],
+          },
+          { label: "Price", type: "PRICE_RANGE", values: [{ label: "Price", count: 4, input: '{"price":{"min":0,"max":900}}' }] },
+          { label: "Empty", type: "LIST", values: [] },
+        ],
+        nodes: [storefrontProduct()],
+      },
+    });
+    const context = toolContext({ storefront });
+
+    const first = await run("search_products", { query: "snowboard" }, context);
+    expect(first.json.filters).toEqual([
+      {
+        name: "Color",
+        values: [
+          { value: "White", products: 2, filter: white },
+          { value: "Blue", products: 1, filter: '{"variantOption":{"name":"color","value":"Blue"}}' },
+        ],
+      },
+    ]);
+    expect(first.json.filtered).toBeUndefined();
+    expect(storefront.calls[0].variables).toMatchObject({ query: "snowboard", filters: null });
+
+    const second = await run(
+      "search_products",
+      { query: "snowboard", filters: [white], inStockOnly: true },
+      context,
+    );
+    expect(second.json.filtered).toBe(true);
+    expect(storefront.calls[1].variables!.filters).toEqual([
+      { variantOption: { name: "color", value: "White" } },
+      { available: true },
+    ]);
+
+    // Only what Shopify could have offered is passed on.
+    for (const filters of [["white"], ['{"query":"x"}'], ['{"tag":"a","available":true}'], ["[1]"]]) {
+      const refused = await run("search_products", { query: "snowboard", filters }, context);
+      expect(refused.ok).toBe(false);
+    }
+    expect(storefront.calls).toHaveLength(2);
+  });
+
+  it("gives a product's versions to the model and to its card", async () => {
+    const variant = (id: number, title: string, amount: string, availableForSale = true) => ({
+      id: `gid://shopify/ProductVariant/${id}`,
+      title,
+      availableForSale,
+      price: { amount, currencyCode: "USD" },
+    });
+    const search = (nodes: unknown[]) =>
+      run(
+        "search_products",
+        { query: "wax" },
+        toolContext({
+          storefront: fakeGraphql({
+            search: { nodes: [storefrontProduct({ variants: { nodes } })] },
+          }),
+        }),
+      );
+
+    const few = await search([
+      variant(201, "Regular", "24.95"),
+      variant(202, "Special", "49.95", false),
+      variant(203, "Sample", "9.95"),
+    ]);
+    expect(few.json.products[0].versions).toEqual([
+      { number: 1, title: "Regular", price: "$24.95", variantId: "201" },
+      { number: 2, title: "Special", price: "$49.95", variantId: "202", soldOut: true },
+      { number: 3, title: "Sample", price: "$9.95", variantId: "203" },
+    ]);
+    expect(few.cards[0].variantId).toBeNull();
+    expect(few.cards[0].variants).toEqual([
+      { id: "201", title: "Regular", price: { amount: "24.95", currencyCode: "USD" }, available: true },
+      { id: "202", title: "Special", price: { amount: "49.95", currencyCode: "USD" }, available: false },
+      { id: "203", title: "Sample", price: { amount: "9.95", currencyCode: "USD" }, available: true },
+    ]);
+
+    // One version is nothing to choose between.
+    const one = await search([variant(201, "Default Title", "24.95")]);
+    expect(one.json.products[0].versions).toBeUndefined();
+    expect(one.cards[0].variants).toBeUndefined();
+    expect(one.cards[0].variantId).toBe("201");
+
+    // More than a card can show: the product page takes over.
+    const many = await search(
+      Array.from({ length: 13 }, (_, index) => variant(300 + index, `Size ${index}`, "24.95")),
+    );
+    expect(many.json.products[0].versions).toBeUndefined();
+    expect(many.cards[0].variants).toBeUndefined();
+    expect(many.cards[0].variantId).toBeNull();
   });
 
   it("get_products_by_price asks Shopify to do the sorting", async () => {
@@ -239,7 +515,7 @@ describe("shopper tools", () => {
     );
     expect(single.json.options).toBeUndefined();
     expect(single.json.choices).toMatch(/one version only/);
-    expect(single.json.variants).toEqual([{ variantId: "101", price: "18.0 USD", inStock: true }]);
+    expect(single.json.variants).toEqual([{ variantId: "101", price: "$18.00", inStock: true }]);
     expect(single.content).not.toContain("Default Title");
 
     const sized = await run(
@@ -637,6 +913,63 @@ describe("get_order_status", () => {
     expect(admin.calls).toHaveLength(5);
   });
 
+  it("lets one message look into the same order several times, but only a couple of orders", async () => {
+    const order = { id: "gid://shopify/Order/1", name: "#1001", email: "buyer@example.com" };
+    const context = toolContext({
+      admin: fakeGraphql({ orders: { nodes: [order] } }),
+      storefront: fakeGraphql({}),
+      settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
+      rateLimiter: new RateLimiter(),
+      isTestStore: async () => true,
+    });
+    const look = (orderNumber: string) =>
+      run("get_order_status", { orderNumber, email: "buyer@example.com" }, context);
+
+    // Status, then again for its items, then for the change: all one order.
+    for (let i = 0; i < 4; i += 1) {
+      expect((await look("1001")).json.error ?? "").not.toMatch(/Only a couple of orders/);
+    }
+    expect((await look("1002")).json.error ?? "").not.toMatch(/Only a couple of orders/);
+    // A third order in the same message is one too many.
+    expect((await look("1003")).json.error).toMatch(/Only a couple of orders/);
+  });
+
+  it("gives a development store far more lookups, and still stops in the end", async () => {
+    const admin = fakeGraphql({ orders: { nodes: [] } });
+    const rateLimiter = new RateLimiter();
+    let asked = 0;
+    const attempt = (n: number) =>
+      run(
+        "get_order_status",
+        { orderNumber: String(n), email: `a${n}@b.co` },
+        toolContext({
+          admin,
+          storefront: fakeGraphql({}),
+          settings: { ...SHOPPER_DEFAULTS, orderLookupEnabled: true },
+          buyer: { ip: "203.0.113.7" },
+          rateLimiter,
+          isTestStore: async () => {
+            asked += 1;
+            return true;
+          },
+        }),
+      );
+
+    for (let i = 0; i < 5; i += 1) await attempt(i);
+    // Not asked while the ordinary limit still has room.
+    expect(asked).toBe(0);
+
+    const sixth = await attempt(6);
+    expect(sixth.json.error).not.toMatch(/Too many/);
+    expect(asked).toBe(1);
+
+    // The extra allowance is 50 times the ordinary one: 250 more from one
+    // address, of which the sixth lookup was the first.
+    for (let i = 7; i <= 255; i += 1) await attempt(i);
+    const last = await attempt(256);
+    expect(last.json.error).toMatch(/Too many order lookups/);
+  });
+
   it("throttles guesses against one email even when the address keeps changing", async () => {
     const admin = fakeGraphql({ orders: { nodes: [] } });
     const rateLimiter = new RateLimiter();
@@ -742,10 +1075,10 @@ describe("place_order", () => {
       },
     ]);
     expect(result.json.items).toEqual([
-      { item: "Trail Mug", quantity: 3, unitPrice: "18.0 USD", lineTotal: "54.0 USD" },
-      { item: "Camp Blanket (Large)", quantity: 1, unitPrice: "89.50 USD", lineTotal: "89.50 USD" },
+      { item: "Trail Mug", quantity: 3, unitPrice: "$18.00", lineTotal: "$54.00" },
+      { item: "Camp Blanket (Large)", quantity: 1, unitPrice: "$89.50", lineTotal: "$89.50" },
     ]);
-    expect(result.json.itemsTotal).toBe("143.50 USD");
+    expect(result.json.itemsTotal).toBe("$143.50");
     // The model is told the order is not placed yet.
     expect(result.json.note).toMatch(/not placed until they complete it/);
     expect(result.json.note).toMatch(/lists everything in the cart/);
@@ -924,6 +1257,15 @@ describe("request_return", () => {
     },
   });
   const created = { returnRequest: { return: { name: "#1001-R1", status: "REQUESTED" }, userErrors: [] } };
+  // Shopify's reason categories, which every request must name one of.
+  const reasons = {
+    returnReasonDefinitions: {
+      nodes: [
+        { id: "gid://shopify/ReturnReasonDefinition/7", handle: "too-small" },
+        { id: "gid://shopify/ReturnReasonDefinition/5", handle: "other-reason" },
+      ],
+    },
+  };
   const proof = { orderNumber: "1001", email: "buyer@example.com", reason: "Too small" };
   const returnsOn = (admin: ReturnType<typeof fakeGraphql>, rateLimiter = new RateLimiter()) =>
     toolContext({
@@ -945,14 +1287,20 @@ describe("request_return", () => {
     const admin = fakeGraphql(
       { orders: { nodes: [order] } },
       returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 2]),
+      reasons,
       created,
     );
 
-    const result = await run("request_return", { ...proof, quantity: 5 }, returnsOn(admin));
+    const result = await run(
+      "request_return",
+      { ...proof, quantity: 5, reasonKind: "too_small" },
+      returnsOn(admin),
+    );
 
     expect(result.json).toMatchObject({ status: "requested", returnReference: "#1001-R1", quantity: 2 });
     expect(result.json.note).toMatch(/request, not an approval/);
-    expect(admin.calls[2].variables).toEqual({
+    expect(admin.calls[2].variables).toEqual({ handles: ["too-small", "other-reason"] });
+    expect(admin.calls[3].variables).toEqual({
       input: {
         orderId: "gid://shopify/Order/9001",
         returnLineItems: [
@@ -961,10 +1309,27 @@ describe("request_return", () => {
             // Capped at what can actually be returned.
             quantity: 2,
             customerNote: "Too small",
+            returnReasonDefinitionId: "gid://shopify/ReturnReasonDefinition/7",
           },
         ],
       },
     });
+  });
+
+  it("files the request under 'other' when no category was chosen", async () => {
+    const admin = fakeGraphql(
+      { orders: { nodes: [order] } },
+      returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]),
+      reasons,
+      created,
+    );
+
+    await run("request_return", { ...proof, reason: "It is the wrong size" }, returnsOn(admin));
+
+    expect(admin.calls[2].variables).toEqual({ handles: ["other-reason"] });
+    const line = (admin.calls[3].variables as { input: { returnLineItems: Array<Record<string, unknown>> } })
+      .input.returnLineItems[0];
+    expect(line.returnReasonDefinitionId).toBe("gid://shopify/ReturnReasonDefinition/5");
   });
 
   it("asks which item instead of guessing when the order has several", async () => {
@@ -984,9 +1349,90 @@ describe("request_return", () => {
     // Looked up the order and its items, but sent nothing.
     expect(admin.calls).toHaveLength(2);
 
-    const second = fakeGraphql({ orders: { nodes: [order] } }, items, created);
+    const second = fakeGraphql({ orders: { nodes: [order] } }, items, reasons, created);
     const chosen = await run("request_return", { ...proof, itemTitle: "kettle" }, returnsOn(second));
     expect(chosen.json).toMatchObject({ status: "requested", item: "Camp Kettle" });
+  });
+
+  it("sends several items, or all of them, in one request", async () => {
+    const three = returnable(
+      ["gid://shopify/FulfillmentLineItem/1", "Hydrogen Snowboard", 1],
+      ["gid://shopify/FulfillmentLineItem/2", "Complete Snowboard", 2],
+      ["gid://shopify/FulfillmentLineItem/3", "Ski Wax", 3],
+    );
+    const lines = (admin: ReturnType<typeof fakeGraphql>) =>
+      (admin.calls.at(-1)!.variables!.input as { returnLineItems: Array<Record<string, unknown>> }).returnLineItems;
+
+    // Everything that can be returned, each in full.
+    const allAdmin = fakeGraphql({ orders: { nodes: [order] } }, three, reasons, created);
+    const all = await run("request_return", { ...proof, allItems: true }, returnsOn(allAdmin));
+    expect(all.json.status).toBe("requested");
+    expect(all.json.items).toEqual([
+      { title: "Hydrogen Snowboard", quantity: 1 },
+      { title: "Complete Snowboard", quantity: 2 },
+      { title: "Ski Wax", quantity: 3 },
+    ]);
+    expect(lines(allAdmin).map((line) => [line.fulfillmentLineItemId, line.quantity])).toEqual([
+      ["gid://shopify/FulfillmentLineItem/1", 1],
+      ["gid://shopify/FulfillmentLineItem/2", 2],
+      ["gid://shopify/FulfillmentLineItem/3", 3],
+    ]);
+
+    // The items named, never more of one than can be returned.
+    const someAdmin = fakeGraphql({ orders: { nodes: [order] } }, three, reasons, created);
+    const some = await run(
+      "request_return",
+      { ...proof, items: [{ title: "ski wax", quantity: 9 }, { title: "Hydrogen" }] },
+      returnsOn(someAdmin),
+    );
+    expect(some.json.items).toEqual([
+      { title: "Ski Wax", quantity: 3 },
+      { title: "Hydrogen Snowboard", quantity: 1 },
+    ]);
+    expect(lines(someAdmin)).toHaveLength(2);
+
+    // "Snowboard" fits two of them, and the same item twice is not two items: ask, send nothing.
+    for (const items of [[{ title: "Snowboard" }], [{ title: "Ski Wax" }, { title: "wax" }]]) {
+      const unclearAdmin = fakeGraphql({ orders: { nodes: [order] } }, three);
+      const unclear = await run("request_return", { ...proof, items }, returnsOn(unclearAdmin));
+      expect(unclear.json.status).toBe("need_item");
+      expect(unclear.json.returnableItems).toHaveLength(3);
+      expect(unclearAdmin.calls).toHaveLength(2);
+    }
+  });
+
+  it("never passes off an email it did not need as checked", async () => {
+    const mine = { id: order.id, name: order.name, source: "customer" as const };
+    const single = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
+    const request = (email: string | undefined) =>
+      run(
+        "request_return",
+        { orderNumber: "1001", reason: "Too small", ...(email ? { email } : {}) },
+        {
+          ...returnsOn(fakeGraphql({ orders: { nodes: [order] } }, single, reasons, created)),
+          knownOrders: [mine],
+        },
+      );
+
+    // Signed in, no email: nothing to say about proof.
+    expect((await request(undefined)).json.aboutProof).toBeUndefined();
+    // The right email changes nothing either.
+    expect((await request("Buyer@Example.com")).json.aboutProof).toBeUndefined();
+    // A wrong one is not what let them in, and the assistant is told to say so.
+    const wrong = await request("someone.else@example.com");
+    expect(wrong.json.status).toBe("requested");
+    expect(wrong.json.aboutProof).toMatch(/is not the one on this order/);
+    expect(wrong.json.aboutProof).toMatch(/on the account they are signed in to/);
+    expect(wrong.json.aboutProof).toMatch(/do not say it was accepted or verified/);
+    expect(JSON.stringify(wrong.json)).not.toContain("buyer@example.com");
+
+    // For an order this chat does not know, a wrong email still gets nowhere.
+    const stranger = await run(
+      "request_return",
+      { ...proof, email: "someone.else@example.com" },
+      returnsOn(fakeGraphql({ orders: { nodes: [order] } })),
+    );
+    expect(stranger.ok).toBe(false);
   });
 
   it("refuses without proof of ownership and never reaches the returns API", async () => {
@@ -1001,17 +1447,141 @@ describe("request_return", () => {
     expect(admin.calls).toHaveLength(1);
   });
 
-  it("allows one request per order per day", async () => {
+  it("allows a few requests per order per day, and then says nothing more was sent", async () => {
     const rateLimiter = new RateLimiter();
     const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
-    const first = fakeGraphql({ orders: { nodes: [order] } }, item, created);
-    const again = fakeGraphql({ orders: { nodes: [order] } }, item, created);
+    const send = async () => {
+      const admin = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+      return { result: await run("request_return", proof, returnsOn(admin, rateLimiter)), admin };
+    };
 
-    expect((await run("request_return", proof, returnsOn(first, rateLimiter))).json.status).toBe("requested");
-    const repeat = await run("request_return", proof, returnsOn(again, rateLimiter));
+    // Other items of the same order, or one the store declined, can be asked for the same day.
+    for (let request = 0; request < 3; request += 1) {
+      expect((await send()).result.json.status).toBe("requested");
+    }
+    const fourth = await send();
+    expect(fourth.result.json.error).toMatch(/Several return requests were already sent for this order today/);
+    expect(fourth.result.json.error).toMatch(/Nothing was sent now/);
+    // Order, items and reasons were read; no further request was sent.
+    expect(fourth.admin.calls).toHaveLength(3);
+  });
 
-    expect(repeat.json.error).toMatch(/already requested for this order today/);
-    expect(again.calls).toHaveLength(2);
+  it("checks first, without a reason, and names only what can be returned", async () => {
+    const items = returnable(
+      ["gid://shopify/FulfillmentLineItem/1", "Ski Wax", 1],
+      ["gid://shopify/FulfillmentLineItem/2", "Used Up", 0],
+    );
+    const admin = fakeGraphql({ orders: { nodes: [order] } }, items);
+    const checked = await run(
+      "request_return",
+      { orderNumber: "1001", email: "buyer@example.com" },
+      returnsOn(admin),
+    );
+    expect(checked.json).toMatchObject({
+      status: "need_reason",
+      order: "#1001",
+      returnableItems: [{ title: "Ski Wax", quantity: 1 }],
+    });
+    expect(checked.json.note).toMatch(/No request was sent/);
+    // The order and its items were read, and nothing was written.
+    expect(admin.calls).toHaveLength(2);
+
+    // Checking is not a way round proof: a stranger learns nothing about the order.
+    const stranger = fakeGraphql({ orders: { nodes: [order] } }, items);
+    const refused = await run("request_return", { orderNumber: "1001" }, returnsOn(stranger));
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused.json)).not.toContain("Ski Wax");
+    expect(stranger.calls).toHaveLength(0);
+  });
+
+  it("lets the shopper try again after Shopify turned a request down", async () => {
+    const rateLimiter = new RateLimiter();
+    const item = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
+    const refused = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, {
+      returnRequest: { return: null, userErrors: [{ message: "Return reason can't be blank" }] },
+    });
+    const retry = fakeGraphql({ orders: { nodes: [order] } }, item, reasons, created);
+
+    const first = await run("request_return", proof, returnsOn(refused, rateLimiter));
+    expect(first.json.error).toMatch(/did not accept the return request/);
+    const second = await run("request_return", proof, returnsOn(retry, rateLimiter));
+    expect(second.json.status).toBe("requested");
+  });
+
+  it("checks which of the shopper's own orders can be returned right now", async () => {
+    const known = (number: number) => ({
+      id: `gid://shopify/Order/${number}`,
+      name: `#${number}`,
+      source: "customer" as const,
+    });
+    const answer = (
+      order: Record<string, unknown> | null,
+      items: Array<[string, number]> = [],
+    ) => ({
+      order: order && { name: "x", cancelledAt: null, returnStatus: "NO_RETURN", fulfillments: [{ id: "f" }], ...order },
+      returnableFulfillments: {
+        nodes: [
+          {
+            returnableFulfillmentLineItems: {
+              nodes: items.map(([title, quantity]) => ({
+                quantity,
+                fulfillmentLineItem: { lineItem: { title } },
+              })),
+            },
+          },
+        ],
+      },
+    });
+    // One answer per order, in the order they are asked about.
+    const admin = fakeGraphql(
+      answer({}, [["Trail Mug", 2], ["Camp Kettle", 0]]),
+      answer({ fulfillments: [] }),
+      answer({ returnStatus: "RETURN_REQUESTED" }),
+      answer({ returnStatus: "IN_PROGRESS" }),
+      answer({ cancelledAt: "2026-11-01T00:00:00Z", fulfillments: [] }),
+      new Error("offline"),
+    );
+    const context = {
+      ...returnsOn(admin),
+      knownOrders: [1001, 1002, 1003, 1004, 1005, 1006, 1007].map(known),
+    };
+
+    const result = await run("list_returnable_orders", {}, context);
+    expect(result.ok).toBe(true);
+    expect(result.json.returnable).toEqual([
+      // What is left to return, not what was already sent back.
+      { order: "#1001", items: [{ title: "Trail Mug", quantity: 2 }] },
+    ]);
+    expect(result.json.cannotBeReturned).toEqual([
+      { order: "#1002", because: "it has not shipped yet" },
+      { order: "#1003", because: "a return request for it is already waiting for the store's answer" },
+      { order: "#1004", because: "a return for it is already in progress" },
+      { order: "#1005", because: "it was cancelled" },
+      // #1006 could not be checked and is left out; #1007 is beyond the six most recent.
+    ]);
+    expect(admin.calls).toHaveLength(6);
+    expect(admin.calls.map((call) => call.variables!.orderId)).toEqual(
+      [1001, 1002, 1003, 1004, 1005, 1006].map((number) => `gid://shopify/Order/${number}`),
+    );
+    // Remembered for the turn, so the order buttons can follow it.
+    expect(context.turn.returnableOrders).toEqual(["#1001"]);
+
+    const none = await run(
+      "list_returnable_orders",
+      {},
+      { ...returnsOn(fakeGraphql(answer({ fulfillments: [] }))), knownOrders: [known(1002)] },
+    );
+    expect(none.json.returnable).toEqual([]);
+    expect(none.json.note).toMatch(/None of the shopper's orders can be returned right now/);
+
+    // Only for orders already known to be theirs, and only where returns are on.
+    const names = (context: ReturnType<typeof toolContext>) =>
+      toolsFor(allTools, context).map((tool) => tool.name);
+    expect(names(returnsOn(fakeGraphql()))).not.toContain("list_returnable_orders");
+    expect(names({ ...returnsOn(fakeGraphql()), knownOrders: [known(1001)] })).toContain("list_returnable_orders");
+    expect(
+      names(toolContext({ admin: fakeGraphql(), knownOrders: [known(1001)] })),
+    ).not.toContain("list_returnable_orders");
   });
 
   it("explains when nothing can be returned or Shopify rejects the request", async () => {
@@ -1020,7 +1590,33 @@ describe("request_return", () => {
       proof,
       returnsOn(fakeGraphql({ orders: { nodes: [order] } }, returnable())),
     );
-    expect(nothing.json.error).toMatch(/Nothing on this order can be returned/);
+    // Not shipped: say that, and that it can be requested once it has arrived.
+    expect(nothing.json.error).toMatch(/Order #1001 cannot be returned right now because it has not shipped yet/);
+    expect(nothing.json.error).toMatch(/once it has arrived/);
+    expect(nothing.json.error).not.toMatch(/cancel/);
+
+    // The reason is read from the order as it is now, never guessed.
+    const state = (overrides: Record<string, unknown>) => ({
+      order: { name: "#1001", cancelledAt: null, returnStatus: "NO_RETURN", fulfillments: [{ id: "f" }], ...overrides },
+      returnableFulfillments: { nodes: [] },
+    });
+    const because = async (overrides: Record<string, unknown>) =>
+      (
+        await run(
+          "request_return",
+          proof,
+          returnsOn(fakeGraphql({ orders: { nodes: [order] } }, returnable(), state(overrides))),
+        )
+      ).json.error as string;
+
+    const waiting = await because({ returnStatus: "RETURN_REQUESTED" });
+    expect(waiting).toMatch(/because a return request for it is already waiting for the store's answer/);
+    expect(waiting).toMatch(/give no other reason/);
+    expect(waiting).not.toMatch(/shipped|cancel/);
+    expect(await because({ returnStatus: "IN_PROGRESS" })).toMatch(/a return for it is already in progress/);
+    expect(await because({ returnStatus: "RETURNED" })).toMatch(/it has already been returned/);
+    expect(await because({})).toMatch(/because nothing on it can be returned\. .*Suggest contacting the store/);
+    expect(await because({ cancelledAt: "2026-11-01T00:00:00Z" })).toMatch(/because it was cancelled/);
 
     const rejected = await run(
       "request_return",
@@ -1029,6 +1625,7 @@ describe("request_return", () => {
         fakeGraphql(
           { orders: { nodes: [order] } },
           returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]),
+          reasons,
           { returnRequest: { return: null, userErrors: [{ message: "Return window has closed" }] } },
         ),
       ),
@@ -1152,6 +1749,20 @@ describe("samePhone", () => {
     expect(samePhone("03198754964", "+92 319 8754964")).toBe(true);
     expect(samePhone("+1 (202) 555-0143", "2025550143")).toBe(true);
     expect(samePhone("+12025550143", "+12025550143")).toBe(true);
+  });
+
+  it("accepts a country code in front, and no other digits", () => {
+    // The order holds the local number; the shopper adds a real country code.
+    expect(samePhone("0319 8754964", "+92 319 875 4964")).toBe(true);
+    expect(samePhone("3198754964", "+1 3198754964")).toBe(true);
+    // "10" is not a country code, so this is another number...
+    expect(samePhone("0319 8754964", "+10 319 875 4964")).toBe(false);
+    // ...and so is one with a digit added, dropped or changed.
+    expect(samePhone("0319 8754964", "0319 87549644")).toBe(false);
+    expect(samePhone("0319 8754964", "+92 319 875 496")).toBe(false);
+    expect(samePhone("+92 319 875 4964", "+93 319 875 4964")).toBe(false);
+    // A country code is not followed by the local zero.
+    expect(samePhone("0319 8754964", "+92 0319 8754964")).toBe(false);
   });
 
   it("does not match different lines, short tails or nothing", () => {

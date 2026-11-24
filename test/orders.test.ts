@@ -202,6 +202,7 @@ describe("order quote", () => {
       shippingAddress: {
         firstName: "Ada",
         lastName: "Lovelace",
+        company: null,
         address1: "12 Analytical Way",
         address2: null,
         city: "Ottawa",
@@ -253,7 +254,7 @@ describe("order quote", () => {
   it("passes a province name through as a name and leaves an empty email out", async () => {
     const body = details({
       contact: { lastName: "Cher", phone: "03001234567", email: "" },
-      address: { address1: "5 Mall Road", city: "Lahore", province: "Punjab", countryCode: "PK" },
+      address: { address1: "5 Sheikh Zayed Road", city: "Dubai", province: "Dubai", countryCode: "AE" },
     });
     const { result, admin } = order({ step: "quote", ...body });
     await result;
@@ -263,11 +264,81 @@ describe("order quote", () => {
     expect(input.shippingAddress).toMatchObject({
       firstName: null,
       lastName: "Cher",
-      province: "Punjab",
+      company: null,
+      province: "Dubai",
       zip: null,
       phone: "03001234567",
     });
     expect(input.shippingAddress).not.toHaveProperty("provinceCode");
+  });
+
+  it("asks for what the delivery country's address needs, in Shopify's words", async () => {
+    const quoteFor = (address: Record<string, string>) =>
+      order({ step: "quote", ...details({ address: { address1: "1 High Street", ...address } }) });
+
+    // The United States: a city, a state and a ZIP code that looks like one.
+    const blank = await failure(quoteFor({ countryCode: "US" }).result);
+    expect(blank.code).toBe("invalid_order");
+    expect(blank.extra.fields).toEqual({
+      city: "Enter a city",
+      province: "Select a state",
+      zip: "Enter a ZIP code",
+    });
+    const wrongZip = quoteFor({ countryCode: "US", city: "Springfield", province: "IL", zip: "K1A 0B1" });
+    expect((await failure(wrongZip.result)).extra.fields).toEqual({
+      zip: "Enter a valid ZIP code for the United States, for example 90210",
+    });
+    expect(wrongZip.admin.calls).toHaveLength(0);
+
+    // The United Kingdom has no counties to pick, and calls it a postcode.
+    const uk = await failure(quoteFor({ countryCode: "GB", city: "London", zip: "12345" }).result);
+    expect(uk.extra.fields).toEqual({
+      zip: "Enter a valid postcode for the United Kingdom, for example SE22 8DL",
+    });
+
+    // Pakistan: no state to pick and a postal code is not needed. A state
+    // sent anyway is not on that country's form, so it does not reach Shopify.
+    const pk = quoteFor({ countryCode: "PK", city: "Lahore", province: "Punjab" });
+    await pk.result;
+    const sent = (pk.admin.calls[0].variables!.input as { shippingAddress: Record<string, unknown> })
+      .shippingAddress;
+    expect(sent).toMatchObject({ city: "Lahore", zip: null });
+    expect(sent).not.toHaveProperty("province");
+    expect(sent).not.toHaveProperty("provinceCode");
+  });
+
+  it("follows the store's choices for first name, company and the second address line", async () => {
+    await saveSettings(SHOP_A, { orderFirstName: "required", orderCompany: "required", orderAddress2: "hidden" }, db);
+    try {
+      const strict = await failure(
+        order({
+          step: "quote",
+          ...details({ contact: { lastName: "Lovelace", phone: "+1 613 555 0111", email: "" } }),
+        }).result,
+      );
+      expect(strict.extra.fields).toEqual({
+        firstName: "Enter a first name",
+        company: "Enter a company",
+      });
+
+      const base = details();
+      const { result, admin } = order({
+        step: "quote",
+        ...base,
+        address: { ...base.address, company: "Analytical Engines", address2: "Unit 4" },
+      });
+      await result;
+      const sent = (admin.calls[0].variables!.input as { shippingAddress: Record<string, unknown> })
+        .shippingAddress;
+      // The second line is not on this store's form, so it is not passed on.
+      expect(sent).toMatchObject({ company: "Analytical Engines", address2: null });
+    } finally {
+      await saveSettings(
+        SHOP_A,
+        { orderFirstName: "optional", orderCompany: "hidden", orderAddress2: "optional" },
+        db,
+      );
+    }
   });
 
   it("names the form fields that need fixing, without calling Shopify", async () => {
@@ -275,7 +346,7 @@ describe("order quote", () => {
       step: "quote",
       ...details({
         contact: { firstName: "x".repeat(41), lastName: "", phone: "12", email: "not-an-email" },
-        address: { address1: "", city: "", countryCode: "Canada" },
+        address: { address1: "", city: "", company: "x".repeat(81), countryCode: "Canada" },
       }),
     });
     const error = await failure(result);
@@ -284,7 +355,7 @@ describe("order quote", () => {
     expect(error.status).toBe(422);
     expect(Object.keys(error.extra.fields!).sort()).toEqual([
       "address1",
-      "city",
+      "company",
       "countryCode",
       "email",
       "firstName",
@@ -335,15 +406,20 @@ describe("order quote", () => {
       ShopiAssistDraftOrderCalculate: (variables) =>
         calculated(variables, { availableShippingRates: [] }),
     });
-    const address = { address1: "742 Evergreen Terrace", city: "Springfield", countryCode: "US" };
+    // New Zealand's form has a region that may be left empty, so it gets this far.
+    const address = { address1: "1 Lambton Quay", city: "Wellington", zip: "6011", countryCode: "NZ" };
 
-    const neither = await failure(order({ step: "quote", ...details({ address }) }, { admin }).result);
-    expect(neither.code).toBe("invalid_order");
-    expect(neither.message).toMatch(/a bit more of your address/);
-    expect(Object.keys(neither.extra.fields!).sort()).toEqual(["province", "zip"]);
+    const noRegion = await failure(order({ step: "quote", ...details({ address }) }, { admin }).result);
+    expect(noRegion.code).toBe("invalid_order");
+    expect(noRegion.message).toMatch(/a bit more of your address/);
+    expect(Object.keys(noRegion.extra.fields!)).toEqual(["province"]);
 
+    // Only what the country's form has is asked for: Pakistan's has no state.
     const noZip = await failure(
-      order({ step: "quote", ...details({ address: { ...address, province: "IL" } }) }, { admin }).result,
+      order(
+        { step: "quote", ...details({ address: { address1: "5 Mall Road", city: "Lahore", countryCode: "PK" } }) },
+        { admin },
+      ).result,
     );
     expect(noZip.extra.fields).toEqual({
       zip: "Add your postal code so delivery can be worked out.",
@@ -598,6 +674,89 @@ describe("placing an order", () => {
   });
 });
 
+describe("checkout for the ticked items", () => {
+  const SHOP_C = "shop-c.myshopify.com";
+  const cartApi = (handler: Handler) => routedGraphql({ ShopiAssistCheckoutCart: handler });
+  const created = (overrides: Record<string, unknown> = {}) => ({
+    cartCreate: {
+      cart: { checkoutUrl: "https://shop-c.example/cart/c/abc?key=1", totalQuantity: 3 },
+      userErrors: [],
+      ...overrides,
+    },
+  });
+  const body = {
+    step: "checkout",
+    country: "ca",
+    discountCodes: ["WELCOME"],
+    items: [
+      { variantId: "101", quantity: 2, properties: { Engraving: "Ada" } },
+      { variantId: "103", quantity: 1, sellingPlanId: "77" },
+    ],
+  };
+  const checkout = (
+    store: ReturnType<typeof cartApi>,
+    request: Record<string, unknown> = body,
+    shop = SHOP_C,
+  ) => handleChatOrder({ shop, body: request, ip: "203.0.113.9", admin: adminApi(), storefront: store }, deps);
+
+  it("makes a cart of its own for them, on a store that takes no orders in the chat", async () => {
+    const store = cartApi(() => created());
+    expect(await checkout(store)).toEqual({
+      ok: true,
+      step: "checkout",
+      checkoutUrl: "https://shop-c.example/cart/c/abc?key=1",
+    });
+    expect(store.calls).toHaveLength(1);
+    expect(store.calls[0].variables).toEqual({
+      country: "CA",
+      input: {
+        lines: [
+          {
+            merchandiseId: "gid://shopify/ProductVariant/101",
+            quantity: 2,
+            attributes: [{ key: "Engraving", value: "Ada" }],
+          },
+          {
+            merchandiseId: "gid://shopify/ProductVariant/103",
+            quantity: 1,
+            sellingPlanId: "gid://shopify/SellingPlan/77",
+          },
+        ],
+        discountCodes: ["WELCOME"],
+      },
+    });
+  });
+
+  it("says so when Shopify will not make the cart, and never passes on a link that is not a checkout", async () => {
+    const refused = await failure(
+      checkout(cartApi(() => created({ cart: null, userErrors: [{ code: "INVALID", field: null, message: "No" }] }))),
+    );
+    expect([refused.code, refused.status]).toEqual(["unavailable", 409]);
+
+    const odd = cartApi(() => created({ cart: { checkoutUrl: "javascript:alert(1)", totalQuantity: 1 } }));
+    expect((await failure(checkout(odd))).code).toBe("unavailable");
+
+    const soldOut = cartApi(() => created({ cart: { checkoutUrl: "https://shop-c.example/cart/c/x", totalQuantity: 0 } }));
+    expect((await failure(checkout(soldOut))).message).toMatch(/sold out/);
+
+    const offline = cartApi(() => {
+      throw new Error("offline");
+    });
+    expect((await failure(checkout(offline))).code).toBe("unavailable");
+  });
+
+  it("refuses a malformed request, and a store where the assistant does not help with orders", async () => {
+    const store = cartApi(() => created());
+    for (const items of [[], [{ variantId: "abc", quantity: 1 }], [{ variantId: "101", quantity: 0 }]]) {
+      expect((await failure(checkout(store, { step: "checkout", items }))).code).toBe("invalid_request");
+    }
+    expect(store.calls).toHaveLength(0);
+
+    await saveSettings(SHOP_C, { allowCheckout: false }, db);
+    expect((await failure(checkout(store))).code).toBe("disabled");
+  });
+});
+
 describe("who may order", () => {
   it("is off until the merchant switches it on, and needs checkout help on too", async () => {
     const off = await failure(order({ step: "quote", ...details() }, {}, SHOP_B).result);
@@ -617,8 +776,11 @@ describe("who may order", () => {
 });
 
 describe("delivery countries", () => {
-  const countries = (handler: Handler) =>
-    routedGraphql({ ShopiAssistDeliveryCountries: handler });
+  const countries = (handler: Handler, payments?: Handler) =>
+    routedGraphql({
+      ShopiAssistDeliveryCountries: handler,
+      ...(payments ? { ShopiAssistPaymentSettings: payments } : {}),
+    });
 
   it("lists the countries the store sells to, by name", async () => {
     const store = countries(() => ({
@@ -635,18 +797,83 @@ describe("delivery countries", () => {
       deps,
     );
 
-    expect(list).toEqual([
-      { code: "CA", name: "Canada" },
-      { code: "US", name: "United States" },
+    // Both countries have the same layout but name the state and the
+    // postal code differently, so each gets its own form.
+    expect(list.countries).toEqual([
+      { code: "CA", name: "Canada", form: 0 },
+      { code: "US", name: "United States", form: 1 },
     ]);
-    expect(store.calls[0].variables).toEqual({ language: "FR" });
+    const labels = list.forms.map((form) => form.map((row) => row.map((field) => field.label)));
+    expect(labels).toEqual([
+      [
+        ["First name (optional)", "Last name"],
+        ["Address"],
+        ["Apartment, suite, etc (optional)"],
+        ["City", "Province", "Postal code"],
+        ["Phone"],
+      ],
+      [
+        ["First name (optional)", "Last name"],
+        ["Address"],
+        ["Apartment, suite, etc (optional)"],
+        ["City", "State", "ZIP code"],
+        ["Phone"],
+      ],
+    ]);
+    expect(list.forms[1].flat().filter((field) => !field.required).map((field) => field.name)).toEqual([
+      "firstName",
+      "address2",
+    ]);
+    expect(
+      store.calls.find((call) => call.operation === "ShopiAssistDeliveryCountries")!.variables,
+    ).toEqual({ language: "FR" });
+  });
+
+  it("says how the store is paid: its own name for paying on delivery, and what its checkout takes", async () => {
+    const store = countries(
+      () => ({ localization: { availableCountries: [{ isoCode: "US", name: "United States" }] } }),
+      () => ({
+        shop: {
+          paymentSettings: {
+            acceptedCardBrands: ["VISA", "MASTERCARD", "AMERICAN_EXPRESS", "NEW_BRAND"],
+            supportedDigitalWallets: ["SHOPIFY_PAY", "ANDROID_PAY", "GOOGLE_PAY", "<img>"],
+          },
+        },
+      }),
+    );
+    const byDefault = await listDeliveryCountries({ shop: SHOP_A, storefront: store }, deps);
+    expect(byDefault.payment).toEqual({
+      name: "Cash on Delivery (COD)",
+      note: "",
+      // Named as people know them, each once; anything odd is left out.
+      online: ["Visa", "Mastercard", "American Express", "New Brand", "Shop Pay", "Google Pay"],
+    });
+    // The countries are still listed when Shopify will not say how it is paid.
+    expect(byDefault.countries).toHaveLength(1);
+
+    await saveSettings(
+      SHOP_A,
+      { orderPaymentName: " Pay the courier ", orderPaymentNote: "Cash only." },
+      db,
+    );
+    try {
+      const named = await listDeliveryCountries({ shop: SHOP_A, storefront: store }, deps);
+      expect(named.payment).toMatchObject({ name: "Pay the courier", note: "Cash only." });
+    } finally {
+      await saveSettings(SHOP_A, { orderPaymentName: "", orderPaymentNote: "" }, db);
+    }
   });
 
   it("returns an empty list when Shopify cannot be asked, and nothing when switched off", async () => {
     const broken = countries(() => {
       throw new Error("offline");
     });
-    expect(await listDeliveryCountries({ shop: SHOP_A, storefront: broken }, deps)).toEqual([]);
+    expect(await listDeliveryCountries({ shop: SHOP_A, storefront: broken }, deps)).toEqual({
+      countries: [],
+      forms: [],
+      // Shopify's own name for it, and nothing known about paying online.
+      payment: { name: "Cash on Delivery (COD)", note: "", online: [] },
+    });
 
     const error = await failure(
       listDeliveryCountries({ shop: SHOP_B, storefront: broken }, deps),

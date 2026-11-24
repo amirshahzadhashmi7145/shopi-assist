@@ -18,7 +18,8 @@ import {
   type RateLimiter,
 } from "./rate-limit";
 import { DEFAULT_SETTINGS, describeQuickPolicies, getSettings } from "./settings.server";
-import { getShopName } from "./shopify-clients.server";
+import { GRANT_LIFETIME_MS, grantSecret, signGrant } from "./action-grant.server";
+import { getShopName, isDevelopmentStore, ordersOfCustomer } from "./shopify-clients.server";
 import {
   appendExchange,
   createConversation,
@@ -29,7 +30,15 @@ import {
   rememberOrder,
 } from "./store.server";
 import { allTools } from "./tools";
+import {
+  asksForProof,
+  asksReturnReason,
+  asksWhichOrder,
+  asksYesOrNo,
+  liftChoices,
+} from "./choices";
 import { toolsFor, type ToolContext, type ToolDefinition } from "./tools/registry";
+import { checkReturnable, RETURN_REASON_LABELS } from "./tools/shopper";
 import type {
   Audience,
   CartLine,
@@ -80,6 +89,12 @@ export interface ChatTurnInput {
   language?: unknown;
   /** The storefront cart as the widget read it. Untrusted; see `readCart`. */
   cart?: unknown;
+  /**
+   * What the widget says it can draw beyond text and cards, such as
+   * "choices". Untrusted, and only ever used to hold things back from a
+   * widget that did not ask for them.
+   */
+  supports?: unknown;
   admin?: GraphqlFn;
   storefront?: GraphqlFn;
   /**
@@ -125,6 +140,15 @@ export function maskForStorage(text: string): string {
 }
 
 const MAX_CART_LINES = 20;
+
+
+/** The widget's list of what it can draw, kept only if it is a short list of plain names. */
+function readSupports(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is string => typeof entry === "string" && /^[a-z_]{1,30}$/.test(entry))
+    .slice(0, 10);
+}
 
 /**
  * The shopper's cart as their browser reported it, or undefined when it was
@@ -298,15 +322,37 @@ export async function handleChatTurn(
     }
   }
 
+  // A shopper signed in to their store account: their own recent orders are
+  // known without proof. The id is the one Shopify signed onto the request.
+  const signedIn =
+    input.audience === "shopper" &&
+    !input.preview &&
+    Boolean(input.customerId) &&
+    settings.recogniseCustomers &&
+    settings.orderLookupEnabled;
+  if (signedIn && input.admin) {
+    // The admin client is the signed shop's own, so only its orders can come back.
+    const theirs = await ordersOfCustomer(input.customerId!, input.admin);
+    for (const order of theirs) {
+      if (!orders.some((known) => known.id === order.id)) orders.push(order);
+    }
+  }
+  const secret = grantSecret();
+
   // 5. Run the model with the tools this audience is allowed to use.
   const context: ToolContext = {
     shop: input.shop,
     audience: input.audience,
     storefront: input.storefront,
     // Shoppers get no Admin API access at all unless the merchant switched
-    // on a feature that needs it (order status or return requests).
+    // on a feature that needs it (order status, returns or order changes).
     admin:
-      input.audience === "merchant" || settings.orderLookupEnabled || settings.allowReturns
+      input.audience === "merchant" ||
+      settings.orderLookupEnabled ||
+      settings.allowReturns ||
+      settings.allowOrderCancel ||
+      settings.allowAddressChange ||
+      settings.allowOrderEdit
         ? input.admin
         : undefined,
     settings: {
@@ -315,9 +361,28 @@ export async function handleChatTurn(
       allowAddToCart: settings.allowAddToCart,
       allowCheckout: settings.allowCheckout,
       allowReturns: settings.allowReturns,
+      allowOrderCancel: settings.allowOrderCancel,
+      allowAddressChange: settings.allowAddressChange,
+      allowOrderEdit: settings.allowOrderEdit,
     },
+    isTestStore: () => isDevelopmentStore(input.shop, input.admin),
+    // A grant names this shop and this chat, and stops working after a while.
+    grantOrderAction:
+      input.audience === "shopper" && !input.preview && secret
+        ? (grant) =>
+            signGrant(
+              {
+                ...grant,
+                shop: input.shop,
+                conversationId: conversation.id,
+                exp: now.getTime() + GRANT_LIFETIME_MS,
+              },
+              secret,
+            )
+        : undefined,
     buyer: { country, language, ip: input.ip },
     cart: input.audience === "shopper" ? readCart(input.cart) : undefined,
+    clientSupports: readSupports(input.supports),
     knownOrders: orders,
     rememberOrder: async (order) => {
       if (orders.some((known) => known.id === order.id)) return;
@@ -339,43 +404,74 @@ export async function handleChatTurn(
   const tools = toolsFor(deps.tools, context);
   const shopName = await getShopName(input.shop, input.admin, now.getTime());
 
-  let turn;
-  try {
-    turn = await runAssistantTurn({
-      provider: deps.provider,
+  const systemPrompt = buildSystemPrompt({
+    audience: input.audience,
+    shopName,
+    assistantName: settings.assistantName,
+    tone: settings.tone,
+    abilities: {
+      addToCart: tools.some((tool) => tool.name === "add_to_cart"),
+      checkout: tools.some((tool) => tool.name === "start_checkout"),
+      placeOrder: tools.some((tool) => tool.name === "place_order"),
+      chatOrders:
+        settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
+      returns: tools.some((tool) => tool.name === "request_return"),
+      cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
+      changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
+      changeItems: tools.some((tool) => tool.name === "change_order_items"),
+    },
+    signedIn,
+    quickPolicies: describeQuickPolicies(settings),
+    knowledge: {
+      businessDescription: settings.businessDescription,
+      returnPolicy: settings.returnPolicy,
+      shippingInfo: settings.shippingInfo,
+      faq: settings.faq,
+    },
+    merchantInstructions: settings.instructions,
+    orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
+    orderLookupByNumber:
+      settings.orderLookupByNumber && tools.some((tool) => tool.name === "get_order_status"),
+    cart: context.cart,
+    knownOrders: orders,
+    latestMessage: message,
+    today: now,
+  });
+  const signal = AbortSignal.timeout(TURN_DEADLINE_MS);
+  const provider = deps.provider;
+  const run = (correction = "") =>
+    runAssistantTurn({
+      provider,
       tools,
       context,
-      systemPrompt: buildSystemPrompt({
-        audience: input.audience,
-        shopName,
-        assistantName: settings.assistantName,
-        tone: settings.tone,
-        abilities: {
-          addToCart: tools.some((tool) => tool.name === "add_to_cart"),
-          checkout: tools.some((tool) => tool.name === "start_checkout"),
-          placeOrder: tools.some((tool) => tool.name === "place_order"),
-          chatOrders:
-            settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
-          returns: tools.some((tool) => tool.name === "request_return"),
-        },
-        quickPolicies: describeQuickPolicies(settings),
-        knowledge: {
-          businessDescription: settings.businessDescription,
-          returnPolicy: settings.returnPolicy,
-          shippingInfo: settings.shippingInfo,
-          faq: settings.faq,
-        },
-        merchantInstructions: settings.instructions,
-        orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
-        orderLookupByNumber:
-          settings.orderLookupByNumber && tools.some((tool) => tool.name === "get_order_status"),
-        cart: context.cart,
-        knownOrders: orders,
-        today: now,
-      }),
+      systemPrompt: systemPrompt + correction,
       history: [...history, { role: "user", content: message }],
-      signal: AbortSignal.timeout(TURN_DEADLINE_MS),
+      signal,
     });
+
+  let turn;
+  try {
+    turn = await run();
+    // The orders this chat already knows are the shopper's need no proof, and
+    // the tools know it. A model that asks for an email or phone number
+    // anyway, without having tried a tool, is told so and answers again.
+    const namesUnknownOrder =
+      /\d{3,}/.test(message) &&
+      !orders.some((order) => message.includes(order.name.replace(/^#/, "")));
+    if (
+      input.audience === "shopper" &&
+      orders.length > 0 &&
+      !namesUnknownOrder &&
+      turn.toolsUsed.length === 0 &&
+      asksForProof(turn.reply)
+    ) {
+      const first = turn.usage;
+      turn = await run(
+        `\n\nCorrection: your draft reply asked the shopper for an email address or phone number. Do not ask for either. The orders named above are already known to be theirs${signedIn ? " because they are signed in" : ""}. Use your tool now with the order number of the order this conversation is about, and ask only for what the tool's answer says is missing.`,
+      );
+      turn.usage.inputTokens += first.inputTokens;
+      turn.usage.outputTokens += first.outputTokens;
+    }
   } catch (error) {
     // Log the kind of failure only. Provider error messages can echo request
     // content or configuration, so the message itself is not logged.
@@ -409,15 +505,62 @@ export async function handleChatTurn(
 
   startRetentionSweeper(deps.db);
 
+  // A question whose answers the model wrote out as a list reaches the
+  // shopper as that question with buttons. The saved transcript keeps the
+  // list, so the model still knows what it offered. Not when products are
+  // shown (their cards are the things to pick) or buttons were offered already.
+  // Only for a widget that said it can draw them: one loaded before this
+  // server was deployed would drop the buttons and show a question with its
+  // answers missing.
+  const mayOffer =
+    input.audience === "shopper" &&
+    Boolean(context.clientSupports?.includes("choices")) &&
+    turn.cards.length === 0 &&
+    !turn.actions.some((action) => action.type === "choices");
+  const lifted = mayOffer ? liftChoices(turn.reply) : null;
+  // Questions with answers the server already knows, in the order they are
+  // asked: which of the shopper's own orders (their numbers), why something
+  // is being returned (the store's reason categories), and a plain yes or
+  // no. Not while a card with its own button is on its way, which is the
+  // answer to give.
+  const canReturn = tools.some((tool) => tool.name === "request_return");
+  const asksOrder = mayOffer && turn.actions.length === 0 && asksWhichOrder(turn.reply);
+  // For a return, only the orders that can be returned right now are worth
+  // a button: what the turn already found out, or asked of Shopify here.
+  let orderChoices = orders.slice(0, 5).map((order) => order.name);
+  if (asksOrder && canReturn && context.admin && /\breturn/i.test(turn.reply)) {
+    const returnable =
+      context.turn.returnableOrders ??
+      (await checkReturnable(context.admin, orders))
+        .filter((check) => check.items.length > 0)
+        .map((check) => check.name);
+    orderChoices = orderChoices.filter((name) => returnable.includes(name));
+  }
+  const quick =
+    !mayOffer || turn.actions.length > 0
+      ? null
+      : asksOrder && orderChoices.length > 1
+        ? orderChoices
+        : asksReturnReason(turn.reply) && canReturn
+          ? [...RETURN_REASON_LABELS]
+          : !lifted && asksYesOrNo(turn.reply)
+            ? ["Yes", "No"]
+            : null;
+
   return {
     conversationId: conversation.id,
-    reply: turn.reply,
-    // With add to cart switched off, cards link to the product but offer no
-    // one-click add.
+    reply: lifted ? lifted.text : turn.reply,
+    // With add to cart switched off, cards link to the product but offer
+    // nothing to add or pick.
     cards: settings.allowAddToCart
       ? turn.cards
-      : turn.cards.map((card) => ({ ...card, variantId: null })),
-    actions: turn.actions,
+      : turn.cards.map((card) => ({ ...card, variantId: null, variants: undefined })),
+    // The server's own answers win over ones read out of the reply.
+    actions: quick
+      ? [{ type: "choices", options: quick, other: true }]
+      : lifted
+        ? [...turn.actions, { type: "choices", options: lifted.choices, other: true }]
+        : turn.actions,
   };
 }
 
