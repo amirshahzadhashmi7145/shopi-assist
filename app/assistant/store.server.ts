@@ -270,6 +270,82 @@ export async function getConversationTranscript(
   });
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface ChatAnalytics {
+  /** Shopper chats started in the last 7 and the last 30 days. */
+  conversations: { last7: number; last30: number };
+  /** Messages shoppers wrote in the last 30 days. */
+  shopperMessages: number;
+  /** Chats of the last 30 days by a customer signed in to their account. */
+  signedIn: number;
+  /** How the chats of the last 30 days were rated. */
+  ratings: { up: number; down: number };
+  /** Pay-on-delivery orders placed through the chat in the last 30 days. */
+  ordersPlaced: number;
+  /** Chats started on each of the last 7 days, oldest first. Days are in UTC. */
+  perDay: Array<{ date: string; count: number }>;
+}
+
+/**
+ * A few numbers about a shop's storefront chats for the merchant's home page.
+ * They cover only what is still on record: chats are deleted after the shop's
+ * retention period, and their messages and orders go with them. The
+ * merchant's own test chats are left out.
+ */
+export async function chatAnalytics(
+  db: PrismaClient,
+  shop: string,
+  now: Date = new Date(),
+): Promise<ChatAnalytics> {
+  const since30 = new Date(now.getTime() - 30 * DAY_MS);
+  // Seven calendar days ending today, so the chart has whole days.
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const since7 = new Date(today - 6 * DAY_MS);
+  const chats = { shop, audience: "shopper", isPreview: false } as const;
+
+  const [last30, signedIn, rated, shopperMessages, ordersPlaced, week] = await Promise.all([
+    db.conversation.count({ where: { ...chats, createdAt: { gte: since30 } } }),
+    db.conversation.count({
+      where: { ...chats, createdAt: { gte: since30 }, customerId: { not: null } },
+    }),
+    db.conversation.groupBy({
+      by: ["rating"],
+      where: { ...chats, createdAt: { gte: since30 }, rating: { not: null } },
+      _count: { _all: true },
+    }),
+    db.message.count({
+      where: { role: "user", createdAt: { gte: since30 }, conversation: chats },
+    }),
+    db.conversationOrder.count({
+      where: { shop, source: "placed", createdAt: { gte: since30 }, conversation: chats },
+    }),
+    db.conversation.findMany({
+      where: { ...chats, createdAt: { gte: since7 } },
+      select: { createdAt: true },
+    }),
+  ]);
+
+  const perDay = Array.from({ length: 7 }, (_, index) => ({
+    date: new Date(since7.getTime() + index * DAY_MS).toISOString().slice(0, 10),
+    count: 0,
+  }));
+  for (const chat of week) {
+    const day = perDay.find((entry) => entry.date === chat.createdAt.toISOString().slice(0, 10));
+    if (day) day.count += 1;
+  }
+  const ratedAs = (rating: string) => rated.find((row) => row.rating === rating)?._count._all ?? 0;
+
+  return {
+    conversations: { last7: week.length, last30 },
+    shopperMessages,
+    signedIn,
+    ratings: { up: ratedAs("up"), down: ratedAs("down") },
+    ordersPlaced,
+    perDay,
+  };
+}
+
 export async function countConversationsSince(
   db: PrismaClient,
   shop: string,

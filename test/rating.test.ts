@@ -6,6 +6,7 @@ import { RateLimiter } from "../app/assistant/rate-limit";
 import { handleChatRating } from "../app/assistant/rating.server";
 import { getSettings, saveSettings } from "../app/assistant/settings.server";
 import {
+  chatAnalytics,
   createConversation,
   getConversationTranscript,
   listConversations,
@@ -140,6 +141,83 @@ describe("chat ratings", () => {
     expect((await getConversationTranscript(db, SHOP_A, good.id))!.rating).toBe("up");
     // Another shop's chat is not there to be read, rated or not.
     expect(await getConversationTranscript(db, SHOP_A, other.id)).toBeNull();
+  });
+});
+
+describe("chat analytics", () => {
+  it("counts a shop's own storefront chats, and nothing else", async () => {
+    const now = new Date("2026-11-24T15:00:00Z");
+    const daysAgo = (days: number) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    let visitor = 0;
+    const started = async (
+      when: Date,
+      extra: { shop?: string; customerId?: string; rating?: string; isPreview?: boolean; audience?: string; messages?: number; order?: string } = {},
+    ) => {
+      visitor += 1;
+      const row = await db.conversation.create({
+        data: {
+          shop: extra.shop ?? SHOP_A,
+          audience: extra.audience ?? "shopper",
+          visitorId: `visitor-${String(visitor).padStart(4, "0")}`,
+          customerId: extra.customerId ?? null,
+          rating: extra.rating ?? null,
+          isPreview: extra.isPreview ?? false,
+          createdAt: when,
+        },
+      });
+      for (let index = 0; index < (extra.messages ?? 0); index += 1) {
+        await db.message.create({ data: { conversationId: row.id, role: "user", content: "hi", createdAt: when } });
+        await db.message.create({ data: { conversationId: row.id, role: "assistant", content: "hello", createdAt: when } });
+      }
+      if (extra.order) {
+        await db.conversationOrder.create({
+          data: {
+            shop: row.shop,
+            conversationId: row.id,
+            orderId: `gid://shopify/Order/${visitor}`,
+            orderName: `#${1000 + visitor}`,
+            source: extra.order,
+            createdAt: when,
+          },
+        });
+      }
+    };
+
+    await started(now, { messages: 2, rating: "up", customerId: "7001", order: "placed" });
+    await started(now, { messages: 1, rating: "down" });
+    await started(daysAgo(1), { messages: 3, rating: "up", order: "verified" });
+    await started(daysAgo(6), { messages: 1 });
+    await started(daysAgo(10), { messages: 2, rating: "up", customerId: "7002", order: "placed" });
+    // Not counted: too old, another shop, the merchant's own test chat, the merchant's assistant.
+    await started(daysAgo(40), { messages: 5, rating: "down", order: "placed" });
+    await started(now, { shop: SHOP_B, messages: 4, rating: "down", order: "placed" });
+    await started(now, { isPreview: true, messages: 4, rating: "down" });
+    await started(now, { audience: "merchant", messages: 4 });
+
+    expect(await chatAnalytics(db, SHOP_A, now)).toEqual({
+      conversations: { last7: 4, last30: 5 },
+      // Only what shoppers wrote, in those five chats.
+      shopperMessages: 9,
+      signedIn: 2,
+      ratings: { up: 3, down: 1 },
+      // Placed through the chat, not just looked up in it.
+      ordersPlaced: 2,
+      perDay: [
+        { date: "2026-11-18", count: 1 },
+        { date: "2026-11-19", count: 0 },
+        { date: "2026-11-20", count: 0 },
+        { date: "2026-11-21", count: 0 },
+        { date: "2026-11-22", count: 0 },
+        { date: "2026-11-23", count: 1 },
+        { date: "2026-11-24", count: 2 },
+      ],
+    });
+
+    // A shop with nothing yet gets zeros and seven empty days.
+    const empty = await chatAnalytics(db, "new-shop.myshopify.com", now);
+    expect(empty.conversations).toEqual({ last7: 0, last30: 0 });
+    expect(empty.perDay).toHaveLength(7);
+    expect(empty.perDay.every((day) => day.count === 0)).toBe(true);
   });
 });
 
