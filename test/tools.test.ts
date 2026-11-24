@@ -1354,6 +1354,87 @@ describe("request_return", () => {
     expect(chosen.json).toMatchObject({ status: "requested", item: "Camp Kettle" });
   });
 
+  it("sends several items, or all of them, in one request", async () => {
+    const three = returnable(
+      ["gid://shopify/FulfillmentLineItem/1", "Hydrogen Snowboard", 1],
+      ["gid://shopify/FulfillmentLineItem/2", "Complete Snowboard", 2],
+      ["gid://shopify/FulfillmentLineItem/3", "Ski Wax", 3],
+    );
+    const lines = (admin: ReturnType<typeof fakeGraphql>) =>
+      (admin.calls.at(-1)!.variables!.input as { returnLineItems: Array<Record<string, unknown>> }).returnLineItems;
+
+    // Everything that can be returned, each in full.
+    const allAdmin = fakeGraphql({ orders: { nodes: [order] } }, three, reasons, created);
+    const all = await run("request_return", { ...proof, allItems: true }, returnsOn(allAdmin));
+    expect(all.json.status).toBe("requested");
+    expect(all.json.items).toEqual([
+      { title: "Hydrogen Snowboard", quantity: 1 },
+      { title: "Complete Snowboard", quantity: 2 },
+      { title: "Ski Wax", quantity: 3 },
+    ]);
+    expect(lines(allAdmin).map((line) => [line.fulfillmentLineItemId, line.quantity])).toEqual([
+      ["gid://shopify/FulfillmentLineItem/1", 1],
+      ["gid://shopify/FulfillmentLineItem/2", 2],
+      ["gid://shopify/FulfillmentLineItem/3", 3],
+    ]);
+
+    // The items named, never more of one than can be returned.
+    const someAdmin = fakeGraphql({ orders: { nodes: [order] } }, three, reasons, created);
+    const some = await run(
+      "request_return",
+      { ...proof, items: [{ title: "ski wax", quantity: 9 }, { title: "Hydrogen" }] },
+      returnsOn(someAdmin),
+    );
+    expect(some.json.items).toEqual([
+      { title: "Ski Wax", quantity: 3 },
+      { title: "Hydrogen Snowboard", quantity: 1 },
+    ]);
+    expect(lines(someAdmin)).toHaveLength(2);
+
+    // "Snowboard" fits two of them, and the same item twice is not two items: ask, send nothing.
+    for (const items of [[{ title: "Snowboard" }], [{ title: "Ski Wax" }, { title: "wax" }]]) {
+      const unclearAdmin = fakeGraphql({ orders: { nodes: [order] } }, three);
+      const unclear = await run("request_return", { ...proof, items }, returnsOn(unclearAdmin));
+      expect(unclear.json.status).toBe("need_item");
+      expect(unclear.json.returnableItems).toHaveLength(3);
+      expect(unclearAdmin.calls).toHaveLength(2);
+    }
+  });
+
+  it("never passes off an email it did not need as checked", async () => {
+    const mine = { id: order.id, name: order.name, source: "customer" as const };
+    const single = returnable(["gid://shopify/FulfillmentLineItem/1", "Trail Mug", 1]);
+    const request = (email: string | undefined) =>
+      run(
+        "request_return",
+        { orderNumber: "1001", reason: "Too small", ...(email ? { email } : {}) },
+        {
+          ...returnsOn(fakeGraphql({ orders: { nodes: [order] } }, single, reasons, created)),
+          knownOrders: [mine],
+        },
+      );
+
+    // Signed in, no email: nothing to say about proof.
+    expect((await request(undefined)).json.aboutProof).toBeUndefined();
+    // The right email changes nothing either.
+    expect((await request("Buyer@Example.com")).json.aboutProof).toBeUndefined();
+    // A wrong one is not what let them in, and the assistant is told to say so.
+    const wrong = await request("someone.else@example.com");
+    expect(wrong.json.status).toBe("requested");
+    expect(wrong.json.aboutProof).toMatch(/is not the one on this order/);
+    expect(wrong.json.aboutProof).toMatch(/on the account they are signed in to/);
+    expect(wrong.json.aboutProof).toMatch(/do not say the email was accepted or verified/);
+    expect(JSON.stringify(wrong.json)).not.toContain("buyer@example.com");
+
+    // For an order this chat does not know, a wrong email still gets nowhere.
+    const stranger = await run(
+      "request_return",
+      { ...proof, email: "someone.else@example.com" },
+      returnsOn(fakeGraphql({ orders: { nodes: [order] } })),
+    );
+    expect(stranger.ok).toBe(false);
+  });
+
   it("refuses without proof of ownership and never reaches the returns API", async () => {
     const admin = fakeGraphql({ orders: { nodes: [order] } });
     const result = await run(
@@ -1375,7 +1456,7 @@ describe("request_return", () => {
     expect((await run("request_return", proof, returnsOn(first, rateLimiter))).json.status).toBe("requested");
     const repeat = await run("request_return", proof, returnsOn(again, rateLimiter));
 
-    expect(repeat.json.error).toMatch(/already requested for this order today/);
+    expect(repeat.json.error).toMatch(/already sent for this order today/);
     // Order, items and reasons were read; no second request was sent.
     expect(again.calls).toHaveLength(3);
   });

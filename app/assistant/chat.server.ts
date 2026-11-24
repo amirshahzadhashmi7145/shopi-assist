@@ -30,7 +30,13 @@ import {
   rememberOrder,
 } from "./store.server";
 import { allTools } from "./tools";
-import { asksReturnReason, asksWhichOrder, asksYesOrNo, liftChoices } from "./choices";
+import {
+  asksForProof,
+  asksReturnReason,
+  asksWhichOrder,
+  asksYesOrNo,
+  liftChoices,
+} from "./choices";
 import { toolsFor, type ToolContext, type ToolDefinition } from "./tools/registry";
 import { checkReturnable, RETURN_REASON_LABELS } from "./tools/shopper";
 import type {
@@ -397,48 +403,74 @@ export async function handleChatTurn(
   const tools = toolsFor(deps.tools, context);
   const shopName = await getShopName(input.shop, input.admin, now.getTime());
 
-  let turn;
-  try {
-    turn = await runAssistantTurn({
-      provider: deps.provider,
+  const systemPrompt = buildSystemPrompt({
+    audience: input.audience,
+    shopName,
+    assistantName: settings.assistantName,
+    tone: settings.tone,
+    abilities: {
+      addToCart: tools.some((tool) => tool.name === "add_to_cart"),
+      checkout: tools.some((tool) => tool.name === "start_checkout"),
+      placeOrder: tools.some((tool) => tool.name === "place_order"),
+      chatOrders:
+        settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
+      returns: tools.some((tool) => tool.name === "request_return"),
+      cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
+      changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
+      changeItems: tools.some((tool) => tool.name === "change_order_items"),
+    },
+    signedIn,
+    quickPolicies: describeQuickPolicies(settings),
+    knowledge: {
+      businessDescription: settings.businessDescription,
+      returnPolicy: settings.returnPolicy,
+      shippingInfo: settings.shippingInfo,
+      faq: settings.faq,
+    },
+    merchantInstructions: settings.instructions,
+    orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
+    orderLookupByNumber:
+      settings.orderLookupByNumber && tools.some((tool) => tool.name === "get_order_status"),
+    cart: context.cart,
+    knownOrders: orders,
+    latestMessage: message,
+    today: now,
+  });
+  const signal = AbortSignal.timeout(TURN_DEADLINE_MS);
+  const provider = deps.provider;
+  const run = (correction = "") =>
+    runAssistantTurn({
+      provider,
       tools,
       context,
-      systemPrompt: buildSystemPrompt({
-        audience: input.audience,
-        shopName,
-        assistantName: settings.assistantName,
-        tone: settings.tone,
-        abilities: {
-          addToCart: tools.some((tool) => tool.name === "add_to_cart"),
-          checkout: tools.some((tool) => tool.name === "start_checkout"),
-          placeOrder: tools.some((tool) => tool.name === "place_order"),
-          chatOrders:
-            settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
-          returns: tools.some((tool) => tool.name === "request_return"),
-          cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
-          changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
-          changeItems: tools.some((tool) => tool.name === "change_order_items"),
-        },
-        signedIn,
-        quickPolicies: describeQuickPolicies(settings),
-        knowledge: {
-          businessDescription: settings.businessDescription,
-          returnPolicy: settings.returnPolicy,
-          shippingInfo: settings.shippingInfo,
-          faq: settings.faq,
-        },
-        merchantInstructions: settings.instructions,
-        orderLookupEnabled: tools.some((tool) => tool.name === "get_order_status"),
-        orderLookupByNumber:
-          settings.orderLookupByNumber && tools.some((tool) => tool.name === "get_order_status"),
-        cart: context.cart,
-        knownOrders: orders,
-        latestMessage: message,
-        today: now,
-      }),
+      systemPrompt: systemPrompt + correction,
       history: [...history, { role: "user", content: message }],
-      signal: AbortSignal.timeout(TURN_DEADLINE_MS),
+      signal,
     });
+
+  let turn;
+  try {
+    turn = await run();
+    // The orders this chat already knows are the shopper's need no proof, and
+    // the tools know it. A model that asks for an email or phone number
+    // anyway, without having tried a tool, is told so and answers again.
+    const namesUnknownOrder =
+      /\d{3,}/.test(message) &&
+      !orders.some((order) => message.includes(order.name.replace(/^#/, "")));
+    if (
+      input.audience === "shopper" &&
+      orders.length > 0 &&
+      !namesUnknownOrder &&
+      turn.toolsUsed.length === 0 &&
+      asksForProof(turn.reply)
+    ) {
+      const first = turn.usage;
+      turn = await run(
+        `\n\nCorrection: your draft reply asked the shopper for an email address or phone number. Do not ask for either. The orders named above are already known to be theirs${signedIn ? " because they are signed in" : ""}. Use your tool now with the order number of the order this conversation is about, and ask only for what the tool's answer says is missing.`,
+      );
+      turn.usage.inputTokens += first.inputTokens;
+      turn.usage.outputTokens += first.outputTokens;
+    }
   } catch (error) {
     // Log the kind of failure only. Provider error messages can echo request
     // content or configuration, so the message itself is not logged.

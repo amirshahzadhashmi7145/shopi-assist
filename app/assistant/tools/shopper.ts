@@ -1394,6 +1394,12 @@ interface VerifiedOrder {
     estimatedDeliveryAt: string | null;
     trackingInfo: Array<{ company: string | null; number: string | null; url: string | null }>;
   }>;
+  /**
+   * Set when the shopper gave an email that is not the order's, for an order
+   * that needed no proof. The tools pass it on, so the assistant never says
+   * a wrong email was accepted.
+   */
+  proofNote?: string;
 }
 
 export const orderProofSchema = {
@@ -1463,6 +1469,20 @@ export async function findVerifiedOrder(
     // Matched on the id the server recorded, not on the name alone.
     const order = data.orders.nodes.find((candidate) => candidate.id === known.id);
     if (!order) throw new ToolError(ORDER_NOT_FOUND);
+    // The order is theirs without any proof. An email given anyway is still
+    // looked at, so a wrong one is never passed off as having been checked.
+    if (wantedEmail && (order.email ?? "").toLowerCase() !== wantedEmail) {
+      return {
+        ...order,
+        proofNote: `The email address the shopper gave is not the one on this order. It was not needed and was not used: the order is known to be theirs because it is ${
+          known.source === "customer"
+            ? "on the account they are signed in to"
+            : known.source === "placed"
+              ? "one they placed in this chat"
+              : "one they already proved in this chat"
+        }. Tell them that plainly, and do not say the email was accepted or verified.`,
+      };
+    }
     return order;
   }
   if (!wantedEmail && !wantedPhone) throw new ToolError(ORDER_NEEDS_EMAIL);
@@ -1603,6 +1623,7 @@ const getOrderStatus = defineTool({
             url: tracking.url,
           })),
         })),
+        aboutProof: order.proofNote,
       },
     };
   },
@@ -1636,12 +1657,29 @@ const requestReturn = defineTool({
       .trim()
       .max(200)
       .optional()
-      .describe("Which item to return, when the order has more than one."),
+      .describe("Which item to return, when it is just one of several on the order."),
     quantity: z.number().int().min(1).max(20).default(1),
+    items: z
+      .array(
+        z.object({
+          title: z.string().trim().min(1).max(200),
+          quantity: z.number().int().min(1).max(20).default(1),
+        }),
+      )
+      .max(10)
+      .optional()
+      .describe("Several items to return in this one request, each with how many."),
+    allItems: z
+      .boolean()
+      .default(false)
+      .describe("True returns everything on the order that can be returned."),
   }),
   // Off unless the merchant turned it on in the app settings.
   isAvailable: (context) => Boolean(context.admin) && context.settings.allowReturns,
-  async run({ orderNumber, email, phone, reason, reasonKind, itemTitle, quantity }, context) {
+  async run(
+    { orderNumber, email, phone, reason, reasonKind, itemTitle, quantity, items: several, allItems },
+    context,
+  ) {
     const order = await findVerifiedOrder(context, orderNumber, email, phone);
 
     const data = await context.admin!<{
@@ -1685,25 +1723,34 @@ const requestReturn = defineTool({
       );
     }
 
-    const wanted = itemTitle?.toLowerCase();
-    const matches = wanted
-      ? items.filter((item) => item.title.toLowerCase().includes(wanted))
-      : items;
+    // What goes into the request: everything, the items named, or the one item.
+    const needItem = (candidates: ReturnableItem[]) => ({
+      output: {
+        status: "need_item",
+        aboutProof: order.proofNote,
+        note: "No request was sent. Ask the shopper which items they want to return (one, several, or all of them), then call again ONCE with all of them: 'allItems' for everything, 'items' for several, or 'itemTitle' for one.",
+        returnableItems: candidates.map((item) => ({ title: item.title, quantity: item.quantity })),
+      },
+    });
+    const find = (title: string) =>
+      items.filter((item) => item.title.toLowerCase().includes(title.toLowerCase()));
 
-    // Never guess which item: with more than one candidate, hand the list back.
-    if (matches.length !== 1) {
-      return {
-        output: {
-          status: "need_item",
-          note: "No request was sent. Ask the shopper which one item they want to return, then call again with itemTitle.",
-          returnableItems: (matches.length ? matches : items).map((item) => ({
-            title: item.title,
-            quantity: item.quantity,
-          })),
-        },
-      };
+    let chosen: Array<{ item: ReturnableItem; quantity: number }>;
+    if (allItems) {
+      chosen = items.map((item) => ({ item, quantity: item.quantity }));
+    } else if (several?.length) {
+      chosen = [];
+      for (const wantedItem of several) {
+        const found = find(wantedItem.title);
+        // Never guess which item: anything unclear hands the list back.
+        if (found.length !== 1 || chosen.some((entry) => entry.item === found[0])) return needItem(items);
+        chosen.push({ item: found[0], quantity: Math.min(wantedItem.quantity, found[0].quantity) });
+      }
+    } else {
+      const matches = itemTitle ? find(itemTitle) : items;
+      if (matches.length !== 1) return needItem(matches.length ? matches : items);
+      chosen = [{ item: matches[0], quantity: Math.min(quantity, matches[0].quantity) }];
     }
-    const item = matches[0];
 
     // Shopify wants one of its own reason categories with every request.
     const handle = RETURN_REASON_HANDLES[reasonKind];
@@ -1722,7 +1769,7 @@ const requestReturn = defineTool({
     const once = context.rateLimiter.hit(onceKey, 1, ONE_DAY_MS, context.now().getTime());
     if (!once.allowed) {
       throw new ToolError(
-        "A return was already requested for this order today. The store will be in touch by email.",
+        "A return request was already sent for this order today, for the items asked for then, and another cannot be sent from the chat today. Nothing was sent now. If more items need returning, the shopper should contact the store. Do not say a return is in progress for items that were not in that request.",
       );
     }
 
@@ -1734,14 +1781,12 @@ const requestReturn = defineTool({
     }>(RETURN_REQUEST_MUTATION, {
       input: {
         orderId: order.id,
-        returnLineItems: [
-          {
-            fulfillmentLineItemId: item.fulfillmentLineItemId,
-            quantity: Math.min(quantity, item.quantity),
-            customerNote: reason,
-            ...(definition ? { returnReasonDefinitionId: definition.id } : {}),
-          },
-        ],
+        returnLineItems: chosen.map((entry) => ({
+          fulfillmentLineItemId: entry.item.fulfillmentLineItemId,
+          quantity: entry.quantity,
+          customerNote: reason,
+          ...(definition ? { returnReasonDefinitionId: definition.id } : {}),
+        })),
       },
     }).catch((error: unknown) => {
       context.rateLimiter.forget(onceKey);
@@ -1764,8 +1809,11 @@ const requestReturn = defineTool({
       output: {
         status: "requested",
         returnReference: created.name,
-        item: item.title,
-        quantity: Math.min(quantity, item.quantity),
+        // One item reads as before; several are listed.
+        ...(chosen.length === 1
+          ? { item: chosen[0].item.title, quantity: chosen[0].quantity }
+          : { items: chosen.map((entry) => ({ title: entry.item.title, quantity: entry.quantity })) }),
+        aboutProof: order.proofNote,
         note: "The request has been sent to the store for review. Tell the shopper it is a request, not an approval: the store will reply by email with the decision and return instructions. Do not promise a refund.",
       },
     };

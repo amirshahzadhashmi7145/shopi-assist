@@ -201,3 +201,8 @@ export function asksReturnReason(reply: string): boolean {
     reply.includes("?") && /\breason\b/i.test(reply) && /\breturn/i.test(reply)
   );
 }
+
+/** True when the reply asks the shopper for an email address or a phone number. */
+export function asksForProof(reply: string): boolean {
+  return reply.includes("?") && /\b(e-?mail|phone number)\b/i.test(reply);
+}

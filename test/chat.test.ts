@@ -175,6 +175,57 @@ describe("handleChatTurn", () => {
     expect(returnChecks).toHaveLength(3);
   });
 
+  it("answers again when the model asks a known shopper for an email or phone number", async () => {
+    await saveSettings(SHOP_A, { orderLookupEnabled: true, recogniseCustomers: true }, db);
+    const admin = () =>
+      fakeGraphql({
+        shop: { name: "Shop A" },
+        orders: { nodes: [{ id: "gid://shopify/Order/4001", name: "#4001" }] },
+      });
+    const asking = "I'll need to confirm the order is yours. Could you give me the email address or phone number used on it?";
+    const usage = { inputTokens: 100, outputTokens: 10 };
+
+    // Signed in, the order is on their account: the draft is not sent.
+    const corrected = scriptedProvider([
+      { ...text(asking), usage },
+      { ...text("What is the reason for the return?"), usage },
+    ]);
+    const result = await turn(
+      { message: "it is damaged", customerId: "7200", admin: admin() },
+      { provider: corrected },
+    );
+    expect(result.reply).toBe("What is the reason for the return?");
+    expect(corrected.requests).toHaveLength(2);
+    const [first, second] = corrected.requests.map((request) => request.messages[0].content as string);
+    expect(first).not.toMatch(/Correction:/);
+    expect(second).toMatch(/Correction: your draft reply asked the shopper for an email address or phone number/);
+    expect(second.startsWith(first)).toBe(true);
+    // Only what was sent to the shopper is kept.
+    const transcript = await getConversationTranscript(db, SHOP_A, result.conversationId);
+    expect(transcript!.messages.map((message) => message.content)).toEqual([
+      "it is damaged",
+      "What is the reason for the return?",
+    ]);
+
+    // An order number that is not one of theirs may well need proof: asking is right.
+    const stranger = scriptedProvider([text(asking)]);
+    const other = await turn(
+      { message: "return order 9999", customerId: "7200", admin: admin(), visitorId: "visitor-proof-2" },
+      { provider: stranger },
+    );
+    expect(other.reply).toBe(asking);
+    expect(stranger.requests).toHaveLength(1);
+
+    // So is asking a guest this chat knows nothing about.
+    const guestProvider = scriptedProvider([text(asking)]);
+    const guest = await turn(
+      { message: "it is damaged", admin: admin(), visitorId: "visitor-proof-3" },
+      { provider: guestProvider },
+    );
+    expect(guest.reply).toBe(asking);
+    expect(guestProvider.requests).toHaveLength(1);
+  });
+
   it("answers, creates a conversation and stores the exchange", async () => {
     const result = await turn({ message: "  hello  " });
 
