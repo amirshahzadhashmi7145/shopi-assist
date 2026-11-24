@@ -7,6 +7,15 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 
+/**
+ * The Polaris web components the admin pages are built and checked with.
+ * Version 4 of Shopify's app package loads Polaris 2 by default, which
+ * restyles every page; this keeps the script the app has always loaded until
+ * the pages have been looked at under Polaris 2. Used for the script tag
+ * (app/routes/app.tsx) and the preload header, which must match.
+ */
+export const POLARIS_URL = "https://cdn.shopify.com/shopifycloud/polaris.js";
+
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
@@ -16,6 +25,7 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
+  polarisUrl: POLARIS_URL,
   future: {
     expiringOfflineAccessTokens: true,
   },
