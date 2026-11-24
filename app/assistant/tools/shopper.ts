@@ -1457,7 +1457,7 @@ interface ReturnableItem {
 const requestReturn = defineTool({
   name: "request_return",
   description:
-    "Ask the store to accept a return for the shopper's own order. Requires the order number, proof that it is theirs (the email address or the phone number used on the order; neither is needed for an order placed or already proved earlier in this chat), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
+    "Ask the store to accept a return for the shopper's own order. Requires the order number, proof that it is theirs (the email address or the phone number used on the order; neither is needed for an order placed or already proved earlier in this chat, or one on the account of a shopper who is signed in), and a reason. This sends a return REQUEST that the store approves or declines; it does not approve the return or issue a refund. If the order has several items and the shopper has not said which, call it without itemTitle first to get the list, then ask them.",
   audiences: ["shopper"],
   schema: z.object({
     ...orderProofSchema,
@@ -1507,8 +1507,21 @@ const requestReturn = defineTool({
       }));
 
     if (items.length === 0) {
+      // Say which it is, so the shopper is not sent to the store for nothing.
+      if (order.cancelledAt) {
+        throw new ToolError("This order was cancelled, so there is nothing to return.");
+      }
+      if (order.fulfillments.length === 0) {
+        throw new ToolError(
+          `This order has not shipped yet, so there is nothing to return yet. Say that plainly.${
+            context.settings.allowOrderCancel
+              ? " It can still be cancelled: offer to cancel it instead, and do that with your cancel tool if they agree."
+              : " A return can be requested once it has arrived."
+          }`,
+        );
+      }
       throw new ToolError(
-        "Nothing on this order can be returned right now. It may not have shipped yet, or a return may already be open. Suggest contacting the store.",
+        "Nothing on this order can be returned right now: a return may already be open for it, or its items are not returnable. Suggest contacting the store.",
       );
     }
 

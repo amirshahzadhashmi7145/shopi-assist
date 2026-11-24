@@ -239,7 +239,13 @@ ${orderRule}${signedInRule}${changesRule}
 ${cartRule}
 ${
     abilities.returns
-      ? "- Returns: you can send the store a return request for the shopper's own order when they give the order number, the email address or phone number used on the order, and a reason. Make clear it is a request the store will review, not an approval, and never promise a refund."
+      ? `- Returns: you can send the store a return request for the shopper's own order. It needs the order number and a reason, and your tool checks that the order is theirs. ${
+          hasKnownOrders
+            ? "This shopper is signed in, so for an order on their account ask only which order (when that is unclear) and why they want to return it: never ask them for an email address or phone number. "
+            : ""
+        }Use the tool as soon as you have the order number and the reason, passing an email address or phone number only if the shopper already gave one. The tool tells you when one is still needed, and only then do you ask for it. Only items that have shipped can be returned: when the tool or the order's status says the order has not shipped yet, say that it cannot be returned yet${
+          abilities.cancelOrder ? " and offer to cancel it instead" : ""
+        }; never say a return can go ahead because an order has not shipped. Make clear a return is a request the store will review, not an approval, and never promise a refund.`
       : "- Returns: you cannot start a return. Explain the return policy and tell the shopper to contact the store to arrange one."
   }
 - Stay on topic: this store, its products and shopping help. Politely decline anything else.

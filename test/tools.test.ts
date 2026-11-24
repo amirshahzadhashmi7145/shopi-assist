@@ -1376,7 +1376,27 @@ describe("request_return", () => {
       proof,
       returnsOn(fakeGraphql({ orders: { nodes: [order] } }, returnable())),
     );
-    expect(nothing.json.error).toMatch(/Nothing on this order can be returned/);
+    // Not shipped: say that, and that it can be requested once it has arrived.
+    expect(nothing.json.error).toMatch(/has not shipped yet/);
+    expect(nothing.json.error).toMatch(/once it has arrived/);
+    expect(nothing.json.error).not.toMatch(/cancel/);
+
+    const shipped = { ...order, fulfillments: [{ status: "SUCCESS", estimatedDeliveryAt: null, trackingInfo: [] }] };
+    const open = await run(
+      "request_return",
+      proof,
+      returnsOn(fakeGraphql({ orders: { nodes: [shipped] } }, returnable())),
+    );
+    expect(open.json.error).toMatch(/Nothing on this order can be returned right now/);
+
+    const cancelled = await run(
+      "request_return",
+      proof,
+      returnsOn(
+        fakeGraphql({ orders: { nodes: [{ ...order, cancelledAt: "2026-11-01T00:00:00Z" }] } }, returnable()),
+      ),
+    );
+    expect(cancelled.json.error).toMatch(/was cancelled/);
 
     const rejected = await run(
       "request_return",

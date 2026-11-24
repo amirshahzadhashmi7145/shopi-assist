@@ -289,7 +289,7 @@ describe("handleChatTurn", () => {
     expect(changed.tools).toContain("request_return");
     expect(changed.system).toContain("You cannot add items to the cart");
     expect(changed.system).toContain("You cannot start a checkout");
-    expect(changed.system).toContain("it is a request the store will review");
+    expect(changed.system).toContain("a return is a request the store will review");
     expect(changed.system).toContain("Returns: accepted within 14 days of delivery.");
   });
 

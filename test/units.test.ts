@@ -501,6 +501,33 @@ describe("system prompts", () => {
     expect(guest).not.toMatch(/signed in/);
   });
 
+  it("asks a signed-in shopper only for the order and the reason when they want a return", () => {
+    const abilities = { addToCart: true, checkout: true, returns: true };
+    const returnsRule = (prompt: string) => prompt.split("\n").find((line) => line.startsWith("- Returns:"))!;
+
+    const signedIn = returnsRule(
+      buildSystemPrompt({
+        ...input,
+        audience: "shopper",
+        orderLookupEnabled: true,
+        signedIn: true,
+        knownOrders: [{ id: "gid://shopify/Order/7", name: "#1007", source: "customer" }],
+        abilities: { ...abilities, cancelOrder: true },
+      }),
+    );
+    expect(signedIn).toMatch(/never ask them for an email address or phone number/);
+    // An order that has not shipped cannot be returned; it can be cancelled here.
+    expect(signedIn).toMatch(/cannot be returned yet and offer to cancel it instead/);
+
+    const guest = returnsRule(
+      buildSystemPrompt({ ...input, audience: "shopper", orderLookupEnabled: true, abilities }),
+    );
+    expect(guest).not.toMatch(/signed in/);
+    // The tool decides when proof is needed, for guests too.
+    expect(guest).toMatch(/The tool tells you when one is still needed, and only then do you ask for it/);
+    expect(guest).not.toMatch(/offer to cancel/);
+  });
+
   it("keeps owner notes out of the merchant assistant's prompt", () => {
     const prompt = buildSystemPrompt({
       ...input,
