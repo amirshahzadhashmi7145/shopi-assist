@@ -110,27 +110,20 @@ export async function isDevelopmentStore(
   }
 }
 
-const CUSTOMER_ORDERS_TTL_MS = 2 * 60 * 1000;
-const customerOrders = new Map<string, { orders: KnownOrder[]; expiresAt: number }>();
-
 /**
  * The recent orders of a shopper who is signed in to their store account.
  *
  * `customerId` must be the id Shopify's app proxy signed onto the request,
  * never one from the request body: this is what lets a shopper ask about
- * their orders without proving each one. Cached for a couple of minutes, and
- * an empty list on any failure.
+ * their orders without proving each one. Asked of Shopify on every message,
+ * never kept: which orders are theirs is what they are trusted on, so it has
+ * to be true now. An empty list on any failure.
  */
 export async function ordersOfCustomer(
-  shop: string,
   customerId: string,
   admin: GraphqlFn,
-  now: number = Date.now(),
 ): Promise<KnownOrder[]> {
   if (!/^\d{1,20}$/.test(customerId)) return [];
-  const key = `${shop}:${customerId}`;
-  const cached = customerOrders.get(key);
-  if (cached && cached.expiresAt > now) return cached.orders;
 
   try {
     const data = await admin<{ orders: { nodes: Array<{ id: string; name: string }> } }>(
@@ -142,11 +135,9 @@ export async function ordersOfCustomer(
         }`,
       { query: `customer_id:${customerId}` },
     );
-    const orders = data.orders.nodes.map(
+    return data.orders.nodes.map(
       (order): KnownOrder => ({ id: order.id, name: order.name, source: "customer" }),
     );
-    customerOrders.set(key, { orders, expiresAt: now + CUSTOMER_ORDERS_TTL_MS });
-    return orders;
   } catch {
     return [];
   }

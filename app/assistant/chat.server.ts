@@ -331,7 +331,8 @@ export async function handleChatTurn(
     settings.recogniseCustomers &&
     settings.orderLookupEnabled;
   if (signedIn && input.admin) {
-    const theirs = await ordersOfCustomer(input.shop, input.customerId!, input.admin, now.getTime());
+    // The admin client is the signed shop's own, so only its orders can come back.
+    const theirs = await ordersOfCustomer(input.customerId!, input.admin);
     for (const order of theirs) {
       if (!orders.some((known) => known.id === order.id)) orders.push(order);
     }

@@ -539,6 +539,16 @@ describe("handleChatTurn", () => {
     // Asked of Shopify by the customer id Shopify signed, and nothing else.
     expect(signedIn.admin.calls.at(-1)!.variables).toEqual({ query: "customer_id:7001" });
 
+    // Asked again on every message, never remembered: an order that has since
+    // left the account, or joined it, is known at once.
+    const before = adminFor("#2001");
+    await prompt({ customerId: "7001", admin: before });
+    const later = adminFor("#2009");
+    const next = await prompt({ customerId: "7001", admin: later });
+    expect(later.calls.some((call) => call.variables?.query === "customer_id:7001")).toBe(true);
+    expect(next.system).toContain("#2009 (on their account: they are signed in)");
+    expect(next.system).not.toContain("#2001");
+
     // A guest gets no such list.
     const guest = await prompt({ visitorId: "visitor-0002", admin: adminFor("#2002") });
     expect(guest.system).not.toMatch(/signed in/);
