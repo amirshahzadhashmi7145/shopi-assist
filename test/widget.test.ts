@@ -959,13 +959,16 @@ describe("chat widget", () => {
     expect(lines).toHaveLength(0);
   });
 
-  it("lets the shopper remove a line from the summary", async () => {
+  it("removes a line from the summary at once and tells the cart in the background", async () => {
     const lines = [
       { ...cartLine(101, 1, "Trail Mug", 1800), key: "101:abc" },
       { ...cartLine(103, 1, "Camp Blanket", 8950), key: "103:def" },
+      { ...cartLine(105, 2, "Camp Kettle", 4500), key: "105:ghi" },
     ];
+    let broken = false;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url !== "/cart/change.js") return reply("Here.", { actions: [{ type: "checkout" }] });
+      if (broken) return jsonResponse({ message: "Server error" }, 500);
       const change = JSON.parse(init!.body as string);
       const index = lines.findIndex((line) => line.key === change.id);
       if (index >= 0 && change.quantity === 0) lines.splice(index, 1);
@@ -977,27 +980,61 @@ describe("chat widget", () => {
     widget.send("checkout");
     await flush();
 
-    const remove = widget.all(".sa-order-remove");
-    expect(remove.map((button) => button.getAttribute("aria-label"))).toEqual([
+    const items = () => widget.all(".sa-order-item").map((item) => item.textContent);
+    const changes = () =>
+      fetchMock.mock.calls
+        .filter((call) => call[0] === "/cart/change.js")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+    const remove = () => widget.all(".sa-order-remove") as HTMLButtonElement[];
+    expect(remove().map((button) => button.getAttribute("aria-label"))).toEqual([
       "Remove Trail Mug",
       "Remove Camp Blanket",
+      "Remove Camp Kettle",
     ]);
-    remove[1].click();
-    await flush();
 
-    const change = fetchMock.mock.calls.find((call) => call[0] === "/cart/change.js")!;
-    expect(JSON.parse((change[1] as RequestInit).body as string)).toEqual({ id: "103:def", quantity: 0 });
+    // Gone at once, with the total, before the cart has answered...
+    remove()[1].click();
+    expect(items()).toEqual(["Trail Mug", "Camp Kettle"]);
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$108.00");
     expect(widget.all(".sa-order")).toHaveLength(1);
-    expect(widget.all(".sa-order-item").map((item) => item.textContent)).toEqual(["Trail Mug"]);
-    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$18.00");
+    // ...and the focus moves to the line that took its place.
+    expect(widget.root.activeElement).toBe(remove()[1]);
 
-    // Removing the last line leaves no summary, only a note.
-    widget.$<HTMLButtonElement>(".sa-order-remove").click();
+    // A second one straight after: neither comes back while the cart is being told.
+    remove()[1].click();
+    expect(items()).toEqual(["Trail Mug"]);
     await flush();
+    expect(changes()).toEqual([
+      { id: "103:def", quantity: 0 },
+      { id: "105:ghi", quantity: 0 },
+    ]);
+    expect(items()).toEqual(["Trail Mug"]);
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$18.00");
+    expect(widget.all(".sa-order")).toHaveLength(1);
+
+    // The cart will not let go of the last one: it comes back, with a note,
+    // and "your cart is empty" is taken back.
+    broken = true;
+    remove()[0].click();
     expect(widget.root.querySelector(".sa-order")).toBeNull();
     expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
       "Your cart is empty. Tell me what you'd like to order.",
     );
+    await flush();
+    expect(items()).toEqual(["Trail Mug"]);
+    expect(widget.all(".sa-notice").map((notice) => notice.textContent)).toEqual([
+      "That item couldn't be removed. Your order is as shown above.",
+    ]);
+
+    // Removing the last line leaves no summary, only the one note.
+    broken = false;
+    remove()[0].click();
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    await flush();
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    expect(
+      widget.all(".sa-notice").filter((notice) => notice.textContent === "Your cart is empty. Tell me what you'd like to order."),
+    ).toHaveLength(1);
   });
 
   it("changes how many of a line the order holds at once, and tells the cart once", async () => {

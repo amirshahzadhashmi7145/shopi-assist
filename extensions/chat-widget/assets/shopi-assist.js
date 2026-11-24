@@ -24,6 +24,7 @@
   // How long after the last press on − or + the cart is told the new quantity.
   // Several quick presses become one request.
   var CART_CHANGE_DELAY_MS = 350;
+  var EMPTY_CART_TEXT = "Your cart is empty. Tell me what you'd like to order.";
   var MAX_CARD_VARIANTS = 12;
   var MAX_SUMMARY_LINES = 12;
 
@@ -351,6 +352,10 @@
     this.cartQueue = {};
     // The most of a line the store would put in the cart, once it has said so.
     this.cartLimits = {};
+    // Lines the shopper has removed and the cart has not heard about yet.
+    this.cartRemoving = {};
+    // Removals reach the cart one after another, in the order they were made.
+    this.cartWork = Promise.resolve();
     // The open order form, if any. Its contents are never stored.
     this.orderForm = null;
     // True on a development store: the order form offers to fill in test details.
@@ -815,7 +820,7 @@
       if (self.orderForm && !self.orderForm.mode) self.closeOrderForm();
       self.saveState();
       var fresh = self.appendOrder(entry);
-      if (!fresh || !box.parentNode) return;
+      if (!fresh || !box.parentNode) return null;
       box.parentNode.insertBefore(fresh, box);
       box.parentNode.removeChild(box);
       var at = lines.indexOf(line);
@@ -824,6 +829,7 @@
           fresh.querySelector('[data-step$=":' + at + '"]:not([disabled])')
         : fresh.querySelector('.sa-order-pick[data-line="' + at + '"]');
       if (again) again.focus();
+      return fresh;
     };
 
     var addLine = function (list, line) {
@@ -894,9 +900,27 @@
         var remove = el("button", "sa-order-remove", "Remove");
         remove.type = "button";
         remove.setAttribute("aria-label", "Remove " + line.title);
+        // Gone from the summary at once. The cart is told in the background,
+        // and the line comes back, with a note, only if the cart says no.
         remove.addEventListener("click", function () {
-          busy();
-          self.removeFromCart(line.key);
+          var at = lines.indexOf(line);
+          entry.lines = entry.lines.filter(function (other) {
+            return other !== line;
+          });
+          if (typeof entry.subtotal === "number" && typeof line.total === "number") {
+            entry.subtotal -= line.total;
+          }
+          var left = lines.length - 1;
+          self.removeFromCart(line.key, left === 0);
+          if (left === 0) {
+            self.dropOrderSummary();
+            self.pushEntry({ role: "notice", text: EMPTY_CART_TEXT });
+            return;
+          }
+          var fresh = redraw(null);
+          var buttons = fresh ? fresh.querySelectorAll(".sa-order-remove") : [];
+          var next = buttons[Math.min(at, buttons.length - 1)] || (fresh && fresh.querySelector("button, input"));
+          if (next) next.focus();
         });
         edit.appendChild(remove);
         item.appendChild(edit);
@@ -1897,11 +1921,23 @@
       // One summary at a time: an older one would show a cart that has changed.
       self.dropOrderSummary();
 
+      // A line the shopper has removed stays gone while the cart is being told.
+      var waitingToGo = Object.keys(self.cartRemoving).length > 0;
+      if (waitingToGo) {
+        cart = {
+          currency: cart.currency,
+          items: cart.items.filter(function (item) {
+            return !self.cartRemoving[item.key];
+          }),
+          total_price: cart.items.reduce(function (sum, item) {
+            var amount = item.final_line_price !== undefined ? item.final_line_price : item.line_price;
+            return self.cartRemoving[item.key] ? sum : sum + (Number(amount) || 0);
+          }, 0),
+        };
+      }
       if (!cart.items.length) {
-        self.pushEntry({
-          role: "notice",
-          text: "Your cart is empty. Tell me what you'd like to order.",
-        });
+        // Said already, when the last line was removed.
+        if (!waitingToGo) self.pushEntry({ role: "notice", text: EMPTY_CART_TEXT });
         return;
       }
       var summary = orderSummary(cart, chosen, before);
@@ -1994,14 +2030,39 @@
       });
   };
 
-  /** Takes one line out of the storefront cart, then shows the summary again. */
-  Widget.prototype.removeFromCart = function (key) {
+  /**
+   * Takes one line out of the storefront cart. The summary has already been
+   * drawn without it, so this only tells the cart, one removal after
+   * another, and puts the line back with a note if the cart will not let go
+   * of it. `wasLast` means the summary already says the cart is empty.
+   */
+  Widget.prototype.removeFromCart = function (key, wasLast) {
     var self = this;
     delete this.cartQueue[key];
-    // Drawn from the cart's own answer, or read again when there was none.
-    return this.changeCartLine(key).then(function (result) {
-      return self.showOrderSummary(undefined, result.cart || undefined);
+    this.cartRemoving[key] = true;
+    this.cartWork = this.cartWork.then(function () {
+      return self.changeCartLine(key).then(function (result) {
+        delete self.cartRemoving[key];
+        if (result.cart) {
+          // Nothing new to show: the summary was right already.
+          if (wasLast && !result.cart.items.length) return undefined;
+          return self.showOrderSummary(undefined, result.cart);
+        }
+        // Still in the cart. Take back "your cart is empty" if that was said.
+        self.state.messages = self.state.messages.filter(function (message) {
+          return !(message.role === "notice" && message.text === EMPTY_CART_TEXT);
+        });
+        self.renderAll();
+        return self.showOrderSummary().then(function () {
+          self.pushEntry({
+            role: "notice",
+            tone: "error",
+            text: "That item couldn't be removed. Your order is as shown above.",
+          });
+        });
+      });
     });
+    return this.cartWork;
   };
 
   /**
