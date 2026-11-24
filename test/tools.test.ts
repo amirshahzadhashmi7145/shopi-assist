@@ -1394,6 +1394,82 @@ describe("request_return", () => {
     expect(second.json.status).toBe("requested");
   });
 
+  it("checks which of the shopper's own orders can be returned right now", async () => {
+    const known = (number: number) => ({
+      id: `gid://shopify/Order/${number}`,
+      name: `#${number}`,
+      source: "customer" as const,
+    });
+    const answer = (
+      order: Record<string, unknown> | null,
+      items: Array<[string, number]> = [],
+    ) => ({
+      order: order && { name: "x", cancelledAt: null, returnStatus: "NO_RETURN", fulfillments: [{ id: "f" }], ...order },
+      returnableFulfillments: {
+        nodes: [
+          {
+            returnableFulfillmentLineItems: {
+              nodes: items.map(([title, quantity]) => ({
+                quantity,
+                fulfillmentLineItem: { lineItem: { title } },
+              })),
+            },
+          },
+        ],
+      },
+    });
+    // One answer per order, in the order they are asked about.
+    const admin = fakeGraphql(
+      answer({}, [["Trail Mug", 2], ["Camp Kettle", 0]]),
+      answer({ fulfillments: [] }),
+      answer({ returnStatus: "RETURN_REQUESTED" }),
+      answer({ returnStatus: "IN_PROGRESS" }),
+      answer({ cancelledAt: "2026-11-01T00:00:00Z", fulfillments: [] }),
+      new Error("offline"),
+    );
+    const context = {
+      ...returnsOn(admin),
+      knownOrders: [1001, 1002, 1003, 1004, 1005, 1006, 1007].map(known),
+    };
+
+    const result = await run("list_returnable_orders", {}, context);
+    expect(result.ok).toBe(true);
+    expect(result.json.returnable).toEqual([
+      // What is left to return, not what was already sent back.
+      { order: "#1001", items: [{ title: "Trail Mug", quantity: 2 }] },
+    ]);
+    expect(result.json.cannotBeReturned).toEqual([
+      { order: "#1002", because: "it has not shipped yet" },
+      { order: "#1003", because: "a return request for it is already waiting for the store's answer" },
+      { order: "#1004", because: "a return for it is already in progress" },
+      { order: "#1005", because: "it was cancelled" },
+      // #1006 could not be checked and is left out; #1007 is beyond the six most recent.
+    ]);
+    expect(admin.calls).toHaveLength(6);
+    expect(admin.calls.map((call) => call.variables!.orderId)).toEqual(
+      [1001, 1002, 1003, 1004, 1005, 1006].map((number) => `gid://shopify/Order/${number}`),
+    );
+    // Remembered for the turn, so the order buttons can follow it.
+    expect(context.turn.returnableOrders).toEqual(["#1001"]);
+
+    const none = await run(
+      "list_returnable_orders",
+      {},
+      { ...returnsOn(fakeGraphql(answer({ fulfillments: [] }))), knownOrders: [known(1002)] },
+    );
+    expect(none.json.returnable).toEqual([]);
+    expect(none.json.note).toMatch(/None of the shopper's orders can be returned right now/);
+
+    // Only for orders already known to be theirs, and only where returns are on.
+    const names = (context: ReturnType<typeof toolContext>) =>
+      toolsFor(allTools, context).map((tool) => tool.name);
+    expect(names(returnsOn(fakeGraphql()))).not.toContain("list_returnable_orders");
+    expect(names({ ...returnsOn(fakeGraphql()), knownOrders: [known(1001)] })).toContain("list_returnable_orders");
+    expect(
+      names(toolContext({ admin: fakeGraphql(), knownOrders: [known(1001)] })),
+    ).not.toContain("list_returnable_orders");
+  });
+
   it("explains when nothing can be returned or Shopify rejects the request", async () => {
     const nothing = await run(
       "request_return",

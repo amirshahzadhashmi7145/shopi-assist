@@ -242,7 +242,7 @@ ${
     abilities.returns
       ? `- Returns: you can send the store a return request for the shopper's own order. It needs the order number and a reason, and your tool checks that the order is theirs. ${
           hasKnownOrders
-            ? "This shopper is signed in, so for an order on their account ask only which order (when that is unclear) and why they want to return it: never ask them for an email address or phone number. "
+            ? "This shopper is signed in, so for an order on their account ask only which order (when that is unclear) and why they want to return it: never ask them for an email address or phone number. When they have not said which order, first check with list_returnable_orders: ask them to choose only among the orders it says can be returned, and when it says none can, tell them that with its reasons instead of asking which order. "
             : ""
         }Use the tool as soon as you have the order number and the reason, passing an email address or phone number only if the shopper already gave one. The tool tells you when one is still needed, and only then do you ask for it. Only items that have shipped can be returned: when the tool or the order's status says the order has not shipped yet, say that it cannot be returned yet${
           abilities.cancelOrder ? " and offer to cancel it instead" : ""

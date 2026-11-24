@@ -82,6 +82,11 @@ export interface ToolContext {
     orderLookups: number;
     /** The different orders looked into this turn. */
     orderNames?: string[];
+    /**
+     * The shopper's orders that had something returnable when this turn
+     * checked, by name ("#1008"). Unset when the turn did not check.
+     */
+    returnableOrders?: string[];
   };
   /** Injected clock for tests. */
   now: () => Date;

@@ -12,7 +12,7 @@
 import { z } from "zod";
 
 import { clientKey } from "../rate-limit";
-import type { CardVariant, Money, OrderItem, ProductCard } from "../types";
+import type { CardVariant, GraphqlFn, KnownOrder, Money, OrderItem, ProductCard } from "../types";
 import {
   defineTool,
   ToolError,
@@ -100,6 +100,30 @@ export const RETURNABLE_ITEMS_QUERY = `#graphql
             quantity
             fulfillmentLineItem {
               id
+              lineItem { title }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+/** Admin API. One order's state for a return, and what on it can be returned now. */
+export const RETURNABLE_ORDER_QUERY = `#graphql
+  query ShopiAssistReturnableOrder($orderId: ID!) {
+    order(id: $orderId) {
+      name
+      cancelledAt
+      returnStatus
+      fulfillments(first: 1) { id }
+    }
+    returnableFulfillments(orderId: $orderId, first: 5) {
+      nodes {
+        returnableFulfillmentLineItems(first: 10) {
+          nodes {
+            quantity
+            fulfillmentLineItem {
               lineItem { title }
             }
           }
@@ -1133,6 +1157,101 @@ const clearCart = defineTool({
   },
 });
 
+/** How many of the shopper's most recent orders are checked for a return. */
+const MAX_RETURN_CHECKS = 6;
+
+export interface ReturnCheck {
+  /** "#1008" */
+  name: string;
+  /** What can be returned from it right now. Empty when nothing can. */
+  items: Array<{ title: string; quantity: number }>;
+  /** Why nothing can be returned, when nothing can. */
+  reason?: string;
+}
+
+/**
+ * Asks Shopify, now, which of these orders have something that can be
+ * returned. Only for orders already known to be the shopper's own.
+ */
+export async function checkReturnable(admin: GraphqlFn, orders: KnownOrder[]): Promise<ReturnCheck[]> {
+  const checks = await Promise.all(
+    orders.slice(0, MAX_RETURN_CHECKS).map(async (known): Promise<ReturnCheck | null> => {
+      try {
+        const data = await admin<{
+          order: {
+            name: string;
+            cancelledAt: string | null;
+            returnStatus: string;
+            fulfillments: Array<{ id: string }>;
+          } | null;
+          returnableFulfillments: {
+            nodes: Array<{
+              returnableFulfillmentLineItems: {
+                nodes: Array<{ quantity: number; fulfillmentLineItem: { lineItem: { title: string } } }>;
+              };
+            }>;
+          };
+        }>(RETURNABLE_ORDER_QUERY, { orderId: known.id });
+        if (!data.order) return null;
+
+        const items = data.returnableFulfillments.nodes
+          .flatMap((fulfillment) => fulfillment.returnableFulfillmentLineItems.nodes)
+          .filter((item) => item.quantity > 0)
+          .map((item) => ({ title: item.fulfillmentLineItem.lineItem.title, quantity: item.quantity }));
+        if (items.length) return { name: known.name, items };
+
+        const status = data.order.returnStatus;
+        return {
+          name: known.name,
+          items: [],
+          reason: data.order.cancelledAt
+            ? "it was cancelled"
+            : data.order.fulfillments.length === 0
+              ? "it has not shipped yet"
+              : status === "RETURN_REQUESTED"
+                ? "a return request for it is already waiting for the store's answer"
+                : status === "IN_PROGRESS" || status === "INSPECTION_COMPLETE"
+                  ? "a return for it is already in progress"
+                  : status === "RETURNED"
+                    ? "it has already been returned"
+                    : "nothing on it can be returned",
+        };
+      } catch {
+        // An order that could not be checked is left out rather than guessed about.
+        return null;
+      }
+    }),
+  );
+  return checks.filter((check): check is ReturnCheck => check !== null);
+}
+
+const listReturnableOrders = defineTool({
+  name: "list_returnable_orders",
+  description:
+    "For a shopper who wants to return something and has not said which order: checks, right now, which of their own orders have items that can be returned, and why each of the others cannot. Call it before asking which order, and offer only the orders it lists as returnable.",
+  audiences: ["shopper"],
+  schema: z.object({}),
+  // Only for orders already known to be theirs: on their account, placed or proved in this chat.
+  isAvailable: (context) =>
+    Boolean(context.admin) && context.settings.allowReturns && Boolean(context.knownOrders?.length),
+  async run(_input, context) {
+    const checks = await checkReturnable(context.admin!, context.knownOrders ?? []);
+    const returnable = checks.filter((check) => check.items.length > 0);
+    context.turn.returnableOrders = returnable.map((check) => check.name);
+    return {
+      output: {
+        returnable: returnable.map((check) => ({ order: check.name, items: check.items })),
+        cannotBeReturned: checks
+          .filter((check) => check.items.length === 0)
+          .map((check) => ({ order: check.name, because: check.reason })),
+        note: returnable.length
+          ? "Offer only the returnable orders. If the shopper names one of the others, tell them why it cannot be returned."
+          : "None of the shopper's orders can be returned right now. Tell them so, with the reasons, instead of asking which order.",
+      },
+    };
+  },
+});
+
 const offerChoices = defineTool({
   name: "offer_choices",
   description:
@@ -1655,6 +1774,7 @@ const requestReturn = defineTool({
 
 export const shopperTools: ToolDefinition[] = [
   offerChoices,
+  listReturnableOrders,
   searchProducts,
   getBestSellers,
   getNewestProducts,

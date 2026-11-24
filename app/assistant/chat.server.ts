@@ -32,7 +32,7 @@ import {
 import { allTools } from "./tools";
 import { asksReturnReason, asksWhichOrder, asksYesOrNo, liftChoices } from "./choices";
 import { toolsFor, type ToolContext, type ToolDefinition } from "./tools/registry";
-import { RETURN_REASON_LABELS } from "./tools/shopper";
+import { checkReturnable, RETURN_REASON_LABELS } from "./tools/shopper";
 import type {
   Audience,
   CartLine,
@@ -491,11 +491,23 @@ export async function handleChatTurn(
   // no. Not while a card with its own button is on its way, which is the
   // answer to give.
   const canReturn = tools.some((tool) => tool.name === "request_return");
+  const asksOrder = mayOffer && turn.actions.length === 0 && asksWhichOrder(turn.reply);
+  // For a return, only the orders that can be returned right now are worth
+  // a button: what the turn already found out, or asked of Shopify here.
+  let orderChoices = orders.slice(0, 5).map((order) => order.name);
+  if (asksOrder && canReturn && context.admin && /\breturn/i.test(turn.reply)) {
+    const returnable =
+      context.turn.returnableOrders ??
+      (await checkReturnable(context.admin, orders))
+        .filter((check) => check.items.length > 0)
+        .map((check) => check.name);
+    orderChoices = orderChoices.filter((name) => returnable.includes(name));
+  }
   const quick =
     !mayOffer || turn.actions.length > 0
       ? null
-      : asksWhichOrder(turn.reply) && orders.length > 1
-        ? orders.slice(0, 5).map((order) => order.name)
+      : asksOrder && orderChoices.length > 1
+        ? orderChoices
         : asksReturnReason(turn.reply) && canReturn
           ? [...RETURN_REASON_LABELS]
           : !lifted && asksYesOrNo(turn.reply)

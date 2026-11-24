@@ -123,6 +123,58 @@ describe("handleChatTurn", () => {
     expect(yesNo.reply).toBe("It has not shipped yet. Would you like to cancel it instead?");
   });
 
+  it("offers a signed-in shopper only the orders that can be returned right now", async () => {
+    await saveSettings(
+      SHOP_A,
+      { orderLookupEnabled: true, recogniseCustomers: true, allowReturns: true },
+      db,
+    );
+    const order = (number: number) => ({ id: `gid://shopify/Order/${number}`, name: `#${number}` });
+    const returnChecks: string[] = [];
+    // Their account has three orders; #3002 has not shipped.
+    const admin = (async (query: string, variables?: Record<string, unknown>) => {
+      if (query.includes("ShopiAssistCustomerOrders")) {
+        return { orders: { nodes: [order(3001), order(3002), order(3003)] } };
+      }
+      if (query.includes("ShopiAssistReturnableOrder")) {
+        const id = String(variables!.orderId);
+        returnChecks.push(id);
+        const shipped = !id.endsWith("/3002");
+        return {
+          order: { name: "x", cancelledAt: null, returnStatus: "NO_RETURN", fulfillments: shipped ? [{ id: "f" }] : [] },
+          returnableFulfillments: {
+            nodes: shipped
+              ? [
+                  {
+                    returnableFulfillmentLineItems: {
+                      nodes: [{ quantity: 1, fulfillmentLineItem: { lineItem: { title: "Trail Mug" } } }],
+                    },
+                  },
+                ]
+              : [],
+          },
+        };
+      }
+      return { shop: { name: "Shop A" } };
+    }) as NonNullable<ChatTurnInput["admin"]>;
+    const ask = (reply: string, visitorId: string) =>
+      turn(
+        { message: "i want to return an order", customerId: "7100", admin, supports: ["choices"], visitorId },
+        { provider: scriptedProvider([text(reply)]) },
+      );
+
+    const forReturn = await ask("Which order would you like to return?", "visitor-return-1");
+    expect(forReturn.actions).toEqual([{ type: "choices", options: ["#3001", "#3003"], other: true }]);
+    expect(returnChecks).toHaveLength(3);
+
+    // Any other question about their orders offers them all, and asks Shopify nothing more.
+    const other = await ask("Which order do you mean?", "visitor-return-2");
+    expect(other.actions).toEqual([
+      { type: "choices", options: ["#3001", "#3002", "#3003"], other: true },
+    ]);
+    expect(returnChecks).toHaveLength(3);
+  });
+
   it("answers, creates a conversation and stores the exchange", async () => {
     const result = await turn({ message: "  hello  " });
 
