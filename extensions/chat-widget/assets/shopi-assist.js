@@ -804,13 +804,6 @@
     box.setAttribute("aria-label", "Order summary");
     box.appendChild(el("h3", "sa-order-title", "Your order"));
 
-    // One change to the cart at a time: the summary is drawn again from the
-    // cart once Shopify has answered.
-    var busy = function () {
-      var buttons = box.querySelectorAll("button, input");
-      for (var i = 0; i < buttons.length; i += 1) buttons[i].disabled = true;
-    };
-
     /**
      * Draws the summary again in place after a line is ticked, unticked or
      * given another quantity, and puts the focus back where it was.
