@@ -156,6 +156,8 @@ interface StorefrontProduct {
   availableForSale: boolean;
   onlineStoreUrl: string | null;
   description: string;
+  tags?: string[] | null;
+  options?: Array<{ name: string; optionValues: Array<{ name: string }> }> | null;
   featuredImage: { url: string; altText: string | null } | null;
   priceRange: { minVariantPrice: Money; maxVariantPrice: Money };
   compareAtPriceRange: { maxVariantPrice: Money };
@@ -270,10 +272,68 @@ export function toProductCard(product: StorefrontProduct): ProductCard {
 }
 
 /** Compact, model-facing view of a product. */
+/**
+ * What the store says a product comes in: "Color: Ice, Dawn, Powder". A
+ * product with nothing to choose has Shopify's placeholder option, left out.
+ */
+function productOptions(product: StorefrontProduct): Record<string, string> | undefined {
+  const options: Record<string, string> = {};
+  for (const option of product.options ?? []) {
+    const values = (option.optionValues ?? []).map((value) => value.name).filter(Boolean);
+    if (!option.name || !values.length) continue;
+    if (option.name === "Title" && values.length === 1 && values[0] === "Default Title") continue;
+    options[option.name.slice(0, 40)] = values.slice(0, 12).join(", ").slice(0, 200);
+  }
+  return Object.keys(options).length ? options : undefined;
+}
+
+/**
+ * Everything the store's own data says about a product, as one lower-case
+ * text: what a claim about it has to be found in.
+ */
+function productEvidence(product: StorefrontProduct): string {
+  return [
+    product.title,
+    product.description,
+    product.productType,
+    product.vendor,
+    ...(product.tags ?? []),
+    ...(product.options ?? []).flatMap((option) => [
+      option.name,
+      ...(option.optionValues ?? []).map((value) => value.name),
+    ]),
+    ...product.variants.nodes.map((variant) => variant.title),
+    product.featuredImage?.altText ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+// Words in a search that say nothing about a product.
+const SEARCH_FILLER = new Set(["and", "any", "for", "from", "some", "the", "with", "your"]);
+
+/** The words of a search that are worth looking for in a product's data. */
+function searchWords(query: string): string[] {
+  const words = query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length >= 3 && !SEARCH_FILLER.has(word));
+  return [...new Set(words)];
+}
+
+/** "snowboards" is found in "snowboard": plurals do not count as missing. */
+function mentions(evidence: string, word: string): boolean {
+  if (evidence.includes(word)) return true;
+  const stem = word.length > 4 ? word.replace(/(es|s)$/, "") : word;
+  return stem !== word && evidence.includes(stem);
+}
+
 function toProductSummary(product: StorefrontProduct) {
   const { minVariantPrice, maxVariantPrice } = product.priceRange;
   const priceVaries = minVariantPrice.amount !== maxVariantPrice.amount;
   const choices = variantChoices(product);
+  const tags = (product.tags ?? []).filter(Boolean).slice(0, 12);
+  const picture = product.featuredImage?.altText?.replace(/\s+/g, " ").trim().slice(0, 180);
   return {
     title: product.title,
     handle: product.handle,
@@ -284,6 +344,11 @@ function toProductSummary(product: StorefrontProduct) {
     vendor: product.vendor || undefined,
     type: product.productType || undefined,
     summary: product.description || undefined,
+    // What the store's data says it is like. A colour, size, material or
+    // feature is only true of the product if it is found in these.
+    options: productOptions(product),
+    tags: tags.length ? tags : undefined,
+    picture: picture || undefined,
     // The same versions, with the same numbers, as the product's card lets
     // the shopper pick from.
     versions: choices.length > 1
@@ -358,21 +423,191 @@ const handleSchema = z
 // Tools
 // ---------------------------------------------------------------------------
 
+// What a filter on a search may narrow by: Shopify's ProductFilter fields.
+const FILTER_KEYS = new Set([
+  "available",
+  "category",
+  "price",
+  "productMetafield",
+  "productType",
+  "productVendor",
+  "tag",
+  "taxonomyMetafield",
+  "variantMetafield",
+  "variantOption",
+]);
+
+/** A filter as the model passed it back: kept only if it is one Shopify could have offered. */
+function parseFilter(text: string): Record<string, unknown> | null {
+  try {
+    const filter: unknown = JSON.parse(text);
+    if (!filter || typeof filter !== "object" || Array.isArray(filter)) return null;
+    const keys = Object.keys(filter);
+    return keys.length === 1 && FILTER_KEYS.has(keys[0]) ? (filter as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+interface SearchFacet {
+  label: string;
+  type: string;
+  values: Array<{ label: string; count: number; input: unknown }>;
+}
+
+/**
+ * The store's filters that apply to a search's results, in a form the model
+ * can read and hand back: "Color" with "White (3 products)" and the filter
+ * that selects it. Price sliders are left out; the price tool covers those.
+ */
+function searchFacets(facets: SearchFacet[] | null | undefined) {
+  const found = (facets ?? [])
+    .filter((facet) => facet.type !== "PRICE_RANGE" && facet.label)
+    .map((facet) => ({
+      name: facet.label.slice(0, 40),
+      values: (facet.values ?? [])
+        .filter((value) => value.count > 0 && value.label && value.input)
+        .slice(0, 12)
+        .map((value) => ({
+          value: value.label.slice(0, 40),
+          products: value.count,
+          filter: (typeof value.input === "string" ? value.input : JSON.stringify(value.input)).slice(0, 400),
+        })),
+    }))
+    .filter((facet) => facet.values.length)
+    .slice(0, 8);
+  return found.length ? found : undefined;
+}
+
+/** How many products are looked through when only some of them will qualify. */
+const EVIDENCE_POOL = 20;
+
+/**
+ * "teal or turquoise" is met by a product whose data mentions either;
+ * "long sleeve" needs both words. Empty when the requirement says nothing.
+ */
+function requirementMet(evidence: string, requirement: string): boolean {
+  const alternatives = requirement
+    .toLowerCase()
+    .split(/\s+or\s+|[|,/]/)
+    .map((alternative) => alternative.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2))
+    .filter((words) => words.length > 0);
+  return alternatives.some((words) => words.every((word) => mentions(evidence, word)));
+}
+
 const searchProducts = defineTool({
   name: "search_products",
   description:
-    "Search this store's catalog by keywords (product name, type, color, use). Returns matching products with price and availability.",
+    "Search this store's catalog. Put the kind of product in 'query' ('snowboard', 'rain jacket') and anything specific the shopper asked for (a colour, material, size, feature) in 'mustMention': only products whose own data mentions it are returned, so the results are real matches. Without 'mustMention' it is a plain keyword search whose results match some of the words, not necessarily all; each result then lists the search words its data does not mention under 'doesNotMention'. The result also lists the store's own 'filters' for these products (for example a colour with how many products have it); passing a value's 'filter' in 'filters' narrows the search the way the store's own filter does.",
   audiences: ["shopper"],
   schema: z.object({
     query: z.string().trim().min(1).max(200).describe("Search keywords."),
     limit: limitSchema,
+    filters: z
+      .array(z.string().max(400))
+      .max(6)
+      .optional()
+      .describe(
+        "Narrow the search to products that have these. Each entry is a 'filter' copied exactly from the 'filters' of an earlier search_products result.",
+      ),
+    inStockOnly: z.boolean().optional().describe("True leaves out products that are sold out."),
+    mustMention: z
+      .array(z.string().trim().min(2).max(60))
+      .max(4)
+      .optional()
+      .describe(
+        "What the shopper specifically asked for, one entry each. A product is returned only if its own data (title, description, options, versions, tags, picture description) mentions every entry. Give alternatives and close synonyms in one entry with 'or': ['teal or turquoise'], ['grey or gray', 'waterproof'].",
+      ),
   }),
   isAvailable: (context) => Boolean(context.storefront),
-  async run({ query, limit }, context) {
+  async run({ query, limit, filters, inStockOnly, mustMention }, context) {
+    const chosen = (filters ?? []).map(parseFilter);
+    if (chosen.includes(null)) {
+      throw new ToolError(
+        "Copy each filter exactly from the 'filters' of a search_products result. One of these is not a filter from there.",
+      );
+    }
+    const productFilters = [
+      ...(chosen as Array<Record<string, unknown>>),
+      ...(inStockOnly ? [{ available: true }] : []),
+    ];
+
     const data = await context.storefront!<{
-      search: { nodes: Array<Partial<StorefrontProduct>> };
-    }>(SEARCH_PRODUCTS_QUERY, { query, first: limit, ...buyerVariables(context) });
-    return productListResult(data.search.nodes, { query });
+      search: {
+        totalCount?: number;
+        productFilters?: SearchFacet[] | null;
+        nodes: Array<Partial<StorefrontProduct>>;
+      };
+    }>(SEARCH_PRODUCTS_QUERY, {
+      query,
+      // Only some will have what was asked for: look through more of them.
+      first: mustMention?.length ? EVIDENCE_POOL : limit,
+      filters: productFilters.length ? productFilters : null,
+      ...buyerVariables(context),
+    });
+
+    const found = data.search.nodes.filter(isProduct);
+    if (mustMention?.length) {
+      const asked = mustMention.join(", ");
+      const matching = found.filter((product) => {
+        const evidence = productEvidence(product);
+        return mustMention.every((requirement) => requirementMet(evidence, requirement));
+      });
+      if (matching.length) {
+        const result = productListResult(matching.slice(0, limit), { query, mustMention });
+        return {
+          ...result,
+          output: {
+            ...result.output,
+            checked: found.length,
+            matching: matching.length,
+            note: `Each of these mentions ${asked} in its own data. ${found.length - matching.length} other result(s) did not and were left out.`,
+          },
+        };
+      }
+      // Nothing qualifies. The closest results go back clearly marked, so they
+      // can be offered as something else, never as what was asked for.
+      const others = productListResult(found.slice(0, 3));
+      return {
+        cards: others.cards,
+        output: {
+          query,
+          mustMention,
+          checked: found.length,
+          matching: 0,
+          count: 0,
+          products: [],
+          note: `No product in this store's results for "${query}" mentions ${asked} anywhere in its own data. Tell the shopper you could not find any. You may offer 'others' as alternatives, saying what they actually are.`,
+          others: others.output.products,
+        },
+      };
+    }
+
+    const products = found;
+    // Which of the words asked for each product's own data does not have.
+    const words = searchWords(query);
+    const missing = products.map((product) => {
+      const evidence = productEvidence(product);
+      return words.filter((word) => !mentions(evidence, word));
+    });
+    const nowhere = words.filter((word) => products.length > 0 && missing.every((list) => list.includes(word)));
+
+    const result = productListResult(products, { query });
+    return {
+      ...result,
+      output: {
+        ...result.output,
+        filtered: productFilters.length ? true : undefined,
+        products: result.output.products.map((summary, index) => ({
+          ...summary,
+          doesNotMention: missing[index].length ? missing[index] : undefined,
+        })),
+        filters: searchFacets(data.search.productFilters),
+        note: nowhere.length
+          ? `None of these products mentions ${nowhere.map((word) => `"${word}"`).join(" or ")} anywhere in its title, description, options, tags or picture. They matched other words of the search. Do not present them as ${nowhere.join(" ")} products.`
+          : undefined,
+      },
+    };
   },
 });
 

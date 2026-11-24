@@ -185,6 +185,178 @@ describe("shopper tools", () => {
     expect(result.cards[0].compareAtPrice).toEqual({ amount: "30.0", currencyCode: "USD" });
   });
 
+  it("tells the model what each product's own data says, and which search words it does not have", async () => {
+    const storefront = fakeGraphql({
+      search: {
+        nodes: [
+          storefrontProduct({
+            title: "The Complete Snowboard",
+            handle: "complete",
+            description: "A board for every mountain.",
+            tags: ["Premium", "Winter"],
+            options: [{ name: "Color", optionValues: [{ name: "Ice" }, { name: "Dawn" }] }],
+            featuredImage: { url: "https://cdn.example/a.jpg", altText: "Top view in shades of teal." },
+          }),
+          storefrontProduct({
+            id: "gid://shopify/Product/2",
+            title: "The Polar Snowboards",
+            handle: "polar",
+            description: "",
+            // Shopify's placeholder for a product with nothing to choose.
+            options: [{ name: "Title", optionValues: [{ name: "Default Title" }] }],
+            featuredImage: { url: "https://cdn.example/b.jpg", altText: "A white deck with a grey logo." },
+          }),
+        ],
+      },
+    });
+    const result = await run(
+      "search_products",
+      { query: "some white snowboards" },
+      toolContext({ storefront }),
+    );
+    const [complete, polar] = result.json.products;
+
+    expect(complete).toMatchObject({
+      options: { Color: "Ice, Dawn" },
+      tags: ["Premium", "Winter"],
+      picture: "Top view in shades of teal.",
+      // "snowboards" is in "Snowboard"; "some" says nothing about a product.
+      doesNotMention: ["white"],
+    });
+    expect(polar.options).toBeUndefined();
+    expect(polar.picture).toBe("A white deck with a grey logo.");
+    expect(polar.doesNotMention).toBeUndefined();
+    // One of them has it, so there is nothing to warn about for the whole list.
+    expect(result.json.note).toBeUndefined();
+
+    const none = await run(
+      "search_products",
+      { query: "white snowboards" },
+      toolContext({
+        storefront: fakeGraphql({ search: { nodes: [storefrontProduct({ title: "The Complete Snowboard" })] } }),
+      }),
+    );
+    expect(none.json.note).toMatch(/None of these products mentions "white"/);
+  });
+
+  it("returns only products whose own data mentions what was asked for", async () => {
+    const board = (id: number, title: string, altText: string, extra: Record<string, unknown> = {}) =>
+      storefrontProduct({
+        id: `gid://shopify/Product/${id}`,
+        title,
+        handle: `board-${id}`,
+        description: "",
+        featuredImage: { url: "https://cdn.example/b.jpg", altText },
+        ...extra,
+      });
+    const storefront = fakeGraphql({
+      search: {
+        nodes: [
+          board(1, "The Complete Snowboard", "Circles in shades of teal on top, purple and blue below."),
+          board(2, "The Hydrogen Snowboard", "Stylized hydrogen bonds."),
+          board(3, "The Videographer Snowboard", "Turquoise and black with trees."),
+          board(4, "The Kids Snowboard", "A plain deck.", {
+            options: [{ name: "Colour", optionValues: [{ name: "Purple" }, { name: "Grey" }] }],
+          }),
+        ],
+      },
+    });
+    const context = toolContext({ storefront });
+    const titles = (result: { json: { products: Array<{ title: string }> } }) =>
+      result.json.products.map((product) => product.title);
+
+    // Either colour will do; the picture and the options both count as the product's data.
+    const either = await run(
+      "search_products",
+      { query: "snowboard", limit: 5, mustMention: ["teal or purple"] },
+      context,
+    );
+    expect(titles(either)).toEqual(["The Complete Snowboard", "The Kids Snowboard"]);
+    expect(either.json).toMatchObject({ checked: 4, matching: 2 });
+    expect(either.cards.map((card) => card.title)).toEqual(titles(either));
+    // More are looked through than will be shown.
+    expect(storefront.calls[0].variables).toMatchObject({ query: "snowboard", first: 20 });
+
+    // Every entry has to be met; a synonym given as an alternative counts.
+    const both = await run(
+      "search_products",
+      { query: "snowboard", mustMention: ["teal or turquoise", "black"] },
+      context,
+    );
+    expect(titles(both)).toEqual(["The Videographer Snowboard"]);
+    expect(titles(await run("search_products", { query: "snowboard", mustMention: ["gray or grey"] }, context))).toEqual([
+      "The Kids Snowboard",
+    ]);
+
+    // Nothing has it: no products, a plain statement, and the closest ones marked as others.
+    const none = await run("search_products", { query: "snowboard", mustMention: ["white"] }, context);
+    expect(none.ok).toBe(true);
+    expect(none.json).toMatchObject({ count: 0, products: [], matching: 0, checked: 4 });
+    expect(none.json.note).toMatch(/No product .* mentions white/);
+    expect(none.json.others.map((product: { title: string }) => product.title)).toEqual([
+      "The Complete Snowboard",
+      "The Hydrogen Snowboard",
+      "The Videographer Snowboard",
+    ]);
+    expect(none.cards).toHaveLength(3);
+  });
+
+  it("offers the store's own filters with a search and narrows the next search by them", async () => {
+    const white = '{"variantOption":{"name":"color","value":"White"}}';
+    const storefront = fakeGraphql({
+      search: {
+        totalCount: 4,
+        productFilters: [
+          {
+            label: "Color",
+            type: "LIST",
+            values: [
+              { label: "White", count: 2, input: white },
+              { label: "Black", count: 0, input: '{"variantOption":{"name":"color","value":"Black"}}' },
+              // Some API versions hand the input back as an object.
+              { label: "Blue", count: 1, input: { variantOption: { name: "color", value: "Blue" } } },
+            ],
+          },
+          { label: "Price", type: "PRICE_RANGE", values: [{ label: "Price", count: 4, input: '{"price":{"min":0,"max":900}}' }] },
+          { label: "Empty", type: "LIST", values: [] },
+        ],
+        nodes: [storefrontProduct()],
+      },
+    });
+    const context = toolContext({ storefront });
+
+    const first = await run("search_products", { query: "snowboard" }, context);
+    expect(first.json.filters).toEqual([
+      {
+        name: "Color",
+        values: [
+          { value: "White", products: 2, filter: white },
+          { value: "Blue", products: 1, filter: '{"variantOption":{"name":"color","value":"Blue"}}' },
+        ],
+      },
+    ]);
+    expect(first.json.filtered).toBeUndefined();
+    expect(storefront.calls[0].variables).toMatchObject({ query: "snowboard", filters: null });
+
+    const second = await run(
+      "search_products",
+      { query: "snowboard", filters: [white], inStockOnly: true },
+      context,
+    );
+    expect(second.json.filtered).toBe(true);
+    expect(storefront.calls[1].variables!.filters).toEqual([
+      { variantOption: { name: "color", value: "White" } },
+      { available: true },
+    ]);
+
+    // Only what Shopify could have offered is passed on.
+    for (const filters of [["white"], ['{"query":"x"}'], ['{"tag":"a","available":true}'], ["[1]"]]) {
+      const refused = await run("search_products", { query: "snowboard", filters }, context);
+      expect(refused.ok).toBe(false);
+    }
+    expect(storefront.calls).toHaveLength(2);
+  });
+
   it("gives a product's versions to the model and to its card", async () => {
     const variant = (id: number, title: string, amount: string, availableForSale = true) => ({
       id: `gid://shopify/ProductVariant/${id}`,

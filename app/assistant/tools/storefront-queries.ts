@@ -16,6 +16,11 @@ const PRODUCT_CARD_FRAGMENT = `#graphql
     availableForSale
     onlineStoreUrl
     description(truncateAt: 220)
+    tags
+    options(first: 5) {
+      name
+      optionValues { name }
+    }
     featuredImage {
       url(transform: { maxWidth: 480 })
       altText
@@ -38,14 +43,32 @@ const PRODUCT_CARD_FRAGMENT = `#graphql
   }
 `;
 
+/**
+ * Keyword search, optionally narrowed by the store's own filters. The
+ * filters that apply to the results come back with them, each value with the
+ * input that selects it, so a second search can ask for exactly that.
+ */
 export const SEARCH_PRODUCTS_QUERY = `#graphql
   query ShopiAssistSearchProducts(
     $query: String!
     $first: Int!
+    $filters: [ProductFilter!]
     $country: CountryCode
     $language: LanguageCode
   ) @inContext(country: $country, language: $language) {
-    search(query: $query, first: $first, types: [PRODUCT], unavailableProducts: LAST) {
+    search(
+      query: $query
+      first: $first
+      types: [PRODUCT]
+      unavailableProducts: LAST
+      productFilters: $filters
+    ) {
+      totalCount
+      productFilters {
+        label
+        type
+        values { label count input }
+      }
       nodes {
         ... on Product { ...ShopiAssistProductCard }
       }
