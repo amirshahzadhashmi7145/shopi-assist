@@ -20,19 +20,36 @@ import {
   AbilityFields,
   BusinessFields,
   FIELD_GROUPS,
+  PaymentWordingFields,
   PersonalityFields,
   PolicyFields,
   QuestionFields,
   QuickPolicyFields,
+  RetentionField,
 } from "../components/AssistantFields";
 
 import { authenticate } from "../shopify.server";
+
+/**
+ * The settings that are typed. None is needed: each has a default or adds to
+ * what the assistant already knows, so they sit folded away at the bottom of
+ * the page and the rest is tick boxes and lists.
+ */
+const TYPED_FIELDS: readonly SettingsField[] = [
+  ...FIELD_GROUPS.personality,
+  ...FIELD_GROUPS.payment,
+  ...FIELD_GROUPS.business,
+  ...FIELD_GROUPS.policies,
+  ...FIELD_GROUPS.questions,
+  "instructions",
+];
 
 /** Every setting this page shows, and so every setting its form may change. */
 const SETTINGS_PAGE_FIELDS: readonly SettingsField[] = [
   ...FIELD_GROUPS.abilities,
   ...FIELD_GROUPS.quickPolicies,
   ...FIELD_GROUPS.personality,
+  ...FIELD_GROUPS.payment,
   ...FIELD_GROUPS.business,
   ...FIELD_GROUPS.policies,
   ...FIELD_GROUPS.questions,
@@ -73,6 +90,7 @@ export default function Settings() {
   const saving = fetcher.state !== "idle";
   const errors = fetcher.data?.errors ?? {};
   const failed = fetcher.data?.ok === false;
+  const typedErrors = TYPED_FIELDS.some((field) => errors[field]);
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.ok) {
@@ -116,31 +134,6 @@ export default function Settings() {
             <QuickPolicyFields settings={settings} errors={errors} />
           </s-section>
 
-          <s-section heading="Name and welcome message">
-            <PersonalityFields settings={settings} errors={errors} />
-          </s-section>
-
-          <s-section heading="More detail (optional)">
-            <s-stack direction="block" gap="base">
-              <s-paragraph>
-                Only if you want to. Anything you write here is added to what the assistant
-                knows, on top of the choices above.
-              </s-paragraph>
-              <BusinessFields settings={settings} errors={errors} />
-              <PolicyFields settings={settings} errors={errors} />
-              <QuestionFields settings={settings} errors={errors} />
-              <s-text-area
-                name="instructions"
-                label="Anything else the assistant should know or do"
-                details="Treat everything on this page as public: a determined shopper can get the assistant to repeat it, so don't include anything confidential."
-                rows={4}
-                maxLength={2000}
-                defaultValue={settings.instructions}
-                {...(errors.instructions ? { error: errors.instructions } : {})}
-              />
-            </s-stack>
-          </s-section>
-
           <s-section heading="Storefront chat">
             <s-checkbox
               name="enabled"
@@ -151,17 +144,43 @@ export default function Settings() {
           </s-section>
 
           <s-section heading="Privacy">
-            <s-number-field
-              name="retentionDays"
-              label="Keep chat transcripts for"
-              suffix="days"
-              details="Conversations with no activity for this long are deleted automatically. Between 1 and 365."
-              min={1}
-              max={365}
-              step={1}
-              defaultValue={String(settings.retentionDays)}
-              {...(errors.retentionDays ? { error: errors.retentionDays } : {})}
-            />
+            <RetentionField settings={settings} errors={errors} />
+          </s-section>
+
+          <s-section heading="Your own wording (optional)">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                Nothing here needs filling in. The assistant is called {settings.assistantName},
+                has a welcome message, and already knows your products, your published
+                policies and the choices above.
+              </s-paragraph>
+              {/* Closed until asked for; opened by itself when something in it needs fixing. */}
+              <details {...(typedErrors ? { open: true } : {})}>
+                <summary style={{ cursor: "pointer" }}>
+                  <s-text type="strong">
+                    Change the name or welcome message, or add notes of your own
+                  </s-text>
+                </summary>
+                <s-box paddingBlockStart="base">
+                  <s-stack direction="block" gap="base">
+                    <PersonalityFields settings={settings} errors={errors} />
+                    <PaymentWordingFields settings={settings} errors={errors} />
+                    <BusinessFields settings={settings} errors={errors} />
+                    <PolicyFields settings={settings} errors={errors} />
+                    <QuestionFields settings={settings} errors={errors} />
+                    <s-text-area
+                      name="instructions"
+                      label="Anything else the assistant should know or do"
+                      details="Treat everything on this page as public: a determined shopper can get the assistant to repeat it, so don't include anything confidential."
+                      rows={4}
+                      maxLength={2000}
+                      defaultValue={settings.instructions}
+                      {...(errors.instructions ? { error: errors.instructions } : {})}
+                    />
+                  </s-stack>
+                </s-box>
+              </details>
+            </s-stack>
           </s-section>
         </s-stack>
       </form>

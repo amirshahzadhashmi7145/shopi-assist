@@ -38,13 +38,13 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 
 **For the merchant (inside Shopify admin)**
 
-- A **setup tour** that opens the first time the app is opened after install. It is built around ticking boxes and picking from lists, not writing:
+- A **setup tour** that opens the first time the app is opened after install. It is ticking boxes and picking from lists, with nothing to type:
   1. *What it can do:* add to cart, place an order, pay-on-delivery orders in the chat, order status, return requests. Ordering in chat needs both "add to cart" and "place an order" ticked; with only "place an order", the assistant shows the summary of the existing cart.
   2. *Your policies:* return window, who pays return shipping, how fast orders ship, delivery time, where you ship.
-  3. *Name and welcome.* The assistant is called Ava and greets shoppers with "Hi there! 👋 Welcome! How can I help you today?" until the merchant changes either. Its tone is not a setting: always professional, polite and precise.
-  4. *Go live.*
+  3. *Go live.*
 
-  Every step is optional and saves on its own. Longer free-text answers (a business description, common questions, extra guidance) are available in Settings for merchants who want them.
+  Every step is optional and saves on its own. The assistant is called Ava and greets shoppers with "Hi there! 👋 Welcome! How can I help you today?" until the merchant changes either. Its tone is not a setting: always professional, polite and precise.
+- **Settings without typing.** The Settings page is tick boxes and lists too. Everything that is typed (the name, the welcome message, what the store calls paying on delivery, a business description, common questions, extra guidance) is optional and sits folded away in one section at the bottom, "Your own wording".
 - **Try it as a shopper** on the last step: a test chat in the admin that behaves exactly like the storefront widget, so answers can be checked before going live. Test chats stay out of the conversation log.
 
 - A store assistant that answers from private store data: top-selling products by units or revenue, sales summaries, recent and unfulfilled orders, low stock, catalog search including drafts.

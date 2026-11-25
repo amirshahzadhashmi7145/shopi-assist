@@ -26,8 +26,6 @@ export const FIELD_GROUPS = {
     "orderFirstName",
     "orderCompany",
     "orderAddress2",
-    "orderPaymentName",
-    "orderPaymentNote",
     "orderLookupEnabled",
     "orderLookupByNumber",
     "recogniseCustomers",
@@ -38,8 +36,10 @@ export const FIELD_GROUPS = {
     "chatRatings",
   ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
+  // Everything below is typed, never needed, and shown only on the Settings
+  // page, folded away: setup is ticking boxes and picking from lists.
   personality: ["assistantName", "greeting"],
-  // Optional free text, shown only on the Settings page.
+  payment: ["orderPaymentName", "orderPaymentNote"],
   business: ["businessDescription"],
   policies: ["returnPolicy", "shippingInfo"],
   questions: ["faq"],
@@ -48,7 +48,7 @@ export const FIELD_GROUPS = {
 const checked = (on: boolean) => (on ? { defaultChecked: true } : {});
 
 /** Step 1 of setup: what the assistant may do. All checkboxes, no typing. */
-export function AbilityFields({ settings, errors = {} }: FieldGroupProps) {
+export function AbilityFields({ settings }: FieldGroupProps) {
   return (
     <s-stack direction="block" gap="base">
       <s-checkbox
@@ -75,7 +75,7 @@ export function AbilityFields({ settings, errors = {} }: FieldGroupProps) {
         details="The order summary gets an 'Order here, pay on delivery' button. The shopper fills in a short form (name, phone, delivery address) and the order appears in your Shopify admin as unpaid, tagged shopi-assist. Tick this only if you offer cash on delivery, and check these orders before you ship them. Needs 'Help shoppers place an order'."
         {...checked(settings.allowChatOrders)}
       />
-      <OrderFormFields settings={settings} errors={errors} />
+      <OrderFormFields settings={settings} />
       <s-checkbox
         name="orderLookupEnabled"
         label="Check order status"
@@ -133,7 +133,7 @@ export function AbilityFields({ settings, errors = {} }: FieldGroupProps) {
  * names and the postal code rules follow the delivery country by themselves;
  * these three are the store's own choice.
  */
-function OrderFormFields({ settings, errors = {} }: FieldGroupProps) {
+function OrderFormFields({ settings }: Pick<FieldGroupProps, "settings">) {
   return (
     <s-box paddingInlineStart="large-200">
       <s-stack direction="block" gap="small-200">
@@ -158,30 +158,66 @@ function OrderFormFields({ settings, errors = {} }: FieldGroupProps) {
         </s-select>
         <s-paragraph color="subdued">
           The delivery countries, states, shipping rates, prices and tax come from your store. So
-          do the cards and wallets shown for paying online. Shopify does not tell apps which
-          manual payment methods you have set up, so say here what your store calls paying on
-          delivery.
+          do the cards and wallets shown for paying online. Paying on delivery is shown as
+          &quot;Cash on Delivery (COD)&quot;, Shopify&apos;s own name for it.
         </s-paragraph>
-        <s-text-field
-          name="orderPaymentName"
-          label="Name of your pay-on-delivery method"
-          placeholder="Cash on Delivery (COD)"
-          details="As it is named under Settings > Payments > Manual payment methods. Leave empty for Shopify's own name."
-          defaultValue={settings.orderPaymentName}
-          maxLength={60}
-          {...errorProp(errors.orderPaymentName)}
-        />
-        <s-text-area
-          name="orderPaymentNote"
-          label="Payment instructions (optional)"
-          details="Shown to the shopper under the payment method before they complete the order, for example 'Please have the exact amount ready'."
-          defaultValue={settings.orderPaymentNote}
-          maxLength={300}
-          rows={2}
-          {...errorProp(errors.orderPaymentNote)}
-        />
       </s-stack>
     </s-box>
+  );
+}
+
+/**
+ * What the order form calls paying on delivery. Shopify does not tell apps
+ * which manual payment methods a store has set up, so a store that renamed
+ * its own can say so here.
+ */
+export function PaymentWordingFields({ settings, errors = {} }: FieldGroupProps) {
+  return (
+    <s-stack direction="block" gap="base">
+      <s-text-field
+        name="orderPaymentName"
+        label="Name of your pay-on-delivery method"
+        placeholder="Cash on Delivery (COD)"
+        details="Only for pay-on-delivery orders in the chat. As it is named under Settings > Payments > Manual payment methods. Leave empty for Shopify's own name."
+        defaultValue={settings.orderPaymentName}
+        maxLength={60}
+        {...errorProp(errors.orderPaymentName)}
+      />
+      <s-text-area
+        name="orderPaymentNote"
+        label="Payment instructions"
+        details="Shown to the shopper under the payment method before they complete the order, for example 'Please have the exact amount ready'."
+        defaultValue={settings.orderPaymentNote}
+        maxLength={300}
+        rows={2}
+        {...errorProp(errors.orderPaymentNote)}
+      />
+    </s-stack>
+  );
+}
+
+/** How long transcripts are kept, to pick from. */
+const RETENTION_CHOICES = [7, 30, 90, 180, 365];
+
+export function RetentionField({ settings, errors = {} }: FieldGroupProps) {
+  // A period saved before this was a list stays as it is until changed.
+  const choices = RETENTION_CHOICES.includes(settings.retentionDays)
+    ? RETENTION_CHOICES
+    : [...RETENTION_CHOICES, settings.retentionDays].sort((a, b) => a - b);
+  return (
+    <s-select
+      name="retentionDays"
+      label="Keep chat transcripts for"
+      details="Conversations with no activity for this long are deleted automatically."
+      value={String(settings.retentionDays)}
+      {...errorProp(errors.retentionDays)}
+    >
+      {choices.map((days) => (
+        <s-option key={days} value={String(days)}>
+          {days === 365 ? "1 year" : days === 1 ? "1 day" : `${days} days`}
+        </s-option>
+      ))}
+    </s-select>
   );
 }
 

@@ -1084,6 +1084,43 @@ describe("settings", () => {
     });
   });
 
+  it("asks for nothing typed in the setup tour, and keeps typed settings folded away in Settings", async () => {
+    const TYPED = /<s-(text-field|text-area|number-field)\b/;
+    const fields = readFileSync("app/components/AssistantFields.tsx", "utf8");
+    const component = (name: string) => {
+      const start = fields.indexOf(`function ${name}(`);
+      expect(start).toBeGreaterThan(-1);
+      const end = fields.indexOf("\nexport function ", start + 1);
+      return fields.slice(start, end < 0 ? undefined : end);
+    };
+
+    // The tour shows the abilities and the policy picks: ticks and lists only.
+    const tour = readFileSync("app/routes/app.setup.tsx", "utf8");
+    expect(tour).not.toMatch(TYPED);
+    expect(tour.match(/<(\w+Fields)\b/g)).toEqual(["<AbilityFields", "<QuickPolicyFields"]);
+    for (const name of ["AbilityFields", "OrderFormFields", "QuickPolicyFields", "RetentionField"]) {
+      expect(component(name)).not.toMatch(TYPED);
+    }
+
+    // On the Settings page everything typed comes after the fold.
+    const page = readFileSync("app/routes/app.settings.tsx", "utf8");
+    const fold = page.indexOf("<details");
+    expect(fold).toBeGreaterThan(-1);
+    expect(page.slice(0, fold)).not.toMatch(TYPED);
+    expect(page.slice(0, fold)).not.toMatch(/<(Personality|PaymentWording|Business|Policy|Question)Fields/);
+
+    // Saving a tour step leaves what was typed in Settings alone.
+    await saveSettings(SHOP_A, { orderPaymentName: "Pay the courier", assistantName: "Mia" }, db);
+    const { FIELD_GROUPS } = await import("../app/components/AssistantFields");
+    const step = settingsFromForm(new FormData(), [...FIELD_GROUPS.abilities, ...FIELD_GROUPS.quickPolicies]);
+    expect(Object.keys(step)).not.toContain("orderPaymentName");
+    await saveSettings(SHOP_A, step, db);
+    expect(await getSettings(SHOP_A, db)).toMatchObject({
+      orderPaymentName: "Pay the courier",
+      assistantName: "Mia",
+    });
+  });
+
   it("tracks the setup tour and reports progress from what is actually saved", async () => {
     expect(await getSetupState(SHOP_A, db)).toEqual({ started: false, completed: false });
 
