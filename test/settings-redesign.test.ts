@@ -594,19 +594,23 @@ describe("what Shopify says about the store", () => {
     });
     expect(partial.facts).not.toHaveProperty("description");
 
-    // So the next page load asks again instead of trusting it for a minute.
-    const retry = { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer()) };
-    const retried = await syncStoreFacts(SHOP_B, retry, {
+    // Half an answer must not count as fresh either, or the missing half
+    // would go unasked for as long as facts are trusted. On another shop: a
+    // full sync, then one the Storefront API missed...
+    const full = { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer()) };
+    const synced = await syncStoreFacts(SHOP_B, full, {
       db,
       now: new Date("2026-11-27T10:00:10Z"),
       maxAgeMs: 60_000,
     });
-    expect(retried.reached).toEqual({ admin: true, storefront: true });
+    expect(synced.reached).toEqual({ admin: true, storefront: true });
     await syncStoreFacts(
       SHOP_B,
       { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(new Error("offline")) },
       { db, now: new Date("2026-11-27T10:02:00Z") },
     );
+    // ...and five seconds after that, well inside the minute a full sync is
+    // trusted for, the next page load asks Shopify again.
     const afterHalf = { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer()) };
     await syncStoreFacts(SHOP_B, afterHalf, { db, now: new Date("2026-11-27T10:02:05Z"), maxAgeMs: 60_000 });
     expect(afterHalf.storefront.calls).toHaveLength(1);

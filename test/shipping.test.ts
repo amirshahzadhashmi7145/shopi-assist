@@ -523,6 +523,41 @@ describe("reading a store's markets", () => {
       parts: { CA: ["Ontario", "Quebec"] },
     });
     expect(shippingForPage(read).zones[0].where).toBe("Canada (Ontario, Quebec only)");
+
+    // What a market nested inside takes is no longer the outer one's: one
+    // province of several, or every province where it takes the whole country.
+    const local = [flat("Local", [group(flatRate("5.0"))])];
+    const outer = market(
+      "North America",
+      [inCountry("US"), inPart("CA", "ON", "Ontario"), inPart("CA", "QC", "Quebec"), inPart("MX", "CMX", "Mexico City")],
+      shipping(local),
+    );
+    const ontario = market("Ontario", [inPart("CA", "ON", "Ontario")], shipping(local), under("North America"));
+    const mexico = market("Mexico", [inCountry("MX")], shipping(local), under("North America"));
+    const nested = readMarketShipping(markets([outer, ontario, mexico]));
+    expect(nested.zones.map((entry) => [entry.name, entry.countries, entry.parts ?? null])).toEqual([
+      ["North America", ["CA", "US"], { CA: ["Quebec"] }],
+      ["Ontario", ["CA"], { CA: ["Ontario"] }],
+      ["Mexico", ["MX"], null],
+    ]);
+  });
+
+  it("covers the rest of a country from the market that sells everywhere else", () => {
+    const world = market("International", [], shipping([flat("Worldwide", [group(flatRate("40.0"))])]), {
+      conditions: { regionsCondition: { applicationLevel: "ALL", regions: { ...one, nodes: [] } } },
+    });
+    const california = market(
+      "California",
+      [inPart("US", "CA", "California")],
+      shipping([flat("Local", [group(flatRate("5.0"))])]),
+      under("International"),
+    );
+    const rates = marketRates(markets([world, california, CANADA]));
+    // Named only in part: the rest of the country is "everywhere else" too.
+    expect(zonesFor(rates, "US").map((entry) => entry.name)).toEqual(["California", "International"]);
+    // Named whole, or not at all: as before.
+    expect(zonesFor(rates, "CA").map((entry) => entry.name)).toEqual(["Canada"]);
+    expect(zonesFor(rates, "DE").map((entry) => entry.name)).toEqual(["International"]);
   });
 
   it("gives only the rates every order gets, and says when some products have their own", () => {
@@ -793,8 +828,10 @@ describe("the rates on the Settings page", () => {
       },
       { where: "Mexico", rates: ["No delivery options set"] },
     ]);
-    // Every rate says how long it takes: nothing left to ask the merchant.
+    // Every rate says how long it takes: nothing left to ask the merchant...
     expect(shippingForPage(marketRates(markets([UNITED_STATES]))).deliveryTimes).toBe(true);
+    // ...unless there are markets that were not read, whose rates may not.
+    expect(shippingForPage(marketRates(markets([UNITED_STATES], true))).deliveryTimes).toBe(false);
   });
 
   it("tells the merchant in one line where the rates stand", () => {
@@ -1110,6 +1147,52 @@ describe("the shipping tool", () => {
     expect(answer.note).toContain("depends on the province or state");
     const all = await run({}, { shippingRates: rates });
     expect((all.zones as Array<{ countries: string[] }>)[0].countries).toEqual(["Canada (Ontario, Quebec only)"]);
+  });
+
+  it("gives the rest of a country its own rates when a market covers only part of it", async () => {
+    const world = market("International", [], shipping([flat("Worldwide", [group(flatRate("40.0"))])]), {
+      conditions: { regionsCondition: { applicationLevel: "ALL", regions: { ...one, nodes: [] } } },
+    });
+    const california = market(
+      "California",
+      [inPart("US", "CA", "California")],
+      shipping([flat("Local", [group(flatRate("5.0"))])]),
+      under("International"),
+    );
+    const answer = await run({ country: "US" }, { shippingRates: onMarkets(markets([world, california])) });
+    expect(answer).toMatchObject({ country: "United States", delivers: true });
+    // Not the Californian rate alone, as if the rest of the country had none.
+    expect(answer.areas).toEqual([
+      { onlyIn: ["California"], rates: [{ name: "Local", cost: "5.00 USD" }] },
+      { restOfTheCountry: true, rates: [{ name: "Worldwide", cost: "40.00 USD" }] },
+    ]);
+  });
+
+  it("says nothing is set up, and passes on no pick, when Shopify was read and holds no rates", async () => {
+    const picks = {
+      area: "Shipping area: ships internationally.",
+      cost: "Shipping cost: free on every order.",
+      dispatch: "Dispatch: orders usually ship the same business day.",
+    };
+    const context = { shippingPicks: picks, shippingNote: "We ship worldwide for 9.99.", storefront: storefrontLists(["US"], ["US"]) };
+    const empty = async (): Promise<ShippingRates> => ({ state: "live", model: "markets", zones: [], otherProfiles: false, truncated: false });
+
+    for (const args of [{}, { country: "US" }]) {
+      const answer = await run(args, { ...context, shippingRates: empty });
+      expect(answer).toMatchObject({ ratesAvailable: false, dispatch: picks.dispatch });
+      expect(answer.note).toContain("list no delivery zone or rate right now");
+      // The picks for area and cost are for when Shopify cannot be asked. It was asked.
+      expect(answer).not.toHaveProperty("fromTheStoreOwner");
+      expect(answer).not.toHaveProperty("delivers");
+      expect(JSON.stringify(answer)).not.toMatch(/free on every order|ships internationally|9\.99/);
+    }
+    expect(context.storefront.calls).toHaveLength(0);
+
+    // Zones that could not all be read are not "none": that is still "could not be read".
+    const unread = async (): Promise<ShippingRates> => ({ ...(await empty()), model: "profiles", truncated: true });
+    const answer = await run({ country: "US" }, { ...context, shippingRates: unread });
+    expect(answer).toMatchObject({ ratesAvailable: false, delivers: true });
+    expect(answer.fromTheStoreOwner).toContain("Shipping cost: free on every order.");
   });
 
   it("asks which country is meant instead of guessing at one it does not recognise", async () => {

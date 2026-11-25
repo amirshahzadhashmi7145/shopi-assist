@@ -574,8 +574,21 @@ export function readMarketShipping(
     const countries = [...entry.whole].filter(
       (code) => !nested.some((other) => other.whole.has(code)),
     );
-    // A country named whole has no need of its parts listed as well.
-    const parts = [...entry.parts].filter(([code]) => !countries.includes(code));
+    // A country named whole has no need of its parts listed as well. And as
+    // with whole countries, what a nested market takes is that market's: the
+    // parts it names, or every part where it takes the country whole.
+    const parts = [...entry.parts]
+      .filter(
+        ([code]) => !countries.includes(code) && !nested.some((other) => other.whole.has(code)),
+      )
+      .map(
+        ([code, names]) =>
+          [
+            code,
+            names.filter((name) => !nested.some((other) => other.parts.get(code)?.includes(name))),
+          ] as const,
+      )
+      .filter(([, names]) => names.length > 0);
     if (!countries.length && !parts.length && !entry.everywhere) continue;
 
     const zone: ShippingZone = {
@@ -637,10 +650,17 @@ export function rateText(rate: ShippingRate): string {
   }`;
 }
 
-/** The zones that deliver to a country: those naming it, or else those taking "the rest of the world". */
+/**
+ * The zones that deliver to a country: those naming it, or else those taking
+ * "the rest of the world". Where the country is named only in part (some
+ * provinces or states), the rest of it is "the rest of the world" too, so
+ * those zones come along.
+ */
 export function zonesFor(rates: ShippingRates, countryCode: string): ShippingZone[] {
   const named = rates.zones.filter((zone) => zone.countries.includes(countryCode));
-  return named.length ? named : rates.zones.filter((zone) => zone.restOfWorld);
+  const rest = rates.zones.filter((zone) => zone.restOfWorld && !named.includes(zone));
+  if (!named.length) return rest;
+  return named.some((zone) => !zone.parts?.[countryCode]) ? named : [...named, ...rest];
 }
 
 /** Whether a zone has anything to deliver with: a rate, or options the checkout shows. */
@@ -741,7 +761,7 @@ export interface ShippingView {
   otherProfiles: boolean;
   /** How soon orders are handed to the carrier, in words. Empty when Shopify does not say. */
   processing: string;
-  /** Every rate shown carries its own delivery time, so no other answer is needed for it. */
+  /** Every rate the store has carries its own delivery time, so no other answer is needed for it. */
   deliveryTimes: boolean;
 }
 
@@ -793,6 +813,7 @@ export function shippingForPage(rates: ShippingRates): ShippingView {
         ? ""
         : `Orders are handed to the carrier ${processingText(rates.processingDays)}.`,
     deliveryTimes:
+      !rates.truncated &&
       quoted.length > 0 &&
       quoted.every((rate) => Boolean(rate.delivery)) &&
       !delivering.some((zone) => zone.more),

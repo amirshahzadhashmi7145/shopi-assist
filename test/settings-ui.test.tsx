@@ -570,6 +570,12 @@ describe("what Shopify already knows is shown, not asked", () => {
     expect(timed.isShown("deliveryTime")).toBe(false);
     expect(timed.field("deliveryTime").closest("form")).not.toBeNull();
     expect(timed.host.textContent).toContain("Delivers to United States.");
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // With markets that were not read, the ones read cannot speak for all: still asked.
+    const cut = open({ shipping: { ...onMarkets([united]), truncated: true } });
+    expect(cut.isShown("deliveryTime")).toBe(true);
   });
 
   it("says so when Shopify has more zones than were read, instead of giving a count that is too low", () => {
@@ -605,6 +611,18 @@ describe("what Shopify already knows is shown, not asked", () => {
     expect(page.host.textContent).toContain("No shipping zones or rates are set up in Shopify yet.");
     expect(page.isShown("shippingFee")).toBe(true);
     expect(page.isShown("shipsTo")).toBe(true);
+    // Shopify was read, so the page does not say it could not be: it says what the pick is for.
+    expect(page.field("shipsTo").getAttribute("details")).toBe(
+      "Shopify lists no country you deliver to yet. This pick is the assistant's answer only if Shopify can't be read.",
+    );
+    expect(page.host.textContent).toContain("Your picks below are its answer only if Shopify can't be read.");
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // The same on a store that keeps its shipping with its markets and has set none up.
+    const markets = open({ shipping: { ...NO_SHIPPING_RATES, state: "live", model: "markets" } });
+    expect(markets.field("shipsTo").getAttribute("details")).toContain("Shopify lists no country you deliver to yet.");
+    expect(markets.host.textContent).not.toContain("couldn't be read for the countries");
   });
 
   it("takes cash on delivery as offered once the assistant takes those orders itself", () => {

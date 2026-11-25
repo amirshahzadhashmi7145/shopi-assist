@@ -167,6 +167,25 @@ const getShippingInfo = defineTool({
         ? " A rate with no delivery time of its own takes the store's usual one, given as usualDeliveryTime."
         : "";
 
+    if (
+      rates.state === "live" &&
+      rates.zones.length === 0 &&
+      !rates.truncated &&
+      !rates.otherProfiles
+    ) {
+      // Shopify was read, and holds no delivery zone or rate for the store.
+      // The owner's picks for area and cost are for when Shopify cannot be
+      // asked: here it was asked, and they would promise what its checkout
+      // has no way to give.
+      return {
+        output: {
+          ratesAvailable: false,
+          ...dispatch,
+          note: "The store's shipping settings in Shopify list no delivery zone or rate right now. Say that you cannot give delivery details at the moment and that the checkout shows what is available, and suggest contacting the store. Never guess a price or a delivery country.",
+        },
+      };
+    }
+
     if (rates.state !== "live" || rates.zones.length === 0) {
       // The rates cannot be read. Where the store delivers may still be told
       // by the Storefront API, and what the store owner picked or wrote is

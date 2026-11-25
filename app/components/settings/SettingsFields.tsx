@@ -444,7 +444,7 @@ function ShippingRatesLine({ shipping, shop }: { shipping: ShippingView; shop: s
     return (
       <SyncedLine
         label="Shipping rates"
-        value="No shipping zones or rates are set up in Shopify yet. Your pick below is used until there are."
+        value="No shipping zones or rates are set up in Shopify yet. Until there are, the assistant has none to quote and tells shoppers the checkout shows what is available. Your picks below are its answer only if Shopify can't be read."
         state="missing"
       >
         {settingsLink("Set up shipping in Shopify")}
@@ -629,11 +629,14 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
           <Reveal open={countries.length === 0 && !everywhereElse}>
             <Pick
               name="shipsTo"
-              label={knowsCountries ? "Where you ship, until then" : "Shipping regions"}
+              label={fromZones ? "Where you ship, until then" : "Shipping regions"}
               details={
-                knowsCountries
-                  ? "Used until your shipping settings in Shopify list some countries."
-                  : "Shopify couldn't be read for the countries you deliver to, so pick here."
+                shipping.state === "live"
+                  ? // Shopify was read: it is the pick that has no say, not Shopify.
+                    "Shopify lists no country you deliver to yet. This pick is the assistant's answer only if Shopify can't be read."
+                  : fromZones
+                    ? "Used until your shipping zones in Shopify list some countries."
+                    : "Shopify couldn't be read for the countries you deliver to, so pick here."
               }
               value={settings.shipsTo}
               options={policyOptions("shipsTo")}
