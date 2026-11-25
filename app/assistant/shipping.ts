@@ -79,7 +79,11 @@ export interface ShippingRates {
   zones: ShippingZone[];
   /** Some products, or an app the store uses, have delivery rates of their own, apart from these. */
   otherProfiles: boolean;
-  /** The store has more zones than were read. */
+  /**
+   * The zones here are not known to be all of them: Shopify had more than it
+   * returned, or part of its answer was not shaped as expected. An empty
+   * `zones` with this unset means Shopify was read and holds none.
+   */
   truncated: boolean;
   /**
    * Business days the store takes to hand an order to the carrier, as set in
@@ -131,6 +135,13 @@ function page(connection: unknown): { nodes: Loose[]; more: boolean } {
     more: isObject(connection.pageInfo) && connection.pageInfo.hasNextPage === true,
   };
 }
+
+/**
+ * Whether a list came back as one, with nothing in it but objects. A list
+ * that did not is not an empty list: what it should have held is unknown.
+ */
+const isListOfObjects = (value: unknown): value is Loose[] =>
+  Array.isArray(value) && value.every(isObject);
 
 const clean = (value: unknown, max: number): string =>
   typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
@@ -285,11 +296,16 @@ function readProfileRate(method: Loose): ShippingRate | null {
 export function readShippingProfile(data: unknown): Pick<ShippingRates, "zones" | "truncated"> {
   const profile = isObject(data) && isObject(data.deliveryProfile) ? data.deliveryProfile : {};
   const zones = new Map<string, ShippingZone>();
-  let truncated = false;
+  // No profile, or no list of its location groups: nothing was read, which
+  // is not the same as a profile with no zones.
+  let truncated = !isListOfObjects(profile.profileLocationGroups);
 
   for (const group of objects(profile.profileLocationGroups)) {
     const found = page(group.locationGroupZones);
     if (found.more) truncated = true;
+    if (!isObject(group.locationGroupZones) || !isListOfObjects(group.locationGroupZones.nodes)) {
+      truncated = true;
+    }
 
     for (const node of found.nodes) {
       const raw = isObject(node.zone) ? node.zone : {};
@@ -495,7 +511,10 @@ export function readMarketShipping(
   data: unknown,
 ): Pick<ShippingRates, "zones" | "truncated" | "otherProfiles"> {
   const found = page(isObject(data) ? data.markets : null);
-  let truncated = found.more;
+  // No list of markets, or one with something else in it: not all was read,
+  // which is not the same as a store with no markets.
+  const listed = isObject(data) && isObject(data.markets) && isListOfObjects(data.markets.nodes);
+  let truncated = found.more || !listed;
   let otherProfiles = false;
 
   const byId = new Map<string, Loose>();
@@ -543,12 +562,18 @@ export function readMarketShipping(
 
   // Where each active market sells.
   const active = found.nodes
-    .filter((market) => market.status === "ACTIVE")
+    .filter((market) => {
+      // A market that does not say whether it is active may be selling somewhere.
+      if (typeof market.status !== "string") truncated = true;
+      return market.status === "ACTIVE";
+    })
     .map((market) => {
       const conditions = isObject(market.conditions) ? market.conditions : {};
       const regions = isObject(conditions.regionsCondition) ? conditions.regionsCondition : {};
       const listed = page(regions.regions);
       if (listed.more) truncated = true;
+      // An active market whose countries cannot be read sells somewhere unknown.
+      if (!isObject(regions.regions) || !isListOfObjects(regions.regions.nodes)) truncated = true;
 
       const whole = new Set<string>();
       const parts = new Map<string, string[]>();

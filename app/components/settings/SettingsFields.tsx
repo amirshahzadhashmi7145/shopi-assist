@@ -441,6 +441,18 @@ function ShippingRatesLine({ shipping, shop }: { shipping: ShippingView; shop: s
     );
   }
   if (shipping.zones.length === 0) {
+    // "None" only when everything was read. With more than could be read, or
+    // rates that some products or an app keep apart, there are rates: just
+    // none that could be read as the rate for every order.
+    if (shipping.truncated || shipping.otherProfiles) {
+      return (
+        <SyncedLine
+          label="Shipping rates"
+          value="Your shipping settings in Shopify couldn't be read as rates for every order: some products or an app have rates of their own, or there was more than could be read. The assistant tells shoppers the checkout shows the options, and uses your picks below where Shopify gives no answer."
+          state="unknown"
+        />
+      );
+    }
     return (
       <SyncedLine
         label="Shipping rates"
@@ -509,6 +521,8 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
   const knowsCountries = liveRates || fromZones;
   // More zones than were read: the countries found are some of them, not all.
   const atLeast = liveRates && shipping.truncated ? "at least " : "";
+  // Shopify was read, and everything it holds was: what it lists is the whole answer.
+  const readInFull = shipping.state === "live" && !shipping.truncated && !shipping.otherProfiles;
   const { cards, wallets } = paymentNames(facts);
   const paysWith = [...cards, ...wallets];
   const paymentState: SyncState =
@@ -614,11 +628,13 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
               <SyncedLine
                 label="Shipping regions"
                 value={
-                  liveRates
-                    ? "No country has a delivery option set in Shopify yet."
-                    : "No shipping zones found in Shopify."
+                  !liveRates
+                    ? "No shipping zones found in Shopify."
+                    : readInFull
+                      ? "No country has a delivery option set in Shopify yet."
+                      : "No country with a delivery option was found, but your shipping settings in Shopify couldn't be read in full."
                 }
-                state="missing"
+                state={liveRates && !readInFull ? "unknown" : "missing"}
               >
                 <s-link href={adminUrl(shop, "settings/shipping")} target="_top">
                   Set up shipping in Shopify
@@ -631,12 +647,14 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
               name="shipsTo"
               label={fromZones ? "Where you ship, until then" : "Shipping regions"}
               details={
-                shipping.state === "live"
+                readInFull
                   ? // Shopify was read: it is the pick that has no say, not Shopify.
                     "Shopify lists no country you deliver to yet. This pick is the assistant's answer only if Shopify can't be read."
-                  : fromZones
-                    ? "Used until your shipping zones in Shopify list some countries."
-                    : "Shopify couldn't be read for the countries you deliver to, so pick here."
+                  : shipping.state === "live"
+                    ? "The countries you deliver to couldn't be read from Shopify in full, so this pick is used where they can't be."
+                    : fromZones
+                      ? "Used until your shipping zones in Shopify list some countries."
+                      : "Shopify couldn't be read for the countries you deliver to, so pick here."
               }
               value={settings.shipsTo}
               options={policyOptions("shipsTo")}

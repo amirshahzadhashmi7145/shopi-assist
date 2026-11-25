@@ -272,9 +272,20 @@ describe("reading a store's shipping profiles", () => {
   });
 
   it("guesses nothing from an answer that is not shaped as expected", () => {
-    for (const odd of [null, {}, { deliveryProfile: null }, { deliveryProfile: { profileLocationGroups: "x" } }]) {
-      expect(readShippingProfile(odd)).toEqual({ zones: [], truncated: false });
+    // An answer that is not one is "not all read". It is never "no zones".
+    for (const odd of [
+      null,
+      {},
+      { deliveryProfile: null },
+      { deliveryProfile: { profileLocationGroups: "x" } },
+      { deliveryProfile: { profileLocationGroups: [{ locationGroupZones: null }] } },
+      { deliveryProfile: { profileLocationGroups: [{ locationGroupZones: { nodes: [null] } }] } },
+    ]) {
+      expect(readShippingProfile(odd)).toEqual({ zones: [], truncated: true });
     }
+    // A profile that really has no zones is a different thing, and is said to be read in full.
+    expect(readShippingProfile({ deliveryProfile: { profileLocationGroups: [] } })).toEqual({ zones: [], truncated: false });
+    expect(readShippingProfile(profile([[]]))).toEqual({ zones: [], truncated: false });
     const messy = profile([
       [
         zone("No countries", [], [method("Lost")]),
@@ -288,7 +299,9 @@ describe("reading a store's shipping profiles", () => {
         ]),
       ],
     ]);
-    const { zones } = readShippingProfile(messy);
+    const { zones, truncated } = readShippingProfile(messy);
+    // Zones and rates that make no sense are left out; the lists themselves were all there.
+    expect(truncated).toBe(false);
     expect(zones.map((entry) => entry.name)).toEqual(["Kept"]);
     expect(zones[0].rates.map(rateText)).toEqual([
       "No price: calculated at checkout",
@@ -599,9 +612,19 @@ describe("reading a store's markets", () => {
   });
 
   it("guesses nothing from an answer that is not shaped as expected", () => {
+    // An answer that is not one is "not all read". It is never "no markets".
     for (const odd of [null, "markets", {}, { markets: null }, { markets: { nodes: "x" } }, { markets: { nodes: [null, 5, "m"] } }]) {
-      expect(readMarketShipping(odd)).toEqual({ zones: [], truncated: false, otherProfiles: false });
+      expect(readMarketShipping(odd)).toEqual({ zones: [], truncated: true, otherProfiles: false });
     }
+    // A store that really has no markets selling by region is a different thing.
+    expect(readMarketShipping(markets([]))).toEqual({ zones: [], truncated: false, otherProfiles: false });
+    // A market that does not say whether it is active, or where it sells, may sell somewhere.
+    expect(readMarketShipping(markets([market("Odd", [inCountry("NO")], shipping([]), { status: undefined })])).truncated).toBe(true);
+    expect(readMarketShipping(markets([market("Nowhere said", [], shipping([]), { conditions: null })]))).toEqual({
+      zones: [],
+      truncated: true,
+      otherProfiles: false,
+    });
     const read = readMarketShipping(
       markets([
         // No word on delivery at all: unknown, which is not the same as none.
@@ -620,6 +643,8 @@ describe("reading a store's markets", () => {
       ]),
     );
     expect(read.zones.map((entry) => entry.name)).toEqual(["Unknown", "Kept"]);
+    // Every list was a list: what is odd inside them is left out, and the read is whole.
+    expect(read.truncated).toBe(false);
     expect(read.zones[0]).toMatchObject({ rates: [], more: true });
     // A rate without a price is left out; one without a name still has its price.
     expect(read.zones[1].rates.map(rateText)).toEqual(["Delivery: 3.00 USD"]);
@@ -858,6 +883,13 @@ describe("the rates on the Settings page", () => {
 
     expect(rows({ ...NO_SHIPPING_RATES, state: "no_access" }).rates?.tone).toBe("warning");
     expect(rows({ ...NO_SHIPPING_RATES, state: "live" }).rates?.value).toBe("None set up yet");
+    // "None" only when everything was read.
+    for (const partly of [{ truncated: true }, { otherProfiles: true }]) {
+      expect(rows({ ...NO_SHIPPING_RATES, state: "live", model: "markets", ...partly })).toMatchObject({
+        rates: { value: "Couldn't be read in full", tone: "neutral" },
+        regions: { value: "Couldn't be read in full", tone: "neutral" },
+      });
+    }
     expect(rows(NO_SHIPPING_RATES).rates?.tone).toBe("neutral");
     // Without rates passed in, the row is simply not there.
     expect(syncedRows(facts).some((entry) => entry.label === "Shipping rates")).toBe(false);
@@ -1166,6 +1198,26 @@ describe("the shipping tool", () => {
       { onlyIn: ["California"], rates: [{ name: "Local", cost: "5.00 USD" }] },
       { restOfTheCountry: true, rates: [{ name: "Worldwide", cost: "40.00 USD" }] },
     ]);
+
+    // Delivery switched off for the part: it is named as having none, and the
+    // rest of the country's rate is not passed off as reaching it.
+    const closed = market("California", [inPart("US", "CA", "California")], shipping([], { isEnabled: false }), under("International"));
+    const partOff = await run({ country: "US" }, { shippingRates: onMarkets(markets([world, closed])) });
+    expect(partOff).toMatchObject({ country: "United States", delivers: true });
+    expect(partOff).not.toHaveProperty("rates");
+    expect(partOff.areas).toEqual([
+      { onlyIn: ["California"], delivers: false },
+      { restOfTheCountry: true, rates: [{ name: "Worldwide", cost: "40.00 USD" }] },
+    ]);
+    expect(partOff.note).toContain("say so plainly where an area has no delivery");
+
+    // The other way round: only the part is delivered to.
+    const countryOff = market("United States", [inCountry("US")], shipping([], { isEnabled: false }));
+    const partOnly = await run({ country: "US" }, { shippingRates: onMarkets(markets([countryOff, california])) });
+    expect(partOnly.areas).toEqual([
+      { restOfTheCountry: true, delivers: false },
+      { onlyIn: ["California"], rates: [{ name: "Local", cost: "5.00 USD" }] },
+    ]);
   });
 
   it("says nothing is set up, and passes on no pick, when Shopify was read and holds no rates", async () => {
@@ -1193,6 +1245,12 @@ describe("the shipping tool", () => {
     const answer = await run({ country: "US" }, { ...context, shippingRates: unread });
     expect(answer).toMatchObject({ ratesAvailable: false, delivers: true });
     expect(answer.fromTheStoreOwner).toContain("Shipping cost: free on every order.");
+
+    // Nor is an answer from Shopify that could not be made sense of: nothing
+    // in it says the store has no rates.
+    const garbled = await run({ country: "US" }, { ...context, shippingRates: onMarkets({ markets: { nodes: "?" } }) });
+    expect(garbled.note).toContain("could not be read from its settings just now");
+    expect(garbled.note).not.toContain("list no delivery zone or rate");
   });
 
   it("asks which country is meant instead of guessing at one it does not recognise", async () => {

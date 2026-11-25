@@ -80,7 +80,12 @@ export function syncedRows(
       tone: "warning",
     });
   } else if (shipping?.state === "live") {
-    rows.push({ label: "Shipping rates", value: "None set up yet", tone: "warning" });
+    // "None" only when everything was read.
+    rows.push(
+      shipping.truncated || shipping.otherProfiles
+        ? { label: "Shipping rates", value: "Couldn't be read in full", tone: "neutral" }
+        : { label: "Shipping rates", value: "None set up yet", tone: "warning" },
+    );
   } else if (shipping) {
     rows.push({ label: "Shipping rates", value: unknown, tone: "neutral" });
   }
@@ -99,7 +104,9 @@ export function syncedRows(
             tone: "success",
           }
         : countries.length === 0
-          ? { label: "Shipping regions", value: "No country has a delivery option yet", tone: "warning" }
+          ? truncated || shipping.otherProfiles
+            ? { label: "Shipping regions", value: "Couldn't be read in full", tone: "neutral" }
+            : { label: "Shipping regions", value: "No country has a delivery option yet", tone: "warning" }
           : {
               label: "Shipping regions",
               value: countries.length <= 3 && !truncated ? countries.join(", ") : counted,
@@ -112,7 +119,9 @@ export function syncedRows(
     // shipping to markets leaves behind. Better no list than that one.
     rows.push(
       shipping.state === "live"
-        ? { label: "Shipping regions", value: "None set up yet", tone: "warning" }
+        ? shipping.truncated || shipping.otherProfiles
+          ? { label: "Shipping regions", value: "Couldn't be read in full", tone: "neutral" }
+          : { label: "Shipping regions", value: "None set up yet", tone: "warning" }
         : {
             label: "Shipping regions",
             value: shipping.state === "no_access" ? "Shown once the permission is approved" : unknown,

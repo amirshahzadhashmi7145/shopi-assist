@@ -623,6 +623,16 @@ describe("what Shopify already knows is shown, not asked", () => {
     const markets = open({ shipping: { ...NO_SHIPPING_RATES, state: "live", model: "markets" } });
     expect(markets.field("shipsTo").getAttribute("details")).toContain("Shopify lists no country you deliver to yet.");
     expect(markets.host.textContent).not.toContain("couldn't be read for the countries");
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // Nothing read is not "nothing set up" when there was more than could be read.
+    const partly = open({ shipping: { ...NO_SHIPPING_RATES, state: "live", model: "markets", truncated: true } });
+    expect(partly.host.textContent).not.toContain("No shipping zones or rates are set up in Shopify yet.");
+    expect(partly.host.textContent).toContain("couldn't be read as rates for every order");
+    expect(partly.field("shipsTo").getAttribute("details")).toBe(
+      "The countries you deliver to couldn't be read from Shopify in full, so this pick is used where they can't be.",
+    );
   });
 
   it("takes cash on delivery as offered once the assistant takes those orders itself", () => {

@@ -255,7 +255,9 @@ const getShippingInfo = defineTool({
         const sold = restOnly ? (await storefrontCountries(context))?.markets : null;
         const notSoldThere = Boolean(sold && !sold.includes(asked));
         // Some zones cover only certain provinces or states of the country.
-        const split = usable.some((zone) => zone.parts?.[asked]);
+        // Then every zone is given with its own answer, one that delivers
+        // nothing included: its area must not pass for one the other rates reach.
+        const split = zones.some((zone) => zone.parts?.[asked]);
         const shown = split
           ? usable.flatMap((zone) => zone.rates.slice(0, MAX_RATES))
           : usable.flatMap((zone) => zone.rates).slice(0, MAX_RATES);
@@ -266,11 +268,15 @@ const getShippingInfo = defineTool({
             ...dispatch,
             ...(split
               ? {
-                  areas: usable.map((zone) => ({
+                  areas: zones.map((zone) => ({
                     ...(zone.parts?.[asked]
                       ? { onlyIn: zone.parts[asked] }
                       : { restOfTheCountry: true }),
-                    rates: zone.rates.slice(0, MAX_RATES).map(rateOut),
+                    ...(zone.rates.length
+                      ? { rates: zone.rates.slice(0, MAX_RATES).map(rateOut) }
+                      : zone.more
+                        ? { ratesShownAtCheckout: true }
+                        : { delivers: false }),
                   })),
                 }
               : { rates: shown.map(rateOut) }),
@@ -282,7 +288,7 @@ const getShippingInfo = defineTool({
                 : "Give these rates as they are, each with what it applies to."
             }${
               split
-                ? " Delivery within this country depends on the province or state: say which areas each set of rates is for, and ask the shopper for theirs when it matters."
+                ? " Delivery within this country depends on the province or state: say which areas each set of rates is for, say so plainly where an area has no delivery, and ask the shopper for theirs when it matters."
                 : ""
             }${usualTimeNote(shown)}${general}`,
           },
