@@ -5,6 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { getLlmStatus } from "../assistant/llm/index.server";
 import { getSettings, getSetupState, setupProgress } from "../assistant/settings.server";
 import { chatAnalytics } from "../assistant/store.server";
+import { ChatAnalyticsSection } from "../components/ChatAnalytics";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
@@ -40,129 +41,6 @@ const SETUP_ITEMS = [
   { key: "personality", label: "Name your assistant" },
   { key: "live", label: "Turn on the chat widget" },
 ] as const;
-
-type AnalyticsData = Awaited<ReturnType<typeof chatAnalytics>>;
-
-/** One number with what it counts under it. */
-function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
-  return (
-    <s-box padding="base" borderWidth="base" borderRadius="base">
-      <s-stack direction="block" gap="small-300">
-        <s-text color="subdued">{label}</s-text>
-        <s-heading>{value}</s-heading>
-        {note ? <s-text color="subdued">{note}</s-text> : null}
-      </s-stack>
-    </s-box>
-  );
-}
-
-/** How the storefront chat has been used lately, from the chats on record. */
-function Analytics({
-  analytics,
-  retentionDays,
-  chatOrders,
-}: {
-  analytics: AnalyticsData;
-  retentionDays: number;
-  chatOrders: boolean;
-}) {
-  const { conversations, shopperMessages, signedIn, ratings, ordersPlaced, perDay } = analytics;
-  const rated = ratings.up + ratings.down;
-  const busiest = Math.max(1, ...perDay.map((day) => day.count));
-  const share = (part: number, whole: number) =>
-    whole > 0 ? `${Math.round((part / whole) * 100)}%` : "0%";
-  const weekday = (date: string) =>
-    new Date(`${date}T00:00:00Z`).toLocaleDateString(undefined, { weekday: "short", timeZone: "UTC" });
-
-  return (
-    <s-section heading="How the chat is doing">
-      <s-stack direction="block" gap="base">
-        <s-grid gridTemplateColumns="repeat(auto-fit, minmax(150px, 1fr))" gap="base">
-          <Stat
-            label="Conversations, last 7 days"
-            value={String(conversations.last7)}
-            note={`${conversations.last30} in the last 30 days`}
-          />
-          <Stat
-            label="Shopper messages, 30 days"
-            value={String(shopperMessages)}
-            note={
-              conversations.last30 > 0
-                ? `${(shopperMessages / conversations.last30).toFixed(1)} per conversation`
-                : undefined
-            }
-          />
-          <Stat
-            label="Thumbs up, 30 days"
-            value={rated > 0 ? share(ratings.up, rated) : "No ratings"}
-            note={rated > 0 ? `${ratings.up} up, ${ratings.down} down` : "Nobody has rated a chat yet"}
-          />
-          <Stat
-            label="Signed-in customers, 30 days"
-            value={share(signedIn, conversations.last30)}
-            note={`${signedIn} of ${conversations.last30} conversations`}
-          />
-          {chatOrders || ordersPlaced > 0 ? (
-            <Stat
-              label="Orders placed in chat, 30 days"
-              value={String(ordersPlaced)}
-              note="Pay on delivery"
-            />
-          ) : null}
-        </s-grid>
-
-        <s-stack direction="block" gap="small-200">
-          <s-text color="subdued">Conversations started each day</s-text>
-          <div
-            role="img"
-            aria-label={`Conversations started each day: ${perDay
-              .map((day) => `${weekday(day.date)} ${day.count}`)
-              .join(", ")}`}
-            style={{ display: "flex", alignItems: "flex-end", gap: "8px", height: "96px" }}
-          >
-            {perDay.map((day) => (
-              <div
-                key={day.date}
-                title={`${day.date}: ${day.count}`}
-                style={{
-                  flex: "1 1 0",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "flex-end",
-                  gap: "4px",
-                  height: "100%",
-                  fontSize: "12px",
-                  color: "#616161",
-                }}
-              >
-                <span>{day.count}</span>
-                <div
-                  style={{
-                    width: "100%",
-                    maxWidth: "48px",
-                    height: `${Math.max(2, Math.round((day.count / busiest) * 52))}px`,
-                    borderRadius: "4px 4px 0 0",
-                    background: day.count > 0 ? "#303030" : "#d4d4d4",
-                  }}
-                />
-                <span>{weekday(day.date)}</span>
-              </div>
-            ))}
-          </div>
-        </s-stack>
-
-        <s-stack direction="inline" gap="base" alignItems="center">
-          <s-link href="/app/conversations">View conversations</s-link>
-          <s-text color="subdued">
-            Counted from the chats on record, which are kept for {retentionDays}{" "}
-            {retentionDays === 1 ? "day" : "days"}. Days are in UTC.
-          </s-text>
-        </s-stack>
-      </s-stack>
-    </s-section>
-  );
-}
 
 export default function Home() {
   const {
@@ -236,7 +114,7 @@ export default function Home() {
         </s-banner>
       )}
 
-      <Analytics analytics={analytics} retentionDays={retentionDays} chatOrders={chatOrders} />
+      <ChatAnalyticsSection analytics={analytics} retentionDays={retentionDays} chatOrders={chatOrders} />
 
       <s-section heading="Setup">
         <s-stack direction="block" gap="base">

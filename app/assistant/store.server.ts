@@ -283,6 +283,11 @@ export interface ChatAnalytics {
   ratings: { up: number; down: number };
   /** Pay-on-delivery orders placed through the chat in the last 30 days. */
   ordersPlaced: number;
+  /**
+   * The chats of the last 30 days by how much the shopper wrote: one
+   * message, two to four, or five and more.
+   */
+  lengths: { one: number; few: number; many: number };
   /** Chats started on each of the last 7 days, oldest first. Days are in UTC. */
   perDay: Array<{ date: string; count: number }>;
 }
@@ -304,7 +309,7 @@ export async function chatAnalytics(
   const since7 = new Date(today - 6 * DAY_MS);
   const chats = { shop, audience: "shopper", isPreview: false } as const;
 
-  const [last30, signedIn, rated, shopperMessages, ordersPlaced, week] = await Promise.all([
+  const [last30, signedIn, rated, shopperMessages, ordersPlaced, week, written] = await Promise.all([
     db.conversation.count({ where: { ...chats, createdAt: { gte: since30 } } }),
     db.conversation.count({
       where: { ...chats, createdAt: { gte: since30 }, customerId: { not: null } },
@@ -324,7 +329,17 @@ export async function chatAnalytics(
       where: { ...chats, createdAt: { gte: since7 } },
       select: { createdAt: true },
     }),
+    db.message.groupBy({
+      by: ["conversationId"],
+      where: { role: "user", conversation: { ...chats, createdAt: { gte: since30 } } },
+      _count: { _all: true },
+    }),
   ]);
+  const lengths = { one: 0, few: 0, many: 0 };
+  for (const chat of written) {
+    const messages = chat._count._all;
+    lengths[messages <= 1 ? "one" : messages <= 4 ? "few" : "many"] += 1;
+  }
 
   const perDay = Array.from({ length: 7 }, (_, index) => ({
     date: new Date(since7.getTime() + index * DAY_MS).toISOString().slice(0, 10),
@@ -342,6 +357,7 @@ export async function chatAnalytics(
     signedIn,
     ratings: { up: ratedAs("up"), down: ratedAs("down") },
     ordersPlaced,
+    lengths,
     perDay,
   };
 }

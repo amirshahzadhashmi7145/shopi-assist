@@ -202,6 +202,8 @@ describe("chat analytics", () => {
       ratings: { up: 3, down: 1 },
       // Placed through the chat, not just looked up in it.
       ordersPlaced: 2,
+      // How much shoppers wrote in each: 2, 1, 3, 1 and 2 messages.
+      lengths: { one: 2, few: 3, many: 0 },
       perDay: [
         { date: "2026-11-18", count: 1 },
         { date: "2026-11-19", count: 0 },
