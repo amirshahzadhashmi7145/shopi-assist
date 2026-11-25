@@ -3,22 +3,29 @@ import { z } from "zod";
 
 import prisma from "../db.server";
 import { DEFAULT_ASSISTANT_NAME, DEFAULT_GREETING } from "./assistant-defaults";
+import {
+  ABOUT_STORE_CHOICES,
+  CUSTOM_PREFIX,
+  MAX_CUSTOM_ANSWER,
+  POLICY_CHOICES,
+  RETURN_CONDITIONS,
+  SHIPPING_FEES_WITH_AMOUNT,
+  cleanTopicAnswers,
+  describeReturnConditions,
+  type ReturnCondition,
+  type TopicAnswers,
+} from "./setting-options";
+import { NO_FACTS, type StoreFacts } from "./store-facts";
 
+// The lists themselves live in setting-options.ts, which the settings pages
+// share. Re-exported for the code that has always found them here.
+export { POLICY_CHOICES };
 
 const text = (max: number, label: string) =>
   z
     .string()
     .trim()
     .max(max, `Keep ${label} under ${max.toLocaleString("en-US")} characters.`);
-
-/** Dropdown choices. The empty string always means "not set". */
-export const POLICY_CHOICES = {
-  returnWindow: ["", "none", "7", "14", "30", "60", "90"],
-  returnShipping: ["", "customer", "free"],
-  processingTime: ["", "same_day", "1_2", "3_5"],
-  deliveryTime: ["", "2_4", "3_5", "5_8", "7_14"],
-  shipsTo: ["", "domestic", "international"],
-} as const;
 
 /**
  * What the pay-on-delivery order form asks for, as in Shopify's own checkout
@@ -33,6 +40,31 @@ export const ORDER_FORM_CHOICES = {
 const choice = <T extends readonly [string, ...string[]]>(values: T) =>
   z.enum(values, "Choose one of the listed options.");
 
+/** An amount of money as typed: "50" or "4.99". Empty means none given. */
+const AMOUNT = /^\d{1,7}(?:\.\d{1,2})?$/;
+
+/**
+ * Answers to common questions, by topic. A listed answer is stored by its
+ * value, the merchant's own words behind "custom:". Anything else (an unknown
+ * topic, an answer no longer offered) is dropped rather than refused.
+ */
+const topicsSchema = z
+  .record(z.string(), z.string(), "Choose one of the listed answers.")
+  .superRefine((answers, context) => {
+    const tooLong = Object.values(answers).some(
+      (answer) =>
+        answer.startsWith(CUSTOM_PREFIX) &&
+        answer.length - CUSTOM_PREFIX.length > MAX_CUSTOM_ANSWER,
+    );
+    if (tooLong) {
+      context.addIssue({
+        code: "custom",
+        message: `Keep your own answers under ${MAX_CUSTOM_ANSWER} characters.`,
+      });
+    }
+  })
+  .transform((answers): TopicAnswers => cleanTopicAnswers(answers));
+
 export const settingsSchema = z.object({
   enabled: z.boolean(),
   instructions: text(2000, "instructions"),
@@ -43,11 +75,13 @@ export const settingsSchema = z.object({
     .int("Use a whole number of days.")
     .min(1, "Keep conversations for at least 1 day.")
     .max(365, "Keep conversations for at most 365 days."),
-  // Business knowledge the merchant writes during setup.
+  // What the merchant adds in their own words. All optional.
+  aboutStore: choice(ABOUT_STORE_CHOICES),
   businessDescription: text(1500, "the description"),
-  returnPolicy: text(1500, "the returns summary"),
-  shippingInfo: text(1500, "the shipping summary"),
+  returnPolicy: text(1500, "the returns note"),
+  shippingInfo: text(1500, "the shipping note"),
   faq: text(3000, "this"),
+  topics: topicsSchema,
   // Personality.
   assistantName: text(40, "the name"),
   greeting: text(300, "the welcome message"),
@@ -67,12 +101,25 @@ export const settingsSchema = z.object({
   orderAddress2: choice(ORDER_FORM_CHOICES.orderAddress2),
   orderPaymentName: text(60, "the payment method's name"),
   orderPaymentNote: text(300, "the payment instructions"),
-  // Quick policy picks.
+  // Policy picks.
   returnWindow: choice(POLICY_CHOICES.returnWindow),
+  returnConditions: z
+    .array(z.enum(RETURN_CONDITIONS, "Choose from the listed conditions."))
+    .transform((picked): ReturnCondition[] =>
+      RETURN_CONDITIONS.filter((condition) => picked.includes(condition)),
+    ),
   returnShipping: choice(POLICY_CHOICES.returnShipping),
+  exchanges: choice(POLICY_CHOICES.exchanges),
+  refundMethod: choice(POLICY_CHOICES.refundMethod),
   processingTime: choice(POLICY_CHOICES.processingTime),
   deliveryTime: choice(POLICY_CHOICES.deliveryTime),
   shipsTo: choice(POLICY_CHOICES.shipsTo),
+  shippingFee: choice(POLICY_CHOICES.shippingFee),
+  shippingAmount: z
+    .string()
+    .trim()
+    .refine((value) => value === "" || AMOUNT.test(value), "Enter an amount like 50 or 4.99."),
+  codAvailable: choice(POLICY_CHOICES.codAvailable),
 });
 
 export type AssistantSettings = z.infer<typeof settingsSchema>;
@@ -85,10 +132,12 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   orderLookupEnabled: false,
   orderLookupByNumber: false,
   retentionDays: 30,
+  aboutStore: "shopify",
   businessDescription: "",
   returnPolicy: "",
   shippingInfo: "",
   faq: "",
+  topics: {},
   assistantName: DEFAULT_ASSISTANT_NAME,
   greeting: DEFAULT_GREETING,
   allowAddToCart: true,
@@ -106,20 +155,41 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   orderPaymentName: "",
   orderPaymentNote: "",
   returnWindow: "",
+  returnConditions: [],
   returnShipping: "",
+  exchanges: "",
+  refundMethod: "",
   processingTime: "",
   deliveryTime: "",
   shipsTo: "",
+  shippingFee: "",
+  shippingAmount: "",
+  codAvailable: "",
 };
 
 /** Returns the stored value when it is a known choice, otherwise "not set". */
-function pick<T extends readonly string[]>(choices: T, value: string): T[number] {
-  return (choices as readonly string[]).includes(value) ? (value as T[number]) : "";
+function pick<T extends readonly string[]>(choices: T, value: unknown): T[number] {
+  return (choices as readonly unknown[]).includes(value) ? (value as T[number]) : "";
 }
 
 /** Returns the stored value when it is a known choice, otherwise the default (the first). */
 function pickOr<T extends readonly string[]>(choices: T, value: unknown): T[number] {
   return (choices as readonly unknown[]).includes(value) ? (value as T[number]) : choices[0];
+}
+
+/** A stored comma-separated list, keeping only what is still offered, in the list's own order. */
+function pickMany<T extends readonly string[]>(choices: T, value: unknown): Array<T[number]> {
+  const stored = typeof value === "string" ? value.split(",") : [];
+  return choices.filter((entry) => stored.includes(entry));
+}
+
+function storedTopics(value: unknown): TopicAnswers {
+  if (typeof value !== "string" || !value) return {};
+  try {
+    return cleanTopicAnswers(JSON.parse(value));
+  } catch {
+    return {};
+  }
 }
 
 /** Settings for one shop, falling back to defaults when none are saved yet. */
@@ -135,10 +205,12 @@ export async function getSettings(
     orderLookupEnabled: row.orderLookupEnabled,
     orderLookupByNumber: row.orderLookupByNumber,
     retentionDays: row.retentionDays,
+    aboutStore: pickOr(ABOUT_STORE_CHOICES, row.aboutStore),
     businessDescription: row.businessDescription,
     returnPolicy: row.returnPolicy,
     shippingInfo: row.shippingInfo,
     faq: row.faq,
+    topics: storedTopics(row.topics),
     // Left empty, or never set: the defaults.
     assistantName: row.assistantName || DEFAULT_ASSISTANT_NAME,
     greeting: row.greeting || DEFAULT_GREETING,
@@ -157,10 +229,26 @@ export async function getSettings(
     orderPaymentName: row.orderPaymentName ?? "",
     orderPaymentNote: row.orderPaymentNote ?? "",
     returnWindow: pick(POLICY_CHOICES.returnWindow, row.returnWindow),
+    returnConditions: pickMany(RETURN_CONDITIONS, row.returnConditions),
     returnShipping: pick(POLICY_CHOICES.returnShipping, row.returnShipping),
+    exchanges: pick(POLICY_CHOICES.exchanges, row.exchanges),
+    refundMethod: pick(POLICY_CHOICES.refundMethod, row.refundMethod),
     processingTime: pick(POLICY_CHOICES.processingTime, row.processingTime),
     deliveryTime: pick(POLICY_CHOICES.deliveryTime, row.deliveryTime),
     shipsTo: pick(POLICY_CHOICES.shipsTo, row.shipsTo),
+    shippingFee: pick(POLICY_CHOICES.shippingFee, row.shippingFee),
+    shippingAmount: AMOUNT.test(row.shippingAmount ?? "") ? row.shippingAmount : "",
+    codAvailable: pick(POLICY_CHOICES.codAvailable, row.codAvailable),
+  };
+}
+
+/** Settings as the database holds them: lists and answers as text. */
+function toRow(settings: Partial<AssistantSettings>) {
+  const { returnConditions, topics, ...plain } = settings;
+  return {
+    ...plain,
+    ...(returnConditions ? { returnConditions: returnConditions.join(",") } : {}),
+    ...(topics ? { topics: JSON.stringify(topics) } : {}),
   };
 }
 
@@ -184,10 +272,11 @@ export async function saveSettings(
     return { ok: false, errors };
   }
 
+  const row = toRow(parsed.data);
   await db.shopSettings.upsert({
     where: { shop },
-    create: { shop, ...parsed.data },
-    update: parsed.data,
+    create: { shop, ...row },
+    update: row,
   });
   return { ok: true, settings: await getSettings(shop, db) };
 }
@@ -207,6 +296,10 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "chatRatings",
 ];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
+/** Several values in one field, comma-separated, as a multiple-choice list submits them. */
+const LIST_FIELDS: readonly SettingsField[] = ["returnConditions"];
+/** Structured values, submitted as JSON. */
+const JSON_FIELDS: readonly SettingsField[] = ["topics"];
 
 /**
  * Reads the named settings fields out of a submitted form. Only the listed
@@ -219,10 +312,23 @@ export function settingsFromForm(
   const values: Record<string, unknown> = {};
   for (const field of fields) {
     if (BOOLEAN_FIELDS.includes(field)) {
-      // Checkboxes are only present in form data when ticked.
+      // Switches and checkboxes are only present in form data when on.
       values[field] = form.has(field);
     } else if (NUMBER_FIELDS.includes(field)) {
       values[field] = Number(form.get(field));
+    } else if (LIST_FIELDS.includes(field)) {
+      values[field] = form
+        .getAll(field)
+        .flatMap((entry) => String(entry).split(","))
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    } else if (JSON_FIELDS.includes(field)) {
+      try {
+        values[field] = JSON.parse(String(form.get(field) ?? "") || "{}");
+      } catch {
+        // Not readable: left for validation to refuse.
+        values[field] = null;
+      }
     } else {
       values[field] = String(form.get(field) ?? "");
     }
@@ -290,18 +396,27 @@ export function setupProgress(settings: AssistantSettings) {
       [
         settings.returnWindow,
         settings.returnShipping,
+        settings.exchanges,
+        settings.refundMethod,
         settings.processingTime,
         settings.deliveryTime,
         settings.shipsTo,
+        settings.shippingFee,
+        settings.codAvailable,
         settings.returnPolicy,
         settings.shippingInfo,
-      ].some((value) => value.length > 0),
+      ].some((value) => value.length > 0) || settings.returnConditions.length > 0,
     details:
-      settings.businessDescription.length > 0 ||
+      (settings.aboutStore === "custom" && settings.businessDescription.length > 0) ||
+      Object.keys(settings.topics).length > 0 ||
       settings.faq.length > 0 ||
       settings.instructions.length > 0,
   };
 }
+
+// ---------------------------------------------------------------------------
+// In words, for the assistant
+// ---------------------------------------------------------------------------
 
 const DAYS: Record<string, string> = {
   "1_2": "1 to 2",
@@ -312,24 +427,49 @@ const DAYS: Record<string, string> = {
 };
 
 /**
- * Turns the dropdown picks into plain sentences for the assistant. Only what
+ * Turns the policy picks into plain sentences for the assistant. Only what
  * the merchant actually chose is stated; unset picks say nothing.
+ *
+ * `facts` are what Shopify says about the store. Where Shopify has answered
+ * (the countries the store delivers to), its answer is used and the
+ * merchant's own pick for the same thing is left out.
  */
-export function describeQuickPolicies(settings: AssistantSettings): string {
+export function describeQuickPolicies(
+  settings: AssistantSettings,
+  facts: StoreFacts = NO_FACTS,
+): string {
   const lines: string[] = [];
+  const noReturns = settings.returnWindow === "none";
 
-  if (settings.returnWindow === "none") {
+  if (noReturns) {
     lines.push("Returns: this store does not accept returns.");
   } else if (settings.returnWindow) {
     lines.push(`Returns: accepted within ${settings.returnWindow} days of delivery.`);
   }
-  if (settings.returnWindow !== "none") {
+  if (!noReturns) {
+    const conditions = describeReturnConditions(settings.returnConditions);
+    if (conditions) lines.push(conditions);
     if (settings.returnShipping === "customer") {
       lines.push("Return shipping: paid by the customer.");
     } else if (settings.returnShipping === "free") {
       lines.push("Return shipping: free for the customer.");
     }
+    if (settings.refundMethod === "original") {
+      lines.push("Refunds: paid back to the original payment method once the store approves the return.");
+    } else if (settings.refundMethod === "credit") {
+      lines.push("Refunds: given as store credit once the store approves the return.");
+    } else if (settings.refundMethod === "either") {
+      lines.push(
+        "Refunds: the customer chooses between the original payment method and store credit, once the store approves the return.",
+      );
+    }
   }
+  if (settings.exchanges === "yes") {
+    lines.push("Exchanges: the store exchanges items. The shopper contacts the store to arrange one.");
+  } else if (settings.exchanges === "no") {
+    lines.push("Exchanges: not offered.");
+  }
+
   if (settings.processingTime === "same_day") {
     lines.push("Dispatch: orders usually ship the same business day.");
   } else if (settings.processingTime) {
@@ -340,11 +480,56 @@ export function describeQuickPolicies(settings: AssistantSettings): string {
       `Delivery: usually ${DAYS[settings.deliveryTime]} business days after the order ships.`,
     );
   }
-  if (settings.shipsTo === "domestic") {
-    lines.push("Shipping area: the store's home country only. No international shipping.");
-  } else if (settings.shipsTo === "international") {
-    lines.push("Shipping area: ships internationally.");
+  // Shopify's own list of countries says this better than a pick can.
+  if (facts.shipsTo === undefined) {
+    if (settings.shipsTo === "domestic") {
+      lines.push("Shipping area: the store's home country only. No international shipping.");
+    } else if (settings.shipsTo === "international") {
+      lines.push("Shipping area: ships internationally.");
+    }
+  }
+
+  const amount =
+    SHIPPING_FEES_WITH_AMOUNT.includes(settings.shippingFee) && settings.shippingAmount
+      ? `${settings.shippingAmount}${facts.currencyCode ? ` ${facts.currencyCode}` : " in the store's currency"}`
+      : "";
+  if (settings.shippingFee === "free") {
+    lines.push("Shipping cost: free on every order.");
+  } else if (settings.shippingFee === "free_over") {
+    lines.push(
+      amount
+        ? `Shipping cost: free on orders over ${amount}. Below that, the checkout shows the cost.`
+        : "Shipping cost: free above a minimum order value. The checkout shows that value and the cost below it.",
+    );
+  } else if (settings.shippingFee === "flat") {
+    lines.push(
+      amount
+        ? `Shipping cost: a flat ${amount} per order.`
+        : "Shipping cost: one flat rate per order, shown at checkout.",
+    );
+  } else if (settings.shippingFee === "calculated") {
+    lines.push("Shipping cost: calculated at checkout from the delivery address.");
+  }
+
+  // With pay-on-delivery orders in the chat the assistant is told about them
+  // in its own rules, so this pick would only repeat or contradict that.
+  if (!(settings.allowChatOrders && settings.allowCheckout)) {
+    if (settings.codAvailable === "yes") {
+      lines.push("Cash on delivery: available. The shopper chooses it at checkout.");
+    } else if (settings.codAvailable === "no") {
+      lines.push("Cash on delivery: not available.");
+    }
   }
 
   return lines.join("\n");
+}
+
+/**
+ * What the assistant is told the business is: the merchant's own words, or
+ * the store's description in Shopify, or nothing, as the merchant chose.
+ */
+export function aboutBusiness(settings: AssistantSettings, facts: StoreFacts = NO_FACTS): string {
+  if (settings.aboutStore === "custom") return settings.businessDescription;
+  if (settings.aboutStore === "shopify") return facts.description ?? "";
+  return "";
 }

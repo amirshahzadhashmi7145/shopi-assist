@@ -17,7 +17,15 @@ import {
   type DailyBudget,
   type RateLimiter,
 } from "./rate-limit";
-import { DEFAULT_SETTINGS, describeQuickPolicies, getSettings } from "./settings.server";
+import { describeTopics } from "./setting-options";
+import {
+  aboutBusiness,
+  DEFAULT_SETTINGS,
+  describeQuickPolicies,
+  getSettings,
+} from "./settings.server";
+import { describeStoreFacts, NO_FACTS } from "./store-facts";
+import { getStoredFacts, refreshStoreFactsIfStale } from "./store-facts.server";
 import { GRANT_LIFETIME_MS, grantSecret, signGrant } from "./action-grant.server";
 import { getShopName, isDevelopmentStore, ordersOfCustomer } from "./shopify-clients.server";
 import {
@@ -403,6 +411,15 @@ export async function handleChatTurn(
   };
   const tools = toolsFor(deps.tools, context);
   const shopName = await getShopName(input.shop, input.admin, now.getTime());
+  // What Shopify says about the store, as last stored. Never waited on here:
+  // when it is more than a day old a refresh starts in the background.
+  const facts = input.audience === "shopper" ? await getStoredFacts(input.shop, deps.db) : NO_FACTS;
+  void refreshStoreFactsIfStale(
+    input.shop,
+    facts,
+    { admin: input.admin, storefront: input.storefront },
+    { db: deps.db, now },
+  );
 
   const systemPrompt = buildSystemPrompt({
     audience: input.audience,
@@ -420,9 +437,11 @@ export async function handleChatTurn(
       changeItems: tools.some((tool) => tool.name === "change_order_items"),
     },
     signedIn,
-    quickPolicies: describeQuickPolicies(settings),
+    quickPolicies: describeQuickPolicies(settings, facts),
+    storeFacts: describeStoreFacts(facts),
+    topicNotes: describeTopics(settings.topics, facts.contactEmail),
     knowledge: {
-      businessDescription: settings.businessDescription,
+      businessDescription: aboutBusiness(settings, facts),
       returnPolicy: settings.returnPolicy,
       shippingInfo: settings.shippingInfo,
       faq: settings.faq,

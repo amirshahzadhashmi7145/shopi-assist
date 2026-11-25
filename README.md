@@ -38,14 +38,17 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 
 **For the merchant (inside Shopify admin)**
 
-- A **setup tour** that opens the first time the app is opened after install. It is ticking boxes and picking from lists, with nothing to type:
-  1. *What it can do:* add to cart, place an order, pay-on-delivery orders in the chat, order status, return requests. Ordering in chat needs both "add to cart" and "place an order" ticked; with only "place an order", the assistant shows the summary of the existing cart.
-  2. *Your policies:* return window, who pays return shipping, how fast orders ship, delivery time, where you ship.
-  3. *Go live.*
+- **Settings a merchant can finish without writing anything**, in five parts with a live preview beside them:
+  - *Assistant:* show or pause the chat, its name (Ava until changed), a welcome message picked from presets or written, chat ratings, how long transcripts are kept. Its tone is not a setting: always professional, polite and precise.
+  - *Shopping:* add to cart, checkout help, pay-on-delivery orders in the chat.
+  - *Orders:* order status, cancellations, address changes, edits to unpaid orders, return requests.
+  - *Policies:* return window, eligibility, return shipping, exchanges and refund method; processing and delivery time and shipping fees; cash on delivery. All picked from lists.
+  - *Knowledge:* answers to the questions shoppers ask most (sizing, warranty, care, compatibility, discount codes, support hours, contact), each picked from a list.
 
-  Every step is optional and saves on its own. The assistant is called Ava and greets shoppers with "Hi there! 👋 Welcome! How can I help you today?" until the merchant changes either. Its tone is not a setting: always professional, polite and precise.
-- **Settings without typing.** The Settings page is tick boxes and lists too. Everything that is typed (the name, the welcome message, what the store calls paying on delivery, a business description, common questions, extra guidance) is optional and sits folded away in one section at the bottom, "Your own wording".
-- **Try it as a shopper** on the last step: a test chat in the admin that behaves exactly like the storefront widget, so answers can be checked before going live. Test chats stay out of the conversation log.
+  Features are switches, and a feature's own options appear only once it is on (the order form's options only with pay-on-delivery, lookup by order number alone only with order status). A text box appears only where a name is needed, after "Custom" is picked, or when the merchant asks to add a note in their own words. One save covers all five parts.
+- **What Shopify already knows is read from Shopify, not asked for.** The app reads the store's published policies, the countries it ships to, the cards and wallets its checkout takes, its catalog size, its own description and its contact address, shows each as "Synced from Shopify" (or says what is missing, with a link to where it is set), and tells the assistant the public ones. Where Shopify has answered, the matching question is not asked at all. See "Store facts" under Security model.
+- **A live preview of the storefront chat** next to Settings. It follows the name, welcome message and switches before they are saved, and answers test messages with the real assistant as a shopper would get them. Test chats stay out of the conversation log.
+- A **setup tour** that opens the first time the app is opened after install, showing the same parts in three steps: *what it can do* (Shopping and Orders), *your policies*, and *go live* (turn the widget on, try the preview). Every step is optional and saves on its own.
 
 - A store assistant that answers from private store data: top-selling products by units or revenue, sales summaries, recent and unfulfilled orders, low stock, catalog search including drafts.
 - Setup page with a one-click link to turn the widget on, settings, and a log of shopper conversations.
@@ -85,7 +88,9 @@ App server  /proxy/chat
 | `app/routes/proxy.chat.tsx` | Storefront chat endpoint (app proxy) |
 | `app/routes/app.*.tsx` | Admin pages: home, setup tour, store assistant, conversations, settings |
 | `app/routes/app.preview.tsx` | "Try it as a shopper" chat for staff |
-| `app/components/AssistantFields.tsx` | The setup form fields, shared by the tour and Settings |
+| `app/components/settings/` | The five parts of Settings, shared by the Settings page and the tour; the live preview; the "From your Shopify store" panel |
+| `app/assistant/setting-options.ts` | Every list a merchant picks from, with what the assistant is told for each pick |
+| `app/assistant/store-facts.ts`, `store-facts.server.ts` | What is read from Shopify about the store, and when |
 | `app/routes/webhooks.*.tsx` | Uninstall, scope updates, mandatory privacy webhooks |
 | `app/assistant/engine.ts` | The tool-calling loop |
 | `app/assistant/tools/shopper.ts` | Tools available to storefront visitors |
@@ -109,6 +114,7 @@ App server  /proxy/chat
 - **Orders a chat already knows.** When the server places an order from a chat, or the shopper proves an order with its number and email, the server records that order against the conversation (order id and number only). Later questions in that same conversation are answered with the order number alone, matched on the recorded id. The record is written by the server, never taken from the browser; a conversation is only reachable with its own random visitor id; and it is deleted with the conversation. What the assistant is told about a placed order is its number, items, delivery option and total, never the name, phone number or address.
 - **Order lookup** is opt-in. The shopper gives the order number and one proof, the checkout email or the phone number on the order, and both must match exactly (a phone number may be written with or without its country code, but needs at least seven matching digits). It returns only status and tracking, and gives the same answer for "wrong proof" and "no such order". Guessing is throttled four ways: per chat turn, per visitor address, per email or phone, and per shop. Phone numbers are read from Shopify only when a shopper offers one as proof, and are never sent to the model or echoed back.
 - **Order status from the number alone is a separate opt-in, and deliberately weaker.** Order numbers are sequential, so with this on anyone can see the order date, payment status and delivery status of any order. The tracking number and link, which lead to where a parcel is going, are still only given with proof, and an order looked up this way is not treated as the shopper's afterwards. The per-address and per-shop throttles slow down walking through order numbers; they do not stop it. Leave it off unless that trade is acceptable.
+- **Store facts come from Shopify, with the merchant's own session, and only public ones reach the assistant.** When the merchant opens Settings or the setup tour, the app asks Shopify where the store ships, how its checkout can be paid, which policies it has published, how many products are active, and for the store's description and contact address, and keeps the answers with the shop's settings. The assistant is told only what a visitor could find out at the checkout anyway (delivery countries, payment methods) and, when the merchant leaves that choice on, the store's own description. The contact address is told to shoppers only if the merchant picks "by email" as their contact answer. A chat turn reads what is stored and never waits on Shopify for it; when the stored facts are more than a day old a refresh runs in the background, so answers do not rest on older ones. What one of Shopify's two APIs could not be reached for keeps its last known value.
 - **No Admin API for shoppers.** A shopper's chat turn is not handed an Admin API client at all unless the merchant has turned order lookup or return requests on.
 - **Tenant isolation.** Every database query filters by the authenticated shop. A conversation id from one shop (or one visitor) cannot be continued or read by another.
 - **No HTML from the model.** The widget renders replies with DOM text nodes and a tiny Markdown subset; only `http(s)` and same-site links become links.
@@ -170,10 +176,11 @@ npm run graphql-codegen     # validates every GraphQL query against Shopify's Ad
 
 What the merchant sets, and where:
 
-- **In the app (setup tour or Settings):** which abilities are on, the policy picks, the assistant's name and welcome message, optional free-text detail, pause chat, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
+- **In the app (setup tour or Settings):** which abilities are on, the policy picks, answers to common questions, the assistant's name and welcome message, optional notes in the merchant's own words, pause chat, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
+- **In Shopify, read by the app:** published policies, shipping countries, checkout payment methods, the store's description and contact address. They are changed in Shopify, never in the app.
 - **In the theme editor:** accent color, position and suggested questions. The name and welcome message are set in the app only.
 
-What the merchant writes is added to the assistant's instructions as "notes from the store owner", below the fixed rules, which it cannot override. It should be treated as public: a determined shopper can get the assistant to repeat it.
+What the merchant picks or writes is added to the assistant's instructions as "notes from the store owner", below the fixed rules, which it cannot override. It should be treated as public: a determined shopper can get the assistant to repeat it.
 
 To use a different model provider, implement the `LlmProvider` interface in `app/assistant/llm/provider.ts` and select it in `app/assistant/llm/index.server.ts`.
 
@@ -230,7 +237,8 @@ Not yet verified:
 - **Order changes on a real store.** Cancelling, changing the address and changing the items are tested against fake Shopify responses, and every query validates against Shopify's schema, but none has run on a store yet: the two scopes they need (`write_orders`, `write_order_edits`) had not been approved on the development store when this was written. Things to check there: that a cancelled order is restocked and the customer notified; that an item change on a pay-on-delivery order saves with the new total; that the address change keeps the phone number; and that a signed-in customer's orders are listed.
 - **Return requests on a real store.** The queries validate against Shopify's schema and the logic is tested with fake responses, but no real return request has been created yet. It needs a fulfilled order on the dev store.
 - The merchant assistant on a real store, including ShopifyQL responses (row format and access).
-- The admin pages inside the real Shopify admin: the setup tour, the shopper preview chat, Settings and the widget-status check. They type-check against Shopify's Polaris types and build, but have not been clicked through in a browser.
+- The admin pages inside the real Shopify admin: the setup tour, the shopper preview chat, Settings and the widget-status check. Settings and the tour have been drawn and clicked through in a browser with Shopify's own Polaris components (switches revealing their options, "Custom" revealing a text box, discard, what each form submits), but outside the admin: the "unsaved changes" bar, the toast after saving and the links into the Shopify admin have not been seen working there.
+- **Store facts on a real store.** The two queries validate against Shopify's schemas and the merging is tested with fake answers. Not yet seen: what a real store returns, in particular `shipsToCountries` for a store with a "rest of world" zone and the payment brands of a store on a real payment provider (a development store reports none).
 - The widget on a published theme after `npm run deploy` (so far it has only been seen in the dev preview).
 - **Which visitor address Shopify's proxy reports.** The per-address limits use the first `X-Forwarded-For` value. Shopify's docs say the proxy sets it to the client address but not whether a value sent by the visitor is replaced. On the dev store, request the proxy URL with `curl -H "X-Forwarded-For: 1.2.3.4"` and check the app log. If the visitor's value survives, the per-address limits can be dodged and the address must be read from a different position. The per-email, per-shop and token limits do not depend on it.
 

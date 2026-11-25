@@ -1,10 +1,15 @@
 /**
  * The setup tour. Opens automatically the first time the app is opened after
  * install and walks the merchant from "just installed" to "shoppers can chat
- * with an assistant that knows my store".
+ * with an assistant that knows my store" in three steps:
  *
- * Every step is optional and saves on its own: the assistant already works
- * from the catalog and published policies, so nothing here blocks going live.
+ *   1. switch on what the assistant may do,
+ *   2. pick the store's policies from lists,
+ *   3. turn the widget on and try it.
+ *
+ * Nothing is typed, every step is optional and each saves on its own: the
+ * assistant already works from the catalog and published policies, so nothing
+ * here blocks going live. The steps show the same parts as Settings.
  */
 import type { FormEvent } from "react";
 import type {
@@ -16,6 +21,7 @@ import { useActionData, useLoaderData, useNavigation, useSubmit } from "react-ro
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { getLlmStatus } from "../assistant/llm/index.server";
+import { fieldsOf, type SectionKey } from "../assistant/setting-options";
 import {
   getSettings,
   getSetupState,
@@ -24,31 +30,27 @@ import {
   saveSettings,
   settingsFromForm,
   setupProgress,
+  type AssistantSettings,
   type SettingsErrors,
-  type SettingsField,
 } from "../assistant/settings.server";
-import { AssistantChat } from "../components/AssistantChat";
-import {
-  AbilityFields,
-  FIELD_GROUPS,
-  QuickPolicyFields,
-} from "../components/AssistantFields";
+import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
+import { syncStoreFactsForPage } from "../assistant/store-facts.server";
+import { SettingsFields } from "../components/settings/SettingsFields";
+import { LivePreview } from "../components/settings/StorefrontPreview";
+import { SyncedFromShopify } from "../components/settings/SyncedFromShopify";
+import { useSettingsDraft } from "../components/settings/useSettingsDraft";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
+import { factClients } from "../facts-clients.server";
 import { authenticate } from "../shopify.server";
 
+/** Each step and the parts of Settings it shows. The last step saves nothing. */
 const STEPS = [
-  { key: "abilities", title: "What it can do" },
-  { key: "policies", title: "Your policies" },
-  { key: "live", title: "Go live" },
-] as const;
+  { key: "abilities", title: "What it can do", sections: ["shopping", "orders"] },
+  { key: "policies", title: "Your policies", sections: ["policies"] },
+  { key: "live", title: "Go live", sections: [] },
+] as const satisfies ReadonlyArray<{ key: string; title: string; sections: readonly SectionKey[] }>;
 
 const LAST_STEP = STEPS.length;
-
-/** Fields each step is allowed to save. The last step saves nothing. */
-const STEP_FIELDS: Record<number, readonly SettingsField[]> = {
-  1: FIELD_GROUPS.abilities,
-  2: FIELD_GROUPS.quickPolicies,
-};
 
 function clampStep(value: unknown): number {
   const step = Math.trunc(Number(value));
@@ -56,15 +58,20 @@ function clampStep(value: unknown): number {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
 
   const state = await getSetupState(shop);
   // Remember that the tour has been seen, so the app stops opening on it.
   if (!state.started) await markSetupStarted(shop);
 
-  const settings = await getSettings(shop);
-  const llm = getLlmStatus();
+  const [settings, synced] = await Promise.all([
+    getSettings(shop),
+    // The first thing the tour shows is what the store already told us.
+    factClients(shop, admin).then((clients) =>
+      syncStoreFactsForPage(shop, clients, { maxAgeMs: 60 * 1000 }),
+    ),
+  ]);
 
   return {
     step: clampStep(new URL(request.url).searchParams.get("step")),
@@ -72,9 +79,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // eslint-disable-next-line no-undef
     apiKey: process.env.SHOPIFY_API_KEY || "",
     settings,
+    facts: factsForPage(synced.facts),
+    reached: synced.reached,
     progress: setupProgress(settings),
     completed: state.completed,
-    llmReady: llm.ready,
+    llmReady: getLlmStatus().ready,
   };
 };
 
@@ -88,8 +97,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return redirect("/app");
   }
 
-  const fields = STEP_FIELDS[step];
-  if (fields) {
+  const fields = fieldsOf(STEPS[step - 1].sections);
+  if (fields.length) {
     const result = await saveSettings(session.shop, settingsFromForm(form, fields));
     if (!result.ok) return { errors: result.errors };
   }
@@ -100,14 +109,59 @@ type FormSubmitEvent =
   | FormEvent<HTMLFormElement>
   | (SubmitEvent & { currentTarget: HTMLFormElement });
 
-const PREVIEW_SUGGESTIONS = [
-  "What are your best sellers?",
-  "What's your return policy?",
-  "How long does shipping take?",
-];
+/** One step's switches and lists, with its own copy of what has been picked. */
+function StepForm({
+  step,
+  sections,
+  settings,
+  facts,
+  errors,
+  shop,
+  saving,
+  onSubmit,
+}: {
+  step: number;
+  sections: readonly SectionKey[];
+  settings: AssistantSettings;
+  facts: StoreFactsView;
+  errors: SettingsErrors;
+  shop: string;
+  saving: boolean;
+  onSubmit: (event: FormSubmitEvent) => void;
+}) {
+  const draft = useSettingsDraft(settings);
+  return (
+    <form onSubmit={onSubmit} onInput={draft.handleInput} onReset={draft.reset}>
+      <input type="hidden" name="step" value={step} />
+      <s-stack direction="block" gap="base">
+        <SettingsFields
+          show={sections}
+          settings={settings}
+          facts={facts}
+          errors={errors}
+          shop={shop}
+          draft={draft}
+        />
+        <s-stack direction="inline" gap="small">
+          {step > 1 && (
+            <s-button href={`/app/setup?step=${step - 1}`} variant="tertiary">
+              Back
+            </s-button>
+          )}
+          <s-button type="submit" variant="primary" {...(saving ? { loading: true } : {})}>
+            Save and continue
+          </s-button>
+          <s-button href={`/app/setup?step=${step + 1}`} variant="tertiary">
+            Skip this step
+          </s-button>
+        </s-stack>
+      </s-stack>
+    </form>
+  );
+}
 
 export default function Setup() {
-  const { step, shop, apiKey, settings, progress, completed, llmReady } =
+  const { step, shop, apiKey, settings, facts, reached, progress, completed, llmReady } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -131,118 +185,79 @@ export default function Setup() {
     live: embedStatus === "active",
   };
   const current = STEPS[step - 1];
-  const fieldProps = { settings, errors };
 
   return (
     <s-page heading="Set up your assistant">
-      <s-section heading={`Step ${step} of ${LAST_STEP}: ${current.title}`}>
-        <s-stack direction="block" gap="base">
+      <s-stack direction="block" gap="base">
+        <s-section heading={`Step ${step} of ${LAST_STEP}: ${current.title}`}>
           {step === 1 && (
             <s-paragraph>
-              Welcome! Your assistant already knows your products and reads your published
-              store policies. Setup is ticking boxes and picking from lists, with nothing to
-              type. It takes about two minutes and can be changed later in Settings.
+              Welcome! {settings.assistantName} already knows your products and reads your
+              published policies. Setup is switches and lists, with nothing to type. It takes
+              about two minutes, and everything can be changed later in Settings.
             </s-paragraph>
           )}
-
-          {step < LAST_STEP ? (
-            <form key={step} onSubmit={handleSubmit}>
-              <input type="hidden" name="step" value={step} />
-              <s-stack direction="block" gap="base">
-                {step === 1 && (
-                  <>
-                    <s-paragraph>Tick what you want the assistant to do for shoppers.</s-paragraph>
-                    <AbilityFields {...fieldProps} />
-                  </>
+          {step === 2 && (
+            <s-paragraph>
+              Pick the answers to what shoppers ask most. Anything left on Not set is answered
+              from your published policy pages instead.
+            </s-paragraph>
+          )}
+          {step === LAST_STEP && (
+            <s-stack direction="block" gap="small-200">
+              <s-stack direction="inline" gap="small" alignItems="center">
+                <s-heading>Turn on the chat widget</s-heading>
+                {embedStatus === "checking" && (
+                  <s-spinner size="base" accessibilityLabel="Checking widget status" />
                 )}
-                {step === 2 && (
-                  <>
-                    <s-paragraph>
-                      Pick the answers to the questions shoppers ask most. Leave any on
-                      &quot;Not set&quot; and the assistant uses your published policy pages
-                      for it instead.
-                    </s-paragraph>
-                    <QuickPolicyFields {...fieldProps} />
-                  </>
-                )}
-                <s-stack direction="inline" gap="small">
-                  {step > 1 && (
-                    <s-button href={`/app/setup?step=${step - 1}`} variant="tertiary">
-                      Back
-                    </s-button>
-                  )}
-                  <s-button
-                    type="submit"
-                    variant="primary"
-                    {...(saving ? { loading: true } : {})}
-                  >
-                    Save and continue
-                  </s-button>
-                  <s-button href={`/app/setup?step=${step + 1}`} variant="tertiary">
-                    Skip this step
-                  </s-button>
-                </s-stack>
+                {embedStatus === "active" && <s-badge tone="success">On</s-badge>}
+                {embedStatus === "inactive" && <s-badge tone="warning">Off</s-badge>}
               </s-stack>
-            </form>
-          ) : (
+              <s-paragraph>
+                This is the one step Shopify asks you to do yourself. The button opens your
+                theme editor with the chat already switched on. Press{" "}
+                <s-text type="strong">Save</s-text> there, and the chat bubble appears on every
+                page of your store. You can also set its color and position there.
+              </s-paragraph>
+              <s-stack direction="inline" gap="small">
+                <s-button
+                  href={activateWidgetUrl(shop, apiKey)}
+                  target="_top"
+                  variant={embedStatus === "active" ? "secondary" : "primary"}
+                >
+                  {embedStatus === "active" ? "Open widget settings" : "Turn on chat widget"}
+                </s-button>
+                <s-button href={`https://${shop}`} target="_blank" variant="tertiary">
+                  View storefront
+                </s-button>
+              </s-stack>
+            </s-stack>
+          )}
+        </s-section>
+
+        {step < LAST_STEP ? (
+          <StepForm
+            key={step}
+            step={step}
+            sections={current.sections}
+            settings={settings}
+            facts={facts}
+            errors={errors}
+            shop={shop}
+            saving={saving}
+            onSubmit={handleSubmit}
+          />
+        ) : (
+          <s-section heading="Try it as a shopper">
             <s-stack direction="block" gap="base">
-              <s-stack direction="block" gap="small-200">
-                <s-stack direction="inline" gap="small" alignItems="center">
-                  <s-heading>Turn on the chat widget</s-heading>
-                  {embedStatus === "checking" && (
-                    <s-spinner size="base" accessibilityLabel="Checking widget status" />
-                  )}
-                  {embedStatus === "active" && <s-badge tone="success">On</s-badge>}
-                  {embedStatus === "inactive" && <s-badge tone="warning">Off</s-badge>}
-                </s-stack>
-                <s-paragraph>
-                  This is the one step Shopify asks you to do yourself. The button opens your
-                  theme editor with the chat already switched on. Press{" "}
-                  <s-text type="strong">Save</s-text> there, and the chat bubble appears on
-                  every page of your store. You can also set its color and position there.
-                </s-paragraph>
-                <s-stack direction="inline" gap="small">
-                  <s-button
-                    href={activateWidgetUrl(shop, apiKey)}
-                    target="_top"
-                    variant={embedStatus === "active" ? "secondary" : "primary"}
-                  >
-                    {embedStatus === "active" ? "Open widget settings" : "Turn on chat widget"}
-                  </s-button>
-                  <s-button href={`https://${shop}`} target="_blank" variant="tertiary">
-                    View storefront
-                  </s-button>
-                </s-stack>
-              </s-stack>
-
-              <s-divider />
-
-              <s-stack direction="block" gap="small-200">
-                <s-heading>Try it as a shopper</s-heading>
-                {!llmReady && (
-                  <s-banner tone="warning" heading="The assistant can't answer right now">
-                    This is a problem on our side, not in your store. Please try again in a little while.
-                  </s-banner>
-                )}
-                <AssistantChat
-                  action="/app/preview"
+              <s-box maxInlineSize="420px">
+                <LivePreview
+                  settings={settings}
+                  unsaved={false}
+                  ready={llmReady}
                   fetcherKey="setup-preview"
-                  disabled={!llmReady}
-                  userLabel="You, as a shopper"
-                  placeholder="Ask what a shopper would ask"
-                  pendingText="Thinking…"
-                  suggestions={PREVIEW_SUGGESTIONS}
-                  intro={
-                    <s-paragraph>
-                      This is exactly what shoppers get, using everything you just saved. Test
-                      chats are not added to your conversation log.
-                    </s-paragraph>
-                  }
                 />
-              </s-stack>
-
-              <s-divider />
-
+              </s-box>
               <form onSubmit={handleSubmit}>
                 <input type="hidden" name="step" value={step} />
                 <input type="hidden" name="intent" value="finish" />
@@ -250,19 +265,15 @@ export default function Setup() {
                   <s-button href={`/app/setup?step=${step - 1}`} variant="tertiary">
                     Back
                   </s-button>
-                  <s-button
-                    type="submit"
-                    variant="primary"
-                    {...(saving ? { loading: true } : {})}
-                  >
+                  <s-button type="submit" variant="primary" {...(saving ? { loading: true } : {})}>
                     {completed ? "Done" : "Finish setup"}
                   </s-button>
                 </s-stack>
               </form>
             </s-stack>
-          )}
-        </s-stack>
-      </s-section>
+          </s-section>
+        )}
+      </s-stack>
 
       <s-section slot="aside" heading="Setup steps">
         <s-stack direction="block" gap="small">
@@ -281,11 +292,15 @@ export default function Setup() {
         </s-stack>
       </s-section>
 
+      <s-section slot="aside" heading="From your Shopify store">
+        <SyncedFromShopify facts={facts} reached={reached} />
+      </s-section>
+
       <s-section slot="aside" heading="Good to know">
         <s-paragraph>
-          Nothing here is required. You can leave the tour at any time and finish from the
-          Home page. Your assistant is called {settings.assistantName}; in Settings you can rename
-          it, change its welcome message, or add notes in your own words.
+          Nothing here is required. You can leave the tour at any time and finish from the Home
+          page. In Settings you can also rename {settings.assistantName}, change the welcome
+          message and pick answers to common questions.
         </s-paragraph>
       </s-section>
     </s-page>

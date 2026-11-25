@@ -164,9 +164,9 @@ export default function Home() {
               )}
             </s-stack>
             <s-paragraph>
-              Choose what the assistant can do (cart, checkout, order status, returns), pick
-              your return and shipping policies, give it a name, and set how long transcripts
-              are kept.
+              Switch features on or off, pick your policies and the answers to common
+              questions, and see what the assistant reads from your Shopify store. Nothing
+              needs typing.
             </s-paragraph>
             <s-stack direction="inline" gap="small">
               <s-button href="/app/settings">Open settings</s-button>

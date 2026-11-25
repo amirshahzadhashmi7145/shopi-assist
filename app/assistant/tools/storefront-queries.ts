@@ -309,6 +309,29 @@ export const PAYMENT_SETTINGS_QUERY = `#graphql
   }
 `;
 
+/**
+ * What the store's own settings say that a visitor could find out anyway:
+ * where it delivers, how the checkout can be paid, which policies it has
+ * published. Shown to the merchant as "synced from Shopify".
+ */
+export const STORE_FACTS_QUERY = `#graphql
+  query ShopiAssistStorefrontFacts {
+    shop {
+      name
+      description
+      shipsToCountries
+      paymentSettings {
+        acceptedCardBrands
+        supportedDigitalWallets
+      }
+      refundPolicy { id }
+      shippingPolicy { id }
+      privacyPolicy { id }
+      termsOfService { id }
+    }
+  }
+`;
+
 /** Every line of an order in one request, priced for the buyer's country. */
 export const VARIANTS_FOR_ORDER_QUERY = `#graphql
   query ShopiAssistVariantsForOrder($ids: [ID!]!, $country: CountryCode)

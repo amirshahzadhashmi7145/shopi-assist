@@ -1609,7 +1609,9 @@ describe("chat widget", () => {
 
       // Nothing the shopper typed is kept in the browser's storage.
       const stored = JSON.stringify({ ...window.localStorage }) + JSON.stringify({ ...window.sessionStorage });
-      expect(stored).not.toMatch(/Lovelace|Analytical|613/);
+      // The phone number is looked for whole: its area code alone also turns
+      // up in the saved chat's timestamp from time to time.
+      expect(stored).not.toMatch(/Lovelace|Analytical|613 555|555 0111|6135550111/);
       expect(stored).toContain("Order #1001 is placed");
     });
 

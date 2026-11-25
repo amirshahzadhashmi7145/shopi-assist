@@ -24,8 +24,12 @@ export interface PromptInput {
   };
   /** The shopper is signed in to their store account (Shopify says so). */
   signedIn?: boolean;
-  /** Plain sentences built from the merchant's dropdown picks. */
+  /** Plain sentences built from the merchant's policy picks. */
   quickPolicies?: string;
+  /** Plain sentences from the store's own Shopify settings: where it delivers, how to pay. */
+  storeFacts?: string;
+  /** Plain sentences built from the answers the merchant picked for common questions. */
+  topicNotes?: string;
   /** Written by the merchant in setup. Every field is optional. */
   knowledge?: {
     businessDescription?: string;
@@ -170,10 +174,12 @@ function shopperPrompt(input: PromptInput): string {
       : "- You cannot start a checkout. Tell shoppers to open their cart and check out there.";
 
   const ownerNotes =
-    ownerBlock("Store policies chosen by the owner", input.quickPolicies, 1000) +
+    ownerBlock("Store policies chosen by the owner", input.quickPolicies, 2000) +
+    ownerBlock("From the store's own Shopify settings", input.storeFacts, 2500) +
     ownerBlock("About the business", knowledge.businessDescription, 1500) +
     ownerBlock("Returns and exchanges", knowledge.returnPolicy, 1500) +
     ownerBlock("Shipping and delivery", knowledge.shippingInfo, 1500) +
+    ownerBlock("Answers the owner chose for common questions", input.topicNotes, 3000) +
     ownerBlock("Other things shoppers often ask", knowledge.faq, 3000) +
     ownerBlock("Additional guidance", input.merchantInstructions, 2000);
 

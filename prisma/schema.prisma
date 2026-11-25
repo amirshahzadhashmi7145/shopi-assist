@@ -92,12 +92,32 @@ model ShopSettings {
   orderPaymentName    String  @default("")
   orderPaymentNote    String  @default("")
 
+  // Where "About the business" comes from: the store's own description in
+  // Shopify ("shopify"), the merchant's words in businessDescription
+  // ("custom"), or nothing ("none").
+  aboutStore          String  @default("shopify")
+  // Answers picked for common questions, as JSON: { "sizing": "small",
+  // "hours": "custom:Weekdays 10 to 4" }. See setting-options.ts.
+  topics              String  @default("{}")
+  // What Shopify itself says about the store (where it ships, how shoppers
+  // can pay, which policies are published), as JSON. Read from Shopify, never
+  // typed by the merchant. See store-facts.ts.
+  storeFacts          String  @default("{}")
+
   // Quick policy picks from dropdowns. "" means "not set".
   returnWindow        String  @default("") // "none" | "7" | "14" | "30" | "60" | "90"
   returnShipping      String  @default("") // "customer" | "free"
   processingTime      String  @default("") // "same_day" | "1_2" | "3_5"
   deliveryTime        String  @default("") // "2_4" | "3_5" | "5_8" | "7_14"
   shipsTo             String  @default("") // "domestic" | "international"
+  // Comma-separated: "unused,packaging,tags,receipt,no_sale,no_custom".
+  returnConditions    String  @default("")
+  exchanges           String  @default("") // "yes" | "no"
+  refundMethod        String  @default("") // "original" | "credit" | "either"
+  shippingFee         String  @default("") // "free" | "free_over" | "flat" | "calculated"
+  // The order amount for "free_over", or the rate for "flat", in the store's currency.
+  shippingAmount      String  @default("")
+  codAvailable        String  @default("") // "yes" | "no"
 
   // Setup tour: opened automatically until it has been seen once.
   setupStartedAt      DateTime?
