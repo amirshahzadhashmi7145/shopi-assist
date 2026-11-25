@@ -18,7 +18,6 @@ import {
   readJsonBody,
   throughProxy,
 } from "../assistant/proxy-request.server";
-import { getEmailStatus } from "../assistant/email.server";
 import { getSettings } from "../assistant/settings.server";
 import { isDevelopmentStore, toGraphqlFn } from "../assistant/shopify-clients.server";
 import { authenticate } from "../shopify.server";
@@ -46,8 +45,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       chatOrders,
       // Whether shoppers can give the chat a thumbs-up or thumbs-down.
       ratings: settings.chatRatings,
-      // Whether sold-out products offer "Notify me": switched on, and email can be sent.
-      stockAlerts: settings.stockAlerts && getEmailStatus().ready,
       // Whether product cards offer "Buy now", which starts an order.
       buyNow: settings.allowCheckout && settings.allowAddToCart,
       // On a development store the order form offers to fill in test details.

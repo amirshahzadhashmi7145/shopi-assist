@@ -35,7 +35,6 @@ export const FIELD_GROUPS = {
     "allowOrderEdit",
     "allowReturns",
     "chatRatings",
-    "stockAlerts",
   ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
   personality: ["assistantName", "greeting", "tone"],
@@ -123,12 +122,6 @@ export function AbilityFields({ settings, errors = {} }: FieldGroupProps) {
         label="Let shoppers rate the chat"
         details="A thumbs-up and a thumbs-down appear under the chat once the assistant has answered. Ratings show on the Conversations page, so you can see which chats went well and read the ones that did not."
         {...checked(settings.chatRatings)}
-      />
-      <s-checkbox
-        name="stockAlerts"
-        label="Offer back-in-stock alerts"
-        details="A sold-out product, or a sold-out version of one, gets a 'Notify me' button in the chat. The shopper enters their email address in a form, and gets one email when it can be bought again. The address is used for that email only and is not shown to the assistant. The button appears once the app's email service is connected; your home page says when it is not."
-        {...checked(settings.stockAlerts)}
       />
     </s-stack>
   );

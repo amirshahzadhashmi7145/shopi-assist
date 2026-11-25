@@ -332,22 +332,6 @@ describe("system prompts", () => {
     expect(without).not.toMatch(/pay on delivery/);
   });
 
-  it("sends shoppers to the Notify me button for sold-out products, and never takes an email for it", () => {
-    const abilities = { addToCart: true, checkout: true, returns: false };
-
-    const withAlerts = buildSystemPrompt({
-      ...input,
-      audience: "shopper",
-      abilities: { ...abilities, stockAlerts: true },
-    });
-    expect(withAlerts).toMatch(/'Notify me' button/);
-    expect(withAlerts).toMatch(/never ask for an email address in the chat for it/);
-
-    // Off, or a widget without the button: the assistant promises nothing.
-    const without = buildSystemPrompt({ ...input, audience: "shopper", abilities });
-    expect(without).not.toMatch(/Notify me/);
-  });
-
   it("shows the assistant the shopper's cart as data, and says when it cannot see it", () => {
     const unknown = buildSystemPrompt({ ...input, audience: "shopper" });
     expect(unknown).toMatch(/you cannot see what is in it/);

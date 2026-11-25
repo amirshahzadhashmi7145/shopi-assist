@@ -390,23 +390,6 @@ export async function purgeExpiredConversations(
  * Applies every shop's retention period. Runs on a timer so that a shop with
  * no chat traffic still has its old transcripts removed on schedule.
  */
-/**
- * Drops back-in-stock alerts that have done their job or will never be
- * needed: sent a month ago, or waiting for half a year. For every shop: the
- * dates alone decide, so there is no shop to filter by.
- */
-export async function purgeStockAlerts(db: PrismaClient, now: Date = new Date()): Promise<number> {
-  const removed = await db.stockAlert.deleteMany({
-    where: {
-      OR: [
-        { notifiedAt: { lt: new Date(now.getTime() - 30 * DAY_MS) } },
-        { createdAt: { lt: new Date(now.getTime() - 180 * DAY_MS) } },
-      ],
-    },
-  });
-  return removed.count;
-}
-
 export async function purgeAllExpiredConversations(
   db: PrismaClient,
   defaultRetentionDays: number,
@@ -455,7 +438,6 @@ export async function deleteCustomerConversations(
 export async function deleteShopData(db: PrismaClient, shop: string): Promise<void> {
   await db.$transaction([
     db.conversation.deleteMany({ where: { shop } }),
-    db.stockAlert.deleteMany({ where: { shop } }),
     db.shopSettings.deleteMany({ where: { shop } }),
     db.session.deleteMany({ where: { shop } }),
   ]);
