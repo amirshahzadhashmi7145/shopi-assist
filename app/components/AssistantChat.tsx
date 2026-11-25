@@ -45,6 +45,8 @@ export function AssistantChat({
 
   const handleSubmit = (event: FormSubmitEvent) => {
     event.preventDefault();
+    // Nothing is sent while an answer is on its way, so what was typed stays.
+    if (pending) return;
     const form = event.currentTarget;
     send(String(new FormData(form).get("message") ?? ""));
     form.reset();

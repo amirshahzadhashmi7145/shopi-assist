@@ -38,7 +38,7 @@ export function syncedRows(
       ? { label: "Catalog", value: unknown, tone: "neutral" }
       : {
           label: "Catalog",
-          value: `${facts.products.toLocaleString("en-US")}${facts.productsCapped ? "+" : ""} active ${facts.products === 1 ? "product" : "products"}, with prices, stock and images`,
+          value: `${facts.products.toLocaleString("en-US")}${facts.productsCapped ? "+" : ""} active ${facts.products === 1 ? "product" : "products"}`,
           tone: facts.products > 0 ? "success" : "warning",
         },
   );

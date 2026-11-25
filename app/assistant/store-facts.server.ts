@@ -75,6 +75,15 @@ const ADMIN_KEYS = [
 ] as const;
 const STOREFRONT_KEYS = ["description", "shipsTo", "cards", "wallets", "policies"] as const;
 
+/** The facts kept for a shop, or an error when the database cannot be read. */
+async function readStoredFacts(shop: string, db: PrismaClient): Promise<StoreFacts> {
+  const row = await db.shopSettings.findUnique({
+    where: { shop },
+    select: { storeFacts: true },
+  });
+  return readStoreFacts(row?.storeFacts);
+}
+
 /**
  * The facts kept for a shop. Reads the database only. The facts add to what
  * the assistant knows and nothing depends on them, so a failure to read them
@@ -82,11 +91,7 @@ const STOREFRONT_KEYS = ["description", "shipsTo", "cards", "wallets", "policies
  */
 export async function getStoredFacts(shop: string, db: PrismaClient = prisma): Promise<StoreFacts> {
   try {
-    const row = await db.shopSettings.findUnique({
-      where: { shop },
-      select: { storeFacts: true },
-    });
-    return readStoreFacts(row?.storeFacts);
+    return await readStoredFacts(shop, db);
   } catch (error) {
     console.error(
       `[shopi-assist] store facts could not be read shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
@@ -99,9 +104,14 @@ export async function getStoredFacts(shop: string, db: PrismaClient = prisma): P
  * Asks Shopify and stores what it answers. Each API is asked on its own: what
  * one of them could not be reached for keeps its last known value, so a
  * passing outage does not make the assistant forget where the store ships.
+ * Only an answer from both counts as a full sync; after anything less, the
+ * facts are asked for again at the next chance.
  *
- * With `maxAgeMs`, facts stored more recently than that are returned as they
- * are and Shopify is not asked (`reached` is then null).
+ * With `maxAgeMs`, facts synced in full more recently than that are returned
+ * as they are and Shopify is not asked (`reached` is then null).
+ *
+ * Throws when the stored facts cannot be read: merging into facts that were
+ * not read would write over them.
  */
 export async function syncStoreFacts(
   shop: string,
@@ -110,7 +120,7 @@ export async function syncStoreFacts(
 ): Promise<{ facts: StoreFacts; reached: FactsReached | null }> {
   const db = options.db ?? prisma;
   const now = options.now ?? new Date();
-  const stored = await getStoredFacts(shop, db);
+  const stored = await readStoredFacts(shop, db);
 
   if (
     options.maxAgeMs &&
@@ -158,7 +168,7 @@ export async function syncStoreFacts(
     };
     if (!next.shopName && found.name) next.shopName = found.name;
   }
-  next.syncedAt = now.toISOString();
+  if (reached.admin && reached.storefront) next.syncedAt = now.toISOString();
 
   const facts = cleanStoreFacts(next);
   const serialised = JSON.stringify(facts);

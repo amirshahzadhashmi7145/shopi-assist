@@ -16,6 +16,7 @@ import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
+  ShouldRevalidateFunction,
 } from "react-router";
 import { useActionData, useLoaderData, useNavigation, useSubmit } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -104,6 +105,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   return redirect(`/app/setup?step=${Math.min(step + 1, LAST_STEP)}`);
 };
+
+/**
+ * A message sent in the preview chat changes nothing this page shows, so the
+ * page's data is not fetched again for it. Otherwise every test message would
+ * wait on the settings and, once a minute, on Shopify.
+ */
+export const shouldRevalidate: ShouldRevalidateFunction = ({
+  formAction,
+  defaultShouldRevalidate,
+}) => (formAction === "/app/preview" ? false : defaultShouldRevalidate);
 
 type FormSubmitEvent =
   | FormEvent<HTMLFormElement>

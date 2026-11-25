@@ -13,7 +13,11 @@
  */
 
 export interface StoreFacts {
-  /** When Shopify last answered, as an ISO time. Null: never asked. */
+  /**
+   * When Shopify last answered in full, as an ISO time. Null: never. An
+   * answer from only one of its two APIs brings its facts but leaves this as
+   * it was, so the rest is asked for again soon.
+   */
   syncedAt: string | null;
   shopName?: string;
   /** The store's own description of itself, as set in Shopify. */
@@ -213,7 +217,7 @@ export function describeStoreFacts(facts: StoreFacts): string {
     );
   } else if (countries.length > NAMED_COUNTRIES) {
     lines.push(
-      `Delivery area: this store delivers to ${countries.length} countries and regions worldwide. For one particular country, say that the checkout confirms whether delivery is available.`,
+      `Delivery area: this store delivers to ${countries.length} countries and regions, too many to list here. That is not everywhere: never say it ships worldwide or to any one country. For a particular country, say that the checkout confirms whether delivery is available.`,
     );
   }
 

@@ -18,6 +18,8 @@ import { DEFAULT_ASSISTANT_NAME } from "../../assistant/assistant-defaults";
 import {
   GREETING_PRESETS,
   NOT_SET,
+  ORDER_FORM_CHOICES,
+  ORDER_FORM_LABELS,
   PAYMENT_NAME_PRESETS,
   PAYMENT_NOTE_PRESETS,
   POLICY_CHOICES,
@@ -30,6 +32,7 @@ import {
   TOPICS,
   retentionLabel,
   sectionsWithErrors,
+  type OrderFormField,
   type PolicyField,
   type SectionKey,
 } from "../../assistant/setting-options";
@@ -67,6 +70,11 @@ const adminUrl = (shop: string, path: string) => `https://${shop}/admin/${path}`
 const policyOptions = (field: PolicyField) =>
   (POLICY_CHOICES[field] as readonly string[]).map(
     (value) => [value, (POLICY_LABELS[field] as Record<string, string>)[value]] as const,
+  );
+
+const orderFormOptions = (field: OrderFormField) =>
+  (ORDER_FORM_CHOICES[field] as readonly string[]).map(
+    (value) => [value, (ORDER_FORM_LABELS[field] as Record<string, string>)[value]] as const,
   );
 
 /** "A", "A and B", "A, B and 3 more". */
@@ -219,32 +227,21 @@ function ShoppingSection({ settings, facts, errors, draft }: SectionProps) {
                   name="orderFirstName"
                   label="Full name"
                   value={settings.orderFirstName}
-                  options={[
-                    ["optional", "Only require last name"],
-                    ["required", "Require first and last name"],
-                  ]}
+                  options={orderFormOptions("orderFirstName")}
                   error={errors.orderFirstName}
                 />
                 <Pick
                   name="orderCompany"
                   label="Company name"
                   value={settings.orderCompany}
-                  options={[
-                    ["hidden", "Don't include"],
-                    ["optional", "Optional"],
-                    ["required", "Required"],
-                  ]}
+                  options={orderFormOptions("orderCompany")}
                   error={errors.orderCompany}
                 />
                 <Pick
                   name="orderAddress2"
                   label="Address line 2"
                   value={settings.orderAddress2}
-                  options={[
-                    ["optional", "Optional"],
-                    ["hidden", "Don't include"],
-                    ["required", "Required"],
-                  ]}
+                  options={orderFormOptions("orderAddress2")}
                   error={errors.orderAddress2}
                 />
                 <Pick
@@ -529,12 +526,16 @@ function PoliciesSection({ settings, facts, errors, shop, draft }: SectionProps)
                 </s-link>
               </SyncedLine>
             ))}
-          {/* Asked only when Shopify could not be: its own list says it better. */}
-          <Reveal open={facts.shipsTo === undefined}>
+          {/* Asked only when Shopify has no list to give: its own says it better. */}
+          <Reveal open={countries.length === 0}>
             <Pick
               name="shipsTo"
-              label="Shipping regions"
-              details="Shopify couldn't be asked which countries you deliver to, so pick here."
+              label={facts.shipsTo === undefined ? "Shipping regions" : "Where you ship, until then"}
+              details={
+                facts.shipsTo === undefined
+                  ? "Shopify couldn't be asked which countries you deliver to, so pick here."
+                  : "Used until your shipping zones in Shopify list some countries."
+              }
               value={settings.shipsTo}
               options={policyOptions("shipsTo")}
               error={errors.shipsTo}

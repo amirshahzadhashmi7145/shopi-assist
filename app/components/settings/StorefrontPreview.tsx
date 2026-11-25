@@ -1,11 +1,13 @@
 /**
  * The storefront chat as shoppers will see it, inside the admin.
  *
- * It follows what the merchant picks before they save: the name, the welcome
- * message, and the questions it suggests (an order question appears when
- * order status is switched on, a return when returns are). Messages sent here
- * are answered by the real assistant, as a shopper, with the saved settings;
- * these test chats stay out of the conversation log.
+ * Its look follows what the merchant picks before they save: the name and
+ * the welcome message. Under it are questions to try, which change with what
+ * is switched on (an order question once order status is on, a return once
+ * returns are). They are for the merchant: the questions suggested to
+ * shoppers are a theme setting. Messages sent here are answered by the real
+ * assistant, as a shopper, with the saved settings; these test chats stay out
+ * of the conversation log.
  *
  * Drawn to match the widget (extensions/chat-widget) in plain markup: the
  * widget itself is a storefront script and does not run in the admin. The
@@ -116,18 +118,6 @@ const STYLES = {
     fontSize: 13,
   },
   note: { alignSelf: "flex-start", maxWidth: "88%", fontSize: 12, color: INK_SOFT },
-  suggestions: { display: "flex", flexWrap: "wrap", gap: 6, padding: "4px 12px 8px" },
-  chip: {
-    padding: "6px 11px",
-    border: `1px solid ${LINE}`,
-    borderRadius: 999,
-    background: "#ffffff",
-    color: INK,
-    font: "inherit",
-    fontSize: 13,
-    textAlign: "left",
-    cursor: "pointer",
-  },
   rating: {
     display: "flex",
     alignItems: "center",
@@ -173,9 +163,8 @@ const STYLES = {
 } satisfies Record<string, CSSProperties>;
 
 /**
- * Questions a shopper could open with, given what the assistant may do. They
- * change as features are switched on and off, so the preview shows what a
- * setting adds before it is saved.
+ * Questions worth trying, given what the assistant may do. They change as
+ * features are switched on and off, so the merchant sees what a setting adds.
  */
 export function previewSuggestions(settings: AssistantSettings): string[] {
   const questions = ["What are your best sellers?"];
@@ -190,7 +179,6 @@ export function previewSuggestions(settings: AssistantSettings): string[] {
 interface PreviewWindowProps {
   name: string;
   greeting: string;
-  suggestions: string[];
   entries: ChatEntry[];
   pending: boolean;
   /** Shoppers can rate the chat. */
@@ -205,7 +193,6 @@ interface PreviewWindowProps {
 export function PreviewWindow({
   name,
   greeting,
-  suggestions,
   entries,
   pending,
   ratings,
@@ -271,8 +258,8 @@ export function PreviewWindow({
               <div style={STYLES.bubble}>
                 <RichText text={entry.text} />
               </div>
-              {entry.cards?.map((card) => (
-                <div key={card.title} style={STYLES.card}>
+              {entry.cards?.map((card, index) => (
+                <div key={index} style={STYLES.card}>
                   <strong>{card.title}</strong>
                   <span>{card.price}</span>
                 </div>
@@ -291,22 +278,6 @@ export function PreviewWindow({
           </div>
         )}
       </div>
-
-      {entries.length === 0 && (
-        <div style={STYLES.suggestions}>
-          {suggestions.map((question) => (
-            <button
-              key={question}
-              type="button"
-              style={{ ...STYLES.chip, ...(busy ? { opacity: 0.6, cursor: "default" } : {}) }}
-              disabled={busy}
-              onClick={() => onSend(question)}
-            >
-              {question}
-            </button>
-          ))}
-        </div>
-      )}
 
       {ratings && answered && (
         <div style={STYLES.rating}>
@@ -348,6 +319,35 @@ export function PreviewWindow({
   );
 }
 
+/** Questions to try in the preview, as buttons under it. Not part of the widget. */
+export function TryAsking({
+  questions,
+  disabled,
+  onAsk,
+}: {
+  questions: string[];
+  disabled: boolean;
+  onAsk: (question: string) => void;
+}) {
+  return (
+    <s-stack direction="block" gap="small-200">
+      <s-text color="subdued">Try asking</s-text>
+      <s-stack direction="inline" gap="small-200">
+        {questions.map((question) => (
+          <s-button
+            key={question}
+            variant="secondary"
+            onClick={() => onAsk(question)}
+            {...(disabled ? { disabled: true } : {})}
+          >
+            {question}
+          </s-button>
+        ))}
+      </s-stack>
+    </s-stack>
+  );
+}
+
 /**
  * The preview wired to the real assistant. `settings` are the merchant's
  * picks as they stand; `unsaved` says they differ from what is saved, in
@@ -378,13 +378,17 @@ export function LivePreview({
       <PreviewWindow
         name={settings.assistantName.trim() || DEFAULT_ASSISTANT_NAME}
         greeting={settings.greeting.trim() || DEFAULT_GREETING}
-        suggestions={previewSuggestions(settings)}
         entries={thread.entries}
         pending={thread.pending}
         ratings={settings.chatRatings}
         blocked={blocked}
         onSend={thread.send}
         onReset={thread.startOver}
+      />
+      <TryAsking
+        questions={previewSuggestions(settings)}
+        disabled={blocked !== null || thread.pending}
+        onAsk={thread.send}
       />
       {blocked ? (
         <s-text color="subdued">{blocked}</s-text>
@@ -394,8 +398,9 @@ export function LivePreview({
         </s-text>
       ) : (
         <s-text color="subdued">
-          Answers come from the real assistant, as a shopper would get them. Test chats are not
-          added to your conversations.
+          Answers come from the real assistant, as a shopper would get them, and stay out of
+          your conversations. Colours, position and the questions suggested to shoppers are set
+          in the theme editor.
         </s-text>
       )}
     </s-stack>

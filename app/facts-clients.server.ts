@@ -16,7 +16,10 @@ export async function factClients(
   try {
     const client = await unauthenticated.storefront(shop);
     storefront = toGraphqlFn(client.storefront, "Storefront");
-  } catch {
+  } catch (error) {
+    console.error(
+      `[shopi-assist] storefront client unavailable for store facts shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
     storefront = undefined;
   }
   return { admin: toGraphqlFn(admin, "Admin"), storefront };

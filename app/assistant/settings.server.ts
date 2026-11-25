@@ -7,6 +7,7 @@ import {
   ABOUT_STORE_CHOICES,
   CUSTOM_PREFIX,
   MAX_CUSTOM_ANSWER,
+  ORDER_FORM_CHOICES,
   POLICY_CHOICES,
   RETURN_CONDITIONS,
   SHIPPING_FEES_WITH_AMOUNT,
@@ -19,23 +20,13 @@ import { NO_FACTS, type StoreFacts } from "./store-facts";
 
 // The lists themselves live in setting-options.ts, which the settings pages
 // share. Re-exported for the code that has always found them here.
-export { POLICY_CHOICES };
+export { ORDER_FORM_CHOICES, POLICY_CHOICES };
 
 const text = (max: number, label: string) =>
   z
     .string()
     .trim()
     .max(max, `Keep ${label} under ${max.toLocaleString("en-US")} characters.`);
-
-/**
- * What the pay-on-delivery order form asks for, as in Shopify's own checkout
- * settings. The first value of each is Shopify's default for a new store.
- */
-export const ORDER_FORM_CHOICES = {
-  orderFirstName: ["optional", "required"],
-  orderCompany: ["hidden", "optional", "required"],
-  orderAddress2: ["optional", "hidden", "required"],
-} as const;
 
 const choice = <T extends readonly [string, ...string[]]>(values: T) =>
   z.enum(values, "Choose one of the listed options.");
@@ -253,6 +244,21 @@ function toRow(settings: Partial<AssistantSettings>) {
 }
 
 /**
+ * An amount belongs to a shipping pick that takes one. Saved together with
+ * any other pick it is dropped: the page hides the amount then, and something
+ * left in it must not hold up the save or be said to shoppers later.
+ */
+function withoutUnusedAmount(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const values = input as Record<string, unknown>;
+  return typeof values.shippingFee === "string" &&
+    !SHIPPING_FEES_WITH_AMOUNT.includes(values.shippingFee) &&
+    "shippingAmount" in values
+    ? { ...values, shippingAmount: "" }
+    : input;
+}
+
+/**
  * Validates and stores some or all settings. Fields that are not passed keep
  * their current value, so each setup step can save just its own fields.
  * `shop` must come from an authenticated session.
@@ -262,7 +268,7 @@ export async function saveSettings(
   input: unknown,
   db: PrismaClient = prisma,
 ): Promise<{ ok: true; settings: AssistantSettings } | { ok: false; errors: SettingsErrors }> {
-  const parsed = settingsSchema.partial().safeParse(input);
+  const parsed = settingsSchema.partial().safeParse(withoutUnusedAmount(input));
   if (!parsed.success) {
     const errors: SettingsErrors = {};
     for (const issue of parsed.error.issues) {
@@ -480,8 +486,9 @@ export function describeQuickPolicies(
       `Delivery: usually ${DAYS[settings.deliveryTime]} business days after the order ships.`,
     );
   }
-  // Shopify's own list of countries says this better than a pick can.
-  if (facts.shipsTo === undefined) {
+  // Shopify's own list of countries says this better than a pick can. With
+  // no list, or an empty one, the merchant's pick is what there is.
+  if (!facts.shipsTo?.length) {
     if (settings.shipsTo === "domestic") {
       lines.push("Shipping area: the store's home country only. No international shipping.");
     } else if (settings.shipsTo === "international") {

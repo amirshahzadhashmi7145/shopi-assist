@@ -211,7 +211,6 @@ describe("store policies as picks", () => {
         shippingFee: "pigeon",
         codAvailable: "sometimes",
         returnConditions: ["unused", "sniffed"],
-        shippingAmount: "about fifty",
       },
       db,
     );
@@ -222,10 +221,13 @@ describe("store policies as picks", () => {
         "exchanges",
         "refundMethod",
         "returnConditions",
-        "shippingAmount",
         "shippingFee",
       ]);
-      expect(result.errors.shippingAmount).toBe("Enter an amount like 50 or 4.99.");
+    }
+    const amount = await saveSettings(SHOP_A, { shippingFee: "flat", shippingAmount: "about fifty" }, db);
+    expect(amount.ok).toBe(false);
+    if (!amount.ok) {
+      expect(amount.errors).toEqual({ shippingAmount: "Enter an amount like 50 or 4.99." });
     }
     for (const amount of ["4.999", "-5", "1e3", "12,50"]) {
       expect((await saveSettings(SHOP_A, { shippingAmount: amount }, db)).ok).toBe(false);
@@ -233,6 +235,19 @@ describe("store policies as picks", () => {
     for (const amount of ["", "0", "50", "4.99", "1234567.5"]) {
       expect((await saveSettings(SHOP_A, { shippingAmount: amount }, db)).ok).toBe(true);
     }
+  });
+
+  it("drops an amount saved with a shipping pick that has none, whatever was left in it", async () => {
+    // Typed while "flat rate" was picked, then the pick was changed: the box
+    // is hidden but still submitted. It must not block the save or linger.
+    const saved = await saveSettings(SHOP_A, { shippingFee: "calculated", shippingAmount: "1.2345" }, db);
+    expect(saved.ok).toBe(true);
+    expect((await getSettings(SHOP_A, db)).shippingAmount).toBe("");
+
+    // With a pick that takes one it is checked as before.
+    expect((await saveSettings(SHOP_A, { shippingFee: "flat", shippingAmount: "1.2345" }, db)).ok).toBe(false);
+    expect((await saveSettings(SHOP_A, { shippingFee: "flat", shippingAmount: "4.99" }, db)).ok).toBe(true);
+    expect(await getSettings(SHOP_A, db)).toMatchObject({ shippingFee: "flat", shippingAmount: "4.99" });
   });
 
   it("drops what is stored but no longer offered, instead of failing", async () => {
@@ -324,7 +339,10 @@ describe("store policies as picks", () => {
     const picked = { ...DEFAULT_SETTINGS, shipsTo: "international" as const };
     expect(describeQuickPolicies(picked, NO_FACTS)).toBe("Shipping area: ships internationally.");
     expect(describeQuickPolicies(picked, FACTS)).toBe("");
-    expect(describeQuickPolicies(picked, { syncedAt: FACTS.syncedAt, shipsTo: [] })).toBe("");
+    // An empty list is no answer: the pick is all there is to go on.
+    expect(describeQuickPolicies(picked, { syncedAt: FACTS.syncedAt, shipsTo: [] })).toBe(
+      "Shipping area: ships internationally.",
+    );
   });
 
   it("reads tick boxes, structured answers and switches out of a submitted form", () => {
@@ -480,7 +498,8 @@ describe("what Shopify says about the store", () => {
         String.fromCharCode(65 + (index % 26)) + String.fromCharCode(65 + Math.floor(index / 26)),
       ),
     });
-    expect(worldwide).toMatch(/^Delivery area: this store delivers to 60 countries and regions worldwide\./);
+    expect(worldwide).toMatch(/^Delivery area: this store delivers to 60 countries and regions, too many to list here\./);
+    expect(worldwide).toContain("never say it ships worldwide");
     expect(worldwide).toContain("the checkout confirms");
 
     // Never the contact address, the product count or anything else here.
@@ -554,9 +573,27 @@ describe("what Shopify says about the store", () => {
       contactEmail: "hello@alpine.example", // from the Admin API, as last known
       products: 42,
       shipsTo: ["CA"],
-      syncedAt: "2026-11-27T10:00:00.000Z",
+      // Half an answer is not a sync: the time of the last full one stands.
+      syncedAt: "2026-11-26T10:00:00.000Z",
     });
     expect(partial.facts).not.toHaveProperty("description");
+
+    // So the next page load asks again instead of trusting it for a minute.
+    const retry = { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer()) };
+    const retried = await syncStoreFacts(SHOP_B, retry, {
+      db,
+      now: new Date("2026-11-27T10:00:10Z"),
+      maxAgeMs: 60_000,
+    });
+    expect(retried.reached).toEqual({ admin: true, storefront: true });
+    await syncStoreFacts(
+      SHOP_B,
+      { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(new Error("offline")) },
+      { db, now: new Date("2026-11-27T10:02:00Z") },
+    );
+    const afterHalf = { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer()) };
+    await syncStoreFacts(SHOP_B, afterHalf, { db, now: new Date("2026-11-27T10:02:05Z"), maxAgeMs: 60_000 });
+    expect(afterHalf.storefront.calls).toHaveLength(1);
 
     // Nothing reachable: nothing changes, and the time of the last answer stays.
     const down = await syncStoreFacts(
@@ -582,6 +619,30 @@ describe("what Shopify says about the store", () => {
     } as unknown as PrismaClient;
 
     expect(await getStoredFacts(SHOP_A, broken)).toEqual(NO_FACTS);
+
+    // Facts that could not be read are never written over with half of them.
+    await storeFacts(SHOP_A, FACTS);
+    let written = 0;
+    const unreadable = {
+      shopSettings: {
+        findUnique: async () => {
+          throw new Error("database is locked");
+        },
+        upsert: async () => {
+          written += 1;
+        },
+      },
+    } as unknown as PrismaClient;
+    await expect(
+      syncStoreFacts(
+        SHOP_A,
+        { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(new Error("offline")) },
+        { db: unreadable },
+      ),
+    ).rejects.toThrow("database is locked");
+    expect(written).toBe(0);
+    expect(await getStoredFacts(SHOP_A, db)).toEqual(FACTS);
+
     const page = await syncStoreFactsForPage(
       SHOP_A,
       { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer()) },
@@ -635,7 +696,7 @@ describe("what Shopify says about the store", () => {
     const rows = (facts: StoreFacts) => syncedRows(factsForPage(facts));
     const tones = (facts: StoreFacts) => Object.fromEntries(rows(facts).map((row) => [row.label, row.tone]));
     expect(rows(FACTS).map((row) => `${row.label}: ${row.value}`)).toEqual([
-      "Catalog: 42 active products, with prices, stock and images",
+      "Catalog: 42 active products",
       "Policies: Published: Refund, Privacy",
       "Shipping regions: Canada, United States",
       "Payment methods: Visa, Mastercard, Shop Pay",
@@ -735,9 +796,10 @@ describe("what the assistant is told from Settings", () => {
     // This reply used what was stored.
     expect(system).toContain("this store delivers to United Kingdom.");
 
-    // The next one has Shopify's current answer.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect((await getStoredFacts(shop, db)).shipsTo).toEqual(["US", "CA"]);
+    // The next one has Shopify's current answer, once the refresh has landed.
+    await expect
+      .poll(async () => (await getStoredFacts(shop, db)).shipsTo, { timeout: 5000, interval: 20 })
+      .toEqual(["US", "CA"]);
     const next = await turn({ shop, visitorId: "visitor-0002" });
     expect(next).toContain("Canada, United States");
   });
@@ -785,7 +847,6 @@ describe("the settings pages on the server", () => {
       createElement(PreviewWindow, {
         name: "Ava",
         greeting: DEFAULT_SETTINGS.greeting,
-        suggestions: previewSuggestions(DEFAULT_SETTINGS),
         entries: [],
         pending: false,
         ratings: true,
@@ -795,7 +856,7 @@ describe("the settings pages on the server", () => {
       }),
     );
     expect(markup).toContain("Ava");
-    expect(markup).toContain("What are your best sellers?");
+    expect(markup).toContain(DEFAULT_SETTINGS.greeting);
     expect(markup).toContain("AI assistant. Answers can contain mistakes.");
   });
 });
@@ -867,6 +928,12 @@ describe("the merchant's unsaved picks", () => {
       returnConditions: ["unused"],
     });
     expect(sameDraft(resolveDraft(state), DEFAULT_SETTINGS)).toBe(false);
+
+    // Ticking a box off and on again is not a change, whatever order that leaves them in.
+    let ticks = initialDraft({ ...DEFAULT_SETTINGS, returnConditions: ["unused", "tags"] });
+    ticks = applyInput(ticks, control("returnConditions", "s-checkbox", { checked: false, value: "unused" }));
+    ticks = applyInput(ticks, control("returnConditions", "s-checkbox", { checked: true, value: "unused" }));
+    expect(resolveDraft(ticks).returnConditions).toEqual(["unused", "tags"]);
 
     // A control the page does not know changes nothing.
     const before = state;

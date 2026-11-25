@@ -12,6 +12,7 @@ import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
+  ShouldRevalidateFunction,
 } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -87,6 +88,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const errors: SettingsErrors = result.ok ? {} : result.errors;
   return { ok: result.ok, errors, reached: null };
 };
+
+/**
+ * A message sent in the preview chat changes nothing this page shows, so the
+ * page's data is not fetched again for it. Otherwise every test message would
+ * wait on the settings and, once a minute, on Shopify.
+ */
+export const shouldRevalidate: ShouldRevalidateFunction = ({
+  formAction,
+  defaultShouldRevalidate,
+}) => (formAction === "/app/preview" ? false : defaultShouldRevalidate);
 
 type FormSubmitEvent =
   | FormEvent<HTMLFormElement>

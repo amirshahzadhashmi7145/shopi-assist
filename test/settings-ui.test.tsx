@@ -7,7 +7,7 @@ import { SECTIONS, type SectionKey } from "../app/assistant/setting-options";
 import type { AssistantSettings, SettingsErrors } from "../app/assistant/settings.server";
 import { factsForPage, type StoreFacts } from "../app/assistant/store-facts";
 import { SectionNav, SettingsFields } from "../app/components/settings/SettingsFields";
-import { PreviewWindow } from "../app/components/settings/StorefrontPreview";
+import { PreviewWindow, TryAsking } from "../app/components/settings/StorefrontPreview";
 import { useSettingsDraft } from "../app/components/settings/useSettingsDraft";
 
 // The settings pages are drawn with Shopify's web components, which a test
@@ -397,6 +397,13 @@ describe("what Shopify already knows is shown, not asked", () => {
     expect(page.host.textContent).not.toContain("Synced from Shopify");
   });
 
+  it("asks as well when Shopify lists no shipping countries at all", () => {
+    const page = open({ facts: { ...FACTS, shipsTo: [] } });
+    expect(page.isShown("shipsTo")).toBe(true);
+    expect(page.host.textContent).toContain("No shipping zones found in Shopify.");
+    expect(page.field("shipsTo").getAttribute("label")).toBe("Where you ship, until then");
+  });
+
   it("points to Shopify for what the store has not set up there", () => {
     const page = open();
     const links = [...page.host.querySelectorAll("s-link")].filter(page.shown);
@@ -480,7 +487,6 @@ describe("the storefront preview", () => {
         <PreviewWindow
           name="Mia"
           greeting="Hello from Alpine!"
-          suggestions={["What are your best sellers?", "Where is my order?"]}
           entries={[]}
           pending={false}
           ratings
@@ -494,21 +500,51 @@ describe("the storefront preview", () => {
     return { host, sent };
   }
 
-  it("shows the name, the welcome and the questions the settings allow", () => {
+  it("shows the name and the welcome, and sends what is typed", () => {
     const { host, sent } = preview();
     expect(host.textContent).toContain("Mia");
     expect(host.textContent).toContain("Hello from Alpine!");
-    const chips = [...host.querySelectorAll<HTMLButtonElement>("button")].filter((button) =>
-      button.textContent?.includes("?"),
-    );
-    expect(chips.map((chip) => chip.textContent)).toEqual([
+    // Nothing to rate before the assistant has answered.
+    expect(host.textContent).not.toContain("How is this chat going?");
+
+    const input = host.querySelector<HTMLInputElement>('input[name="message"]')!;
+    input.value = "  Do you ship to Canada?  ";
+    act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(sent).toEqual(["  Do you ship to Canada?  "]);
+    expect(input.value).toBe("");
+  });
+
+  it("offers questions to try under the chat, not inside it", () => {
+    const { host } = preview();
+    // The widget's own suggested questions are a theme setting: none are made up here.
+    expect(host.querySelectorAll("[data-preview] button")).toHaveLength(2);
+
+    const tryHost = document.createElement("div");
+    document.body.appendChild(tryHost);
+    const tryRoot = createRoot(tryHost);
+    const asked: string[] = [];
+    const render = (disabled: boolean) =>
+      act(() =>
+        tryRoot.render(
+          <TryAsking
+            questions={["What are your best sellers?", "Where is my order?"]}
+            disabled={disabled}
+            onAsk={(question) => asked.push(question)}
+          />,
+        ),
+      );
+    render(false);
+    const buttons = () => [...tryHost.querySelectorAll("s-button")];
+    expect(buttons().map((button) => button.textContent)).toEqual([
       "What are your best sellers?",
       "Where is my order?",
     ]);
-    act(() => chips[1].click());
-    expect(sent).toEqual(["Where is my order?"]);
-    // Nothing to rate before the assistant has answered.
-    expect(host.textContent).not.toContain("How is this chat going?");
+    act(() => buttons()[1].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(asked).toEqual(["Where is my order?"]);
+
+    render(true);
+    expect(buttons().every((button) => button.hasAttribute("disabled"))).toBe(true);
+    act(() => tryRoot.unmount());
   });
 
   it("shows replies as text, never as markup, with the product cards under them", () => {

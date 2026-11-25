@@ -385,6 +385,29 @@ export const retentionLabel = (days: number) =>
 // Pay-on-delivery orders
 // ---------------------------------------------------------------------------
 
+/**
+ * What the pay-on-delivery order form asks for, as in Shopify's own checkout
+ * settings. The first value of each is Shopify's default for a new store.
+ */
+export const ORDER_FORM_CHOICES = {
+  orderFirstName: ["optional", "required"],
+  orderCompany: ["hidden", "optional", "required"],
+  orderAddress2: ["optional", "hidden", "required"],
+} as const;
+
+export type OrderFormField = keyof typeof ORDER_FORM_CHOICES;
+
+export const ORDER_FORM_LABELS: {
+  [Field in OrderFormField]: Record<(typeof ORDER_FORM_CHOICES)[Field][number], string>;
+} = {
+  orderFirstName: {
+    optional: "Only require last name",
+    required: "Require first and last name",
+  },
+  orderCompany: { hidden: "Don't include", optional: "Optional", required: "Required" },
+  orderAddress2: { optional: "Optional", hidden: "Don't include", required: "Required" },
+};
+
 /** What the order form can call paying on delivery. Empty is Shopify's own name. */
 export const PAYMENT_NAME_PRESETS: readonly string[] = ["Pay on delivery", "Cash on delivery"];
 

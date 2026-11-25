@@ -14,6 +14,7 @@ import {
   GREETING_PRESETS,
   PAYMENT_NAME_PRESETS,
   PAYMENT_NOTE_PRESETS,
+  RETURN_CONDITIONS,
   TOPICS,
   readTopicAnswer,
   type TopicAnswers,
@@ -179,6 +180,11 @@ export function resolveDraft(state: DraftState): AssistantSettings {
   const { values, ui } = state;
   return {
     ...values,
+    // In the list's own order, however the boxes were ticked: ticking one off
+    // and on again is not a change.
+    returnConditions: RETURN_CONDITIONS.filter((condition) =>
+      values.returnConditions.includes(condition),
+    ),
     greeting: fromMode(ui.greetingMode, ui.greetingText, GREETING_PRESETS),
     orderPaymentName: fromMode(ui.paymentNameMode, ui.paymentNameText, PAYMENT_NAME_PRESETS),
     orderPaymentNote: fromMode(ui.paymentNoteMode, ui.paymentNoteText, PAYMENT_NOTE_PRESETS),
