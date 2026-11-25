@@ -2403,7 +2403,17 @@ describe("chat widget", () => {
     expect(nextPage.$(".sa-title").textContent).toBe("Ava");
   });
 
-  it("keeps the theme editor's values when the app has none or cannot be reached", async () => {
+  it("is called Ava and welcomes shoppers before the app has said anything", () => {
+    configMock.mockImplementation(() => new Promise(() => {}));
+    // As the theme block mounts it: the name and welcome are not theme settings.
+    const widget = mountWidget({ title: "", greeting: "" });
+
+    expect(widget.$(".sa-title").textContent).toBe("Ava");
+    widget.launcher.click();
+    expect(widget.bubbles()).toEqual(["Hi there! 👋 Welcome! How can I help you today?"]);
+  });
+
+  it("keeps what it started with when the app has none or cannot be reached", async () => {
     configMock.mockImplementation(() => Promise.reject(new TypeError("offline")));
     const widget = mountWidget();
     await flush();

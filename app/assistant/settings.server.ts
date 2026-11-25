@@ -2,9 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 
 import prisma from "../db.server";
+import { DEFAULT_ASSISTANT_NAME, DEFAULT_GREETING } from "./assistant-defaults";
 
-export const TONES = ["friendly", "professional", "playful"] as const;
-export type Tone = (typeof TONES)[number];
 
 const text = (max: number, label: string) =>
   z
@@ -52,7 +51,6 @@ export const settingsSchema = z.object({
   // Personality.
   assistantName: text(40, "the name"),
   greeting: text(300, "the welcome message"),
-  tone: z.enum(TONES, "Choose one of the listed tones."),
   // What the assistant may do for shoppers.
   allowAddToCart: z.boolean(),
   allowCheckout: z.boolean(),
@@ -91,9 +89,8 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   returnPolicy: "",
   shippingInfo: "",
   faq: "",
-  assistantName: "",
-  greeting: "",
-  tone: "friendly",
+  assistantName: DEFAULT_ASSISTANT_NAME,
+  greeting: DEFAULT_GREETING,
   allowAddToCart: true,
   allowCheckout: true,
   allowReturns: false,
@@ -142,9 +139,9 @@ export async function getSettings(
     returnPolicy: row.returnPolicy,
     shippingInfo: row.shippingInfo,
     faq: row.faq,
-    assistantName: row.assistantName,
-    greeting: row.greeting,
-    tone: (TONES as readonly string[]).includes(row.tone) ? (row.tone as Tone) : "friendly",
+    // Left empty, or never set: the defaults.
+    assistantName: row.assistantName || DEFAULT_ASSISTANT_NAME,
+    greeting: row.greeting || DEFAULT_GREETING,
     allowAddToCart: row.allowAddToCart,
     allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
@@ -299,7 +296,6 @@ export function setupProgress(settings: AssistantSettings) {
         settings.returnPolicy,
         settings.shippingInfo,
       ].some((value) => value.length > 0),
-    personality: settings.assistantName.length > 0 || settings.greeting.length > 0,
     details:
       settings.businessDescription.length > 0 ||
       settings.faq.length > 0 ||

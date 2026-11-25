@@ -332,8 +332,10 @@
     this.config = {
       endpoint: data.endpoint || "/apps/shopi-assist/chat",
       stylesheet: data.stylesheet || "",
-      title: data.title || "Shopping assistant",
-      greeting: data.greeting || "Hi! How can I help?",
+      // The app's own defaults, shown until the app has answered with the
+      // name and welcome message the merchant set there.
+      title: data.title || "Ava",
+      greeting: data.greeting || "Hi there! 👋 Welcome! How can I help you today?",
       accent: /^#[0-9a-f]{6}$/i.test(data.accent || "") ? data.accent : "#1F3D2F",
       position: data.position === "left" ? "left" : "right",
       suggestions: [data.suggestion1, data.suggestion2, data.suggestion3].filter(function (s) {

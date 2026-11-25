@@ -116,7 +116,7 @@ export default function Settings() {
             <QuickPolicyFields settings={settings} errors={errors} />
           </s-section>
 
-          <s-section heading="Name and tone">
+          <s-section heading="Name and welcome message">
             <PersonalityFields settings={settings} errors={errors} />
           </s-section>
 

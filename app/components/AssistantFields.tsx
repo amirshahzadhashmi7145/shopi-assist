@@ -3,6 +3,7 @@
  * and the Settings page so the two can never drift apart. Each group is a set
  * of named, uncontrolled fields meant to sit inside a native <form>.
  */
+import { DEFAULT_ASSISTANT_NAME, DEFAULT_GREETING } from "../assistant/assistant-defaults";
 import type {
   AssistantSettings,
   SettingsErrors,
@@ -37,7 +38,7 @@ export const FIELD_GROUPS = {
     "chatRatings",
   ],
   quickPolicies: ["returnWindow", "returnShipping", "processingTime", "deliveryTime", "shipsTo"],
-  personality: ["assistantName", "greeting", "tone"],
+  personality: ["assistantName", "greeting"],
   // Optional free text, shown only on the Settings page.
   business: ["businessDescription"],
   policies: ["returnPolicy", "shippingInfo"],
@@ -311,8 +312,8 @@ export function PersonalityFields({ settings, errors = {} }: FieldGroupProps) {
       <s-text-field
         name="assistantName"
         label="Assistant name"
-        details="Shown at the top of the chat window. Leave empty to use 'Shopping assistant'."
-        placeholder="For example: Ava"
+        details={`Shown at the top of the chat window, and what the assistant calls itself. Leave empty to use ${DEFAULT_ASSISTANT_NAME}.`}
+        placeholder={DEFAULT_ASSISTANT_NAME}
         maxLength={40}
         autocomplete="off"
         defaultValue={settings.assistantName}
@@ -321,23 +322,13 @@ export function PersonalityFields({ settings, errors = {} }: FieldGroupProps) {
       <s-text-area
         name="greeting"
         label="Welcome message"
-        details="The first thing shoppers see when they open the chat. Leave empty for the default greeting."
-        placeholder="Hi! Ask me about products, best sellers, shipping or returns."
+        details="The first thing shoppers see when they open the chat. Leave empty for the default welcome."
+        placeholder={DEFAULT_GREETING}
         rows={2}
         maxLength={300}
         defaultValue={settings.greeting}
         {...errorProp(errors.greeting)}
       />
-      <s-select
-        name="tone"
-        label="Tone of voice"
-        value={settings.tone}
-        {...errorProp(errors.tone)}
-      >
-        <s-option value="friendly">Friendly: warm and brief</s-option>
-        <s-option value="professional">Professional: polite and precise</s-option>
-        <s-option value="playful">Playful: upbeat and light</s-option>
-      </s-select>
     </s-stack>
   );
 }

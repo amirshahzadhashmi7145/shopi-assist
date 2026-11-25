@@ -267,7 +267,7 @@ describe("system prompts", () => {
   it("adds no owner section when the merchant wrote nothing", () => {
     const prompt = buildSystemPrompt({ ...input, audience: "shopper" });
     expect(prompt).not.toContain("Notes from the store owner");
-    expect(prompt).toContain("Warm, friendly and brief");
+    expect(prompt).toContain("Tone: Professional, polite and precise.");
     expect(prompt).toContain("You are the shopping assistant for Alpine Outfitters");
   });
 

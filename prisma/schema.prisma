@@ -56,12 +56,10 @@ model ShopSettings {
   shippingInfo        String  @default("")
   faq                 String  @default("")
   // Shown in the widget header and used by the assistant to refer to itself.
-  // Empty means "use the title set in the theme editor".
+  // Empty means the app's default name (see settings.server.ts).
   assistantName       String  @default("")
-  // First message in the widget. Empty means "use the theme editor's".
+  // First message in the widget. Empty means the app's default welcome.
   greeting            String  @default("")
-  // "friendly" | "professional" | "playful"
-  tone                String  @default("friendly")
 
   // What the assistant is allowed to do for shoppers (ticked in setup).
   allowAddToCart      Boolean @default(true)

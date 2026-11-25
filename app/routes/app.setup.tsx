@@ -40,7 +40,7 @@ import { authenticate } from "../shopify.server";
 const STEPS = [
   { key: "abilities", title: "What it can do" },
   { key: "policies", title: "Your policies" },
-  { key: "personality", title: "Name and tone" },
+  { key: "personality", title: "Name and welcome" },
   { key: "live", title: "Go live" },
 ] as const;
 
@@ -131,7 +131,8 @@ export default function Setup() {
     // Abilities have sensible defaults, so the step counts once the tour moves past it.
     abilities: step > 1 || completed,
     policies: progress.policies,
-    personality: progress.personality,
+    // The name and welcome have defaults too.
+    personality: step > 3 || completed,
     live: embedStatus === "active",
   };
   const current = STEPS[step - 1];

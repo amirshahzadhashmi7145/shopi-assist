@@ -408,7 +408,6 @@ export async function handleChatTurn(
     audience: input.audience,
     shopName,
     assistantName: settings.assistantName,
-    tone: settings.tone,
     abilities: {
       addToCart: tools.some((tool) => tool.name === "add_to_cart"),
       checkout: tools.some((tool) => tool.name === "start_checkout"),

@@ -41,7 +41,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 const SETUP_ITEMS = [
   { key: "policies", label: "Pick your return and shipping policies" },
-  { key: "personality", label: "Name your assistant" },
   { key: "live", label: "Turn on the chat widget" },
 ] as const;
 

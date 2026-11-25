@@ -41,7 +41,7 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 - A **setup tour** that opens the first time the app is opened after install. It is built around ticking boxes and picking from lists, not writing:
   1. *What it can do:* add to cart, place an order, pay-on-delivery orders in the chat, order status, return requests. Ordering in chat needs both "add to cart" and "place an order" ticked; with only "place an order", the assistant shows the summary of the existing cart.
   2. *Your policies:* return window, who pays return shipping, how fast orders ship, delivery time, where you ship.
-  3. *Name and tone.*
+  3. *Name and welcome.* The assistant is called Ava and greets shoppers with "Hi there! 👋 Welcome! How can I help you today?" until the merchant changes either. Its tone is not a setting: always professional, polite and precise.
   4. *Go live.*
 
   Every step is optional and saves on its own. Longer free-text answers (a business description, common questions, extra guidance) are available in Settings for merchants who want them.
@@ -170,8 +170,8 @@ npm run graphql-codegen     # validates every GraphQL query against Shopify's Ad
 
 What the merchant sets, and where:
 
-- **In the app (setup tour or Settings):** which abilities are on, the policy picks, the assistant's name, welcome message and tone, optional free-text detail, pause chat, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
-- **In the theme editor:** accent color, position and suggested questions, plus a fallback title and welcome message used until the app's are filled in.
+- **In the app (setup tour or Settings):** which abilities are on, the policy picks, the assistant's name and welcome message, optional free-text detail, pause chat, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
+- **In the theme editor:** accent color, position and suggested questions. The name and welcome message are set in the app only.
 
 What the merchant writes is added to the assistant's instructions as "notes from the store owner", below the fixed rules, which it cannot override. It should be treated as public: a determined shopper can get the assistant to repeat it.
 
