@@ -332,11 +332,27 @@ export const STORE_FACTS_QUERY = `#graphql
   }
 `;
 
-/** The countries the store has a shipping zone for. */
+/**
+ * Where the store delivers, as far as the Storefront API can say, for when
+ * its shipping settings cannot be read from the Admin API or leave a doubt.
+ *
+ * Two lists, because neither is right on every store. `shipsToCountries` is
+ * the countries with a zone in the store's shipping profiles: right on a
+ * store that still uses profiles, left behind on one that has moved its
+ * shipping to markets (a dev store on markets, delivering to two countries,
+ * still listed one). `availableCountries` is every country in an active
+ * market: where the store sells, which on a store with delivery switched off
+ * for a market is more than where it delivers.
+ */
 export const SHIPS_TO_QUERY = `#graphql
   query ShopiAssistShipsTo {
     shop {
       shipsToCountries
+    }
+    localization {
+      availableCountries {
+        isoCode
+      }
     }
   }
 `;

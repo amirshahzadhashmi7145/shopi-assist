@@ -16,7 +16,7 @@ import {
   type ReturnCondition,
   type TopicAnswers,
 } from "./setting-options";
-import { processingText } from "./shipping";
+import type { ShippingPicks } from "./shipping";
 import { NO_FACTS, type StoreFacts } from "./store-facts";
 
 // The lists themselves live in setting-options.ts, which the settings pages
@@ -437,17 +437,12 @@ const DAYS: Record<string, string> = {
  * Turns the policy picks into plain sentences for the assistant. Only what
  * the merchant actually chose is stated; unset picks say nothing.
  *
- * Where the store delivers and what delivery costs are not here: those are
- * read from Shopify when a shopper asks (the shipping tool), and the
- * merchant's picks for them are only the fallback, see describeShippingPicks.
- *
- * `facts` are what Shopify says about the store. Where it says how soon
- * orders are sent out, that is stated and the merchant's pick is left out.
+ * Nothing about delivery is here (where the store delivers, what it costs,
+ * how soon orders leave, how long they take): that is read from Shopify when
+ * a shopper asks, by the shipping tool, and the merchant's picks for it are
+ * only that tool's fallback. See describeShippingPicks.
  */
-export function describeQuickPolicies(
-  settings: AssistantSettings,
-  facts: StoreFacts = NO_FACTS,
-): string {
+export function describeQuickPolicies(settings: AssistantSettings): string {
   const lines: string[] = [];
   const noReturns = settings.returnWindow === "none";
 
@@ -480,21 +475,6 @@ export function describeQuickPolicies(
     lines.push("Exchanges: not offered.");
   }
 
-  if (facts.processingDays !== undefined) {
-    lines.push(
-      `Dispatch: orders are handed to the carrier ${processingText(facts.processingDays)}, as set in the store's shipping settings.`,
-    );
-  } else if (settings.processingTime === "same_day") {
-    lines.push("Dispatch: orders usually ship the same business day.");
-  } else if (settings.processingTime) {
-    lines.push(`Dispatch: orders usually ship within ${DAYS[settings.processingTime]} business days.`);
-  }
-  if (settings.deliveryTime) {
-    lines.push(
-      `Delivery: usually ${DAYS[settings.deliveryTime]} business days after the order ships.`,
-    );
-  }
-
   // With pay-on-delivery orders in the chat the assistant is told about them
   // in its own rules, so this pick would only repeat or contradict that.
   if (!(settings.allowChatOrders && settings.allowCheckout)) {
@@ -509,19 +489,20 @@ export function describeQuickPolicies(
 }
 
 /**
- * The merchant's own picks for where the store delivers and what delivery
- * costs, in plain sentences. Used only when Shopify's shipping zones and
- * rates cannot be read: with them, Shopify's answer is the one given.
+ * The merchant's own picks about delivery, each as a plain sentence: where
+ * the store delivers, what delivery costs, how soon orders leave and how long
+ * they take. Each is used only for what Shopify does not answer: with
+ * Shopify's own answer, that is the one given and the pick is left out.
  */
 export function describeShippingPicks(
   settings: AssistantSettings,
   facts: StoreFacts = NO_FACTS,
-): string {
-  const lines: string[] = [];
+): ShippingPicks {
+  const picks: ShippingPicks = {};
   if (settings.shipsTo === "domestic") {
-    lines.push("Shipping area: the store's home country only. No international shipping.");
+    picks.area = "Shipping area: the store's home country only. No international shipping.";
   } else if (settings.shipsTo === "international") {
-    lines.push("Shipping area: ships internationally.");
+    picks.area = "Shipping area: ships internationally.";
   }
 
   const amount =
@@ -529,23 +510,33 @@ export function describeShippingPicks(
       ? `${settings.shippingAmount}${facts.currencyCode ? ` ${facts.currencyCode}` : " in the store's currency"}`
       : "";
   if (settings.shippingFee === "free") {
-    lines.push("Shipping cost: free on every order.");
+    picks.cost = "Shipping cost: free on every order.";
   } else if (settings.shippingFee === "free_over") {
-    lines.push(
-      amount
-        ? `Shipping cost: free on orders over ${amount}. Below that, the checkout shows the cost.`
-        : "Shipping cost: free above a minimum order value. The checkout shows that value and the cost below it.",
-    );
+    picks.cost = amount
+      ? `Shipping cost: free on orders over ${amount}. Below that, the checkout shows the cost.`
+      : "Shipping cost: free above a minimum order value. The checkout shows that value and the cost below it.";
   } else if (settings.shippingFee === "flat") {
-    lines.push(
-      amount
-        ? `Shipping cost: a flat ${amount} per order.`
-        : "Shipping cost: one flat rate per order, shown at checkout.",
-    );
+    picks.cost = amount
+      ? `Shipping cost: a flat ${amount} per order.`
+      : "Shipping cost: one flat rate per order, shown at checkout.";
   } else if (settings.shippingFee === "calculated") {
-    lines.push("Shipping cost: calculated at checkout from the delivery address.");
+    picks.cost = "Shipping cost: calculated at checkout from the delivery address.";
   }
-  return lines.join("\n");
+
+  if (settings.processingTime === "same_day") {
+    picks.dispatch = "Dispatch: orders usually ship the same business day.";
+  } else if (settings.processingTime) {
+    picks.dispatch = `Dispatch: orders usually ship within ${DAYS[settings.processingTime]} business days.`;
+  }
+  if (settings.deliveryTime) {
+    picks.deliveryTime = `Delivery: usually ${DAYS[settings.deliveryTime]} business days after the order ships.`;
+  }
+  return picks;
+}
+
+/** The picks as lines of text, for an assistant that has no shipping tool to ask. */
+export function shippingPicksText(picks: ShippingPicks): string {
+  return [picks.area, picks.cost, picks.dispatch, picks.deliveryTime].filter(Boolean).join("\n");
 }
 
 /**

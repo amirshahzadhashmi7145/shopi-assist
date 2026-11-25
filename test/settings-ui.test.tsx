@@ -77,9 +77,13 @@ const FACTS: StoreFacts = {
   giftCards: false,
 };
 
+/** A store on shipping zones whose rates could not be read: Shopify still lists its countries. */
+const ZONES_UNREAD: ShippingRates = { ...NO_SHIPPING_RATES, state: "no_access", model: "profiles" };
+
 /** The store's shipping settings as Shopify returns them: two zones with rates. */
 const LIVE_RATES: ShippingRates = {
   state: "live",
+  model: "profiles",
   otherProfiles: false,
   truncated: false,
   zones: [
@@ -425,10 +429,27 @@ describe("a text box appears only for Custom, or when asked for", () => {
 
 describe("what Shopify already knows is shown, not asked", () => {
   it("does not ask where the store ships when Shopify has said", () => {
-    const page = open();
+    const page = open({ shipping: ZONES_UNREAD });
     expect(page.isShown("shipsTo")).toBe(false);
     expect(page.host.textContent).toContain("Delivers to 2 countries: Canada and United States.");
     expect(page.host.textContent).toContain("Synced from Shopify");
+  });
+
+  it("does not show Shopify's list of shipping zones for a store that no longer ships by them", () => {
+    // On a store that has moved its shipping to markets that list is left
+    // behind: it would name countries the store's real settings do not.
+    for (const shipping of [
+      { ...NO_SHIPPING_RATES, state: "no_access" as const, model: "markets" as const },
+      // Not known which the store is on: not trusted either.
+      NO_SHIPPING_RATES,
+    ]) {
+      const page = open({ shipping });
+      expect(page.host.textContent).not.toContain("Delivers to");
+      expect(page.isShown("shipsTo")).toBe(true);
+      expect(page.field("shipsTo").getAttribute("label")).toBe("Shipping regions");
+      act(() => root?.unmount());
+      document.body.replaceChildren();
+    }
   });
 
   it("asks instead when Shopify could not be reached, and says so", () => {
@@ -439,7 +460,7 @@ describe("what Shopify already knows is shown, not asked", () => {
   });
 
   it("asks as well when Shopify lists no shipping countries at all", () => {
-    const page = open({ facts: { ...FACTS, shipsTo: [] } });
+    const page = open({ facts: { ...FACTS, shipsTo: [] }, shipping: ZONES_UNREAD });
     expect(page.isShown("shipsTo")).toBe(true);
     expect(page.host.textContent).toContain("No shipping zones found in Shopify.");
     expect(page.field("shipsTo").getAttribute("label")).toBe("Where you ship, until then");
@@ -477,19 +498,85 @@ describe("what Shopify already knows is shown, not asked", () => {
     expect(page.isShown("deliveryTime")).toBe(true);
   });
 
-  it("sets a typed shipping note aside while the store's settings are read live, and says so", () => {
+  it("keeps a typed shipping note within reach while the store's settings are read live, and says it is a backup", () => {
     const written = { ...DEFAULTS, shippingInfo: "We ship to Canada and Mexico too." };
     const live = open({ settings: written, shipping: LIVE_RATES });
-    expect(live.isShown("shippingInfo")).toBe(false);
-    expect(live.host.textContent).toContain("Your own note on shipping is kept, but not used");
-    // Kept in the form, so saving the page does not wipe it.
-    expect(live.field("shippingInfo").closest("form")).not.toBeNull();
+    // A note that has fallen behind is the assistant's answer if Shopify
+    // cannot be read, so it must be there to change or clear.
+    expect(live.isShown("shippingInfo")).toBe(true);
+    expect(given(live.field("shippingInfo")).defaultValue).toBe("We ship to Canada and Mexico too.");
+    expect(live.field("shippingInfo").getAttribute("label")).toBe("Your note on shipping (backup only)");
+    expect(live.field("shippingInfo").getAttribute("details")).toContain(
+      "Not used while your shipping settings are read live from Shopify",
+    );
 
     act(() => root?.unmount());
     document.body.replaceChildren();
     const fallback = open({ settings: written });
     expect(fallback.isShown("shippingInfo")).toBe(true);
-    expect(fallback.host.textContent).not.toContain("Your own note on shipping is kept, but not used");
+    expect(fallback.field("shippingInfo").getAttribute("label")).toBe("Your note on shipping");
+
+    // With no note written, it is a button, not a text box.
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const none = open({ shipping: LIVE_RATES });
+    expect(none.isShown("shippingInfo")).toBe(false);
+    expect(none.host.textContent).toContain("Add a note for when Shopify can't be read");
+    none.press("Add a note for when Shopify can't be read");
+    expect(none.isShown("shippingInfo")).toBe(true);
+  });
+
+  it("shows a store's markets with what each charges, and asks for a delivery time only where a rate has none", () => {
+    const rate = (name: string, amount: string, delivery?: string) => ({
+      name,
+      price: { amount, currencyCode: "USD" },
+      conditions: [],
+      ...(delivery ? { delivery } : {}),
+    });
+    const united = {
+      name: "United States",
+      countries: ["US"],
+      restOfWorld: false,
+      rates: [
+        { ...rate("Standard", "8.0", "3 to 5 business days"), freeFrom: { amount: "70.0", currencyCode: "USD" } },
+        rate("Express", "15.0", "1 to 2 business days"),
+      ],
+    };
+    const canada = { name: "Canada", countries: ["CA"], restOfWorld: false, rates: [rate("International Shipping", "30.0")] };
+    const onMarkets = (zones: ShippingRates["zones"]): ShippingRates => ({
+      state: "live",
+      model: "markets",
+      otherProfiles: false,
+      truncated: false,
+      zones,
+    });
+
+    const page = open({ shipping: onMarkets([canada, united]) });
+    const text = page.host.textContent ?? "";
+    expect(text).toContain("Read from your markets in Shopify each time a shopper asks");
+    expect(text).toContain("International Shipping: 30.00 USD");
+    expect(text).toContain("Standard: 8.00 USD, free on orders of 70.00 USD or more (3 to 5 business days)");
+    expect(text).toContain("Delivers to 2 countries: Canada and United States.");
+    // Canada's rate has no delivery time in Shopify, so the pick is still offered, for that.
+    expect(page.isShown("deliveryTime")).toBe(true);
+    expect(page.field("deliveryTime").getAttribute("details")).toBe(
+      "Used for rates that have no delivery time set in Shopify.",
+    );
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // Every rate says how long it takes: nothing to ask, and the earlier pick is kept.
+    const timed = open({ shipping: onMarkets([united]) });
+    expect(timed.isShown("deliveryTime")).toBe(false);
+    expect(timed.field("deliveryTime").closest("form")).not.toBeNull();
+    expect(timed.host.textContent).toContain("Delivers to United States.");
+  });
+
+  it("says so when Shopify has more zones than were read, instead of giving a count that is too low", () => {
+    const page = open({ shipping: { ...LIVE_RATES, truncated: true } });
+    const text = page.host.textContent ?? "";
+    expect(text).toContain("Your store has more zones in Shopify than are listed here.");
+    expect(text).toContain("Delivers to at least 2 named countries");
   });
 
   it("shows the store's own processing time in place of the pick, where Shopify has one", () => {

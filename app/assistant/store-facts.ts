@@ -5,12 +5,14 @@
  *
  * The facts are read from Shopify with the merchant's own session (see
  * store-facts.server.ts), kept with the shop's settings, and shown in the
- * admin as "Synced from Shopify". The assistant is told the store's own
- * description and, if the merchant chooses, its contact address. Where the
- * store delivers, what delivery costs and how shoppers can pay are not taken
- * from here: the assistant reads those from Shopify at the moment it is asked
- * (see shipping.server.ts and the shopper tools). A fact Shopify did not
- * answer for is simply absent: absent means "unknown", which is different
+ * admin as "Synced from Shopify". Of these the assistant is told two, and
+ * each only if the merchant chooses: the store's own description, when they
+ * picked it as their business description, and its contact address, when
+ * they picked it as their contact answer. Where the store delivers, what
+ * delivery costs, how soon orders leave and how shoppers can pay are not
+ * taken from here: the assistant reads those from Shopify at the moment it is
+ * asked (see shipping.server.ts and the shopper tools). A fact Shopify did
+ * not answer for is simply absent: absent means "unknown", which is different
  * from "none".
  *
  * Nothing here touches Shopify, the database or an LLM.
@@ -29,7 +31,12 @@ export interface StoreFacts {
   currencyCode?: string;
   /** The store's public contact address. Told to shoppers only if the merchant chooses. */
   contactEmail?: string;
-  /** ISO codes of the countries with a shipping zone. */
+  /**
+   * ISO codes of the countries with a zone in the store's shipping profiles.
+   * Right for a store that keeps its shipping there. On a store that has
+   * moved its shipping to markets Shopify leaves this list behind, so it is
+   * shown only where the store is known to be on profiles.
+   */
   shipsTo?: string[];
   /** Card brands and wallets the checkout takes, as Shopify names them. */
   cards?: string[];
@@ -40,8 +47,6 @@ export interface StoreFacts {
   products?: number;
   productsCapped?: boolean;
   giftCards?: boolean;
-  /** Business days the store takes to hand an order to the carrier, where it has set that in Shopify. */
-  processingDays?: number;
 }
 
 export const NO_FACTS: StoreFacts = { syncedAt: null };
@@ -113,14 +118,6 @@ export function cleanStoreFacts(input: unknown): StoreFacts {
     if (raw.productsCapped === true) facts.productsCapped = true;
   }
   if (typeof raw.giftCards === "boolean") facts.giftCards = raw.giftCards;
-  if (
-    typeof raw.processingDays === "number" &&
-    Number.isInteger(raw.processingDays) &&
-    raw.processingDays >= 0 &&
-    raw.processingDays <= 365
-  ) {
-    facts.processingDays = raw.processingDays;
-  }
   return facts;
 }
 

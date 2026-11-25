@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { OrderActionGrant } from "../action-grant.server";
 import type { LlmToolCall, LlmToolSpec } from "../llm/provider";
 import type { RateLimiter } from "../rate-limit";
-import type { ShippingRates } from "../shipping";
+import type { ShippingPicks, ShippingRates } from "../shipping";
 import type {
   Audience,
   CartLine,
@@ -50,19 +50,22 @@ export interface ToolContext {
    * Reads the store's shipping zones and rates from Shopify, now. The rates
    * are public (every visitor sees them at the checkout) but live in the
    * Admin API, so a shopper's tools are given this one question to ask
-   * instead of an Admin client.
+   * instead of an Admin client. Asked more than once in a turn, it gives the
+   * same read.
    */
   shippingRates?: () => Promise<ShippingRates>;
   /**
-   * The merchant's own picks for where the store delivers and what delivery
-   * costs, in words. Said only when Shopify's rates cannot be read.
+   * The merchant's own picks about delivery, each in words. A pick is said
+   * only for what Shopify does not answer: where the store delivers and what
+   * that costs when its settings cannot be read, how soon orders leave and
+   * how long they take when Shopify holds no figure for it.
    */
-  shippingPicks?: string;
+  shippingPicks?: ShippingPicks;
   /**
-   * What the merchant wrote about shipping in their own words. Like the
-   * picks, it is said only when Shopify's settings cannot be read. Given to
-   * the assistant alongside them, a note that had fallen behind (other
-   * countries, other prices) was repeated as fact next to the real ones.
+   * What the merchant wrote about shipping in their own words. It is said
+   * only when Shopify's settings cannot be read. Given to the assistant
+   * alongside them, a note that had fallen behind (other countries, other
+   * prices) was repeated as fact next to the real ones.
    */
   shippingNote?: string;
   /**

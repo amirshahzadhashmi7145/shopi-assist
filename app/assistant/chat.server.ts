@@ -23,8 +23,10 @@ import {
   DEFAULT_SETTINGS,
   describeQuickPolicies,
   describeShippingPicks,
+  shippingPicksText,
   getSettings,
 } from "./settings.server";
+import type { ShippingRates } from "./shipping";
 import { loadShippingRates } from "./shipping.server";
 import { NO_FACTS } from "./store-facts";
 import { getStoredFacts, refreshStoreFactsIfStale } from "./store-facts.server";
@@ -370,6 +372,12 @@ export async function handleChatTurn(
     }
   }
   const chatOrders = settings.allowChatOrders && settings.allowCheckout;
+  // The merchant's own picks about delivery: what the shipping tool falls
+  // back on for anything Shopify does not answer.
+  const shippingPicks = describeShippingPicks(settings, facts);
+  // One read of the store's shipping settings serves the whole turn, however
+  // often the assistant asks within it. The next turn reads them again.
+  let shippingRead: Promise<ShippingRates> | undefined;
 
   // 5. Run the model with the tools this audience is allowed to use.
   const context: ToolContext = {
@@ -398,12 +406,12 @@ export async function handleChatTurn(
       allowOrderEdit: settings.allowOrderEdit,
       cashOnDelivery: chatOrders ? "chat" : settings.codAvailable,
     },
-    // Shipping rates are asked of Shopify each time the assistant needs them.
+    // Shipping rates are asked of Shopify in the turn the assistant needs them.
     shippingRates:
       input.audience === "shopper" && input.admin
-        ? () => loadShippingRates(input.admin)
+        ? () => (shippingRead ??= loadShippingRates(input.admin))
         : undefined,
-    shippingPicks: describeShippingPicks(settings, facts) || undefined,
+    shippingPicks,
     shippingNote: settings.shippingInfo.trim().slice(0, 1500) || undefined,
     isTestStore: () => isDevelopmentStore(input.shop, input.admin),
     // A grant names this shop and this chat, and stops working after a while.
@@ -442,6 +450,7 @@ export async function handleChatTurn(
     now: deps.now,
   };
   const tools = toolsFor(deps.tools, context);
+  const hasShippingTool = tools.some((tool) => tool.name === "get_shipping_info");
   const shopName = await getShopName(input.shop, input.admin, now.getTime());
 
   const systemPrompt = buildSystemPrompt({
@@ -458,20 +467,23 @@ export async function handleChatTurn(
       cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
       changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
       changeItems: tools.some((tool) => tool.name === "change_order_items"),
-      shipping: tools.some((tool) => tool.name === "get_shipping_info"),
+      shipping: hasShippingTool,
       payment: tools.some((tool) => tool.name === "get_payment_methods"),
     },
     signedIn,
-    quickPolicies: describeQuickPolicies(settings, facts),
+    // With the shipping tool, everything about delivery comes from it: the
+    // owner's picks and note are its fallback and stay out of the prompt.
+    quickPolicies: [
+      describeQuickPolicies(settings),
+      hasShippingTool ? "" : shippingPicksText(shippingPicks),
+    ]
+      .filter(Boolean)
+      .join("\n"),
     topicNotes: describeTopics(settings.topics, facts.contactEmail),
     knowledge: {
       businessDescription: aboutBusiness(settings, facts),
       returnPolicy: settings.returnPolicy,
-      // With the shipping tool, the owner's note on shipping is only its
-      // fallback for when Shopify cannot be read: see shippingNote.
-      shippingInfo: tools.some((tool) => tool.name === "get_shipping_info")
-        ? ""
-        : settings.shippingInfo,
+      shippingInfo: hasShippingTool ? "" : settings.shippingInfo,
       faq: settings.faq,
     },
     merchantInstructions: settings.instructions,

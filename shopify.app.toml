@@ -18,12 +18,17 @@ embedded = true
 #   write_order_edits                      shopper-confirmed item changes to their own unshipped, unpaid order (opt-in)
 #   write_draft_orders                     pay-on-delivery orders from the chat form (opt-in): price, create, complete
 #   write_payment_terms                    marks those orders "due on fulfillment", so they are unpaid, not paid
-#   read_shipping                          shipping zones and rates, read live when a shopper asks what delivery costs
+#   read_shipping                          order processing time, and the zones and rates of a store that keeps its
+#                                          shipping in profiles: read live when a shopper asks about delivery and
+#                                          when the merchant opens Settings
+#   read_markets                           the same rates for a store on Shopify's market-driven shipping, where each
+#                                          market holds its own delivery options (Shopify requires this scope to read
+#                                          them). Every store is being moved to this, so both scopes are needed.
 #
 # Note: linking the project to a new app (`shopify app dev --reset`) rewrites
 # this file from the app's remote settings and can blank this line. If the
 # assistant suddenly cannot read anything, check here first.
-scopes = "read_products,read_orders,read_reports,read_shipping,unauthenticated_read_product_listings,write_app_proxy,write_draft_orders,write_order_edits,write_orders,write_payment_terms,write_returns"
+scopes = "read_markets,read_products,read_orders,read_reports,read_shipping,unauthenticated_read_product_listings,write_app_proxy,write_draft_orders,write_order_edits,write_orders,write_payment_terms,write_returns"
 
 [webhooks]
 api_version = "2026-10"

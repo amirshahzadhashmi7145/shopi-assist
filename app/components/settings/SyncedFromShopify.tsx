@@ -61,14 +61,16 @@ export function syncedRows(
     });
   }
 
-  // Zones and rates are read live; without that permission, Shopify still
-  // lists the countries.
+  // Where the store delivers and what it charges are read live, from its
+  // markets or from the zones of its shipping profiles, whichever it uses.
   const liveRates = shipping?.state === "live" && shipping.zones.length > 0;
   if (liveRates) {
     const zones = shipping.zones.length + shipping.more;
+    const [unit, units] = shipping.model === "markets" ? ["market", "markets"] : ["zone", "zones"];
     rows.push({
       label: "Shipping rates",
-      value: `${zones} ${zones === 1 ? "zone" : "zones"}, read live each time a shopper asks`,
+      // Shopify has more than were read: the count is a floor, and is shown as one.
+      value: `${zones}${shipping.truncated ? "+" : ""} ${zones === 1 && !shipping.truncated ? unit : units}, read live each time a shopper asks`,
       tone: "success",
     });
   } else if (shipping?.state === "no_access") {
@@ -84,18 +86,39 @@ export function syncedRows(
   }
 
   if (liveRates) {
-    const { countries, restOfWorld } = shipping;
-    rows.push({
-      label: "Shipping regions",
-      value: restOfWorld
-        ? countries.length
-          ? `${countries.length} named ${countries.length === 1 ? "country" : "countries"} and the rest of the world`
-          : "Worldwide"
-        : countries.length <= 3
-          ? countries.join(", ")
-          : `${countries.length} countries`,
-      tone: "success",
-    });
+    const { countries, restOfWorld, truncated } = shipping;
+    const atLeast = truncated ? "at least " : "";
+    const counted = `${atLeast}${countries.length} ${countries.length === 1 ? "country" : "countries"}`;
+    rows.push(
+      restOfWorld
+        ? {
+            label: "Shipping regions",
+            value: countries.length
+              ? `${atLeast}${countries.length} named ${countries.length === 1 ? "country" : "countries"} and the rest of the world`
+              : "Worldwide",
+            tone: "success",
+          }
+        : countries.length === 0
+          ? { label: "Shipping regions", value: "No country has a delivery option yet", tone: "warning" }
+          : {
+              label: "Shipping regions",
+              value: countries.length <= 3 && !truncated ? countries.join(", ") : counted,
+              tone: "success",
+            },
+    );
+  } else if (shipping && shipping.model !== "profiles") {
+    // Without its delivery settings, all Shopify offers is the list of
+    // countries with a shipping zone, which a store that has moved its
+    // shipping to markets leaves behind. Better no list than that one.
+    rows.push(
+      shipping.state === "live"
+        ? { label: "Shipping regions", value: "None set up yet", tone: "warning" }
+        : {
+            label: "Shipping regions",
+            value: shipping.state === "no_access" ? "Shown once the permission is approved" : unknown,
+            tone: "neutral",
+          },
+    );
   } else if (facts.shipsTo === undefined) {
     rows.push({ label: "Shipping regions", value: unknown, tone: "neutral" });
   } else {

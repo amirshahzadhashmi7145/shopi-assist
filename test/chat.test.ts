@@ -11,6 +11,12 @@ import {
   type ChatTurnInput,
 } from "../app/assistant/chat.server";
 import { DailyBudget, RateLimiter } from "../app/assistant/rate-limit";
+import {
+  MARKET_SHIPPING_QUERY,
+  SHIPPING_MODEL_QUERY,
+  SHIPPING_RATES_QUERY,
+  SHIPPING_SETUP_QUERY,
+} from "../app/assistant/shipping.server";
 import { defineTool } from "../app/assistant/tools/registry";
 import { z } from "zod";
 import { fieldsOf } from "../app/assistant/setting-options";
@@ -394,6 +400,133 @@ describe("handleChatTurn", () => {
     expect(system).not.toContain("Ships next business day from Calgary.");
     // Owner notes come after the fixed rules, which they cannot override.
     expect(system.indexOf("Rules:")).toBeLessThan(system.indexOf("Notes from the store owner"));
+  });
+
+  it("reads the store's delivery settings once in a turn, and again in the next", async () => {
+    const asked: string[] = [];
+    // A store that keeps its shipping with its markets.
+    const admin = (async (query: string) => {
+      asked.push(query);
+      if (query === SHIPPING_MODEL_QUERY) return { shop: { features: { marketDrivenShipping: true } } };
+      if (query === SHIPPING_SETUP_QUERY) {
+        return {
+          deliveryPromiseSettings: { processingTime: "P1D" },
+          all: { pageInfo: { hasNextPage: false }, nodes: [] },
+          own: { pageInfo: { hasNextPage: false }, nodes: [] },
+        };
+      }
+      if (query === MARKET_SHIPPING_QUERY) {
+        return {
+          markets: {
+            pageInfo: { hasNextPage: false },
+            nodes: [
+              {
+                id: "gid://shopify/Market/1",
+                name: "Canada",
+                status: "ACTIVE",
+                conditions: {
+                  regionsCondition: {
+                    applicationLevel: "SPECIFIED",
+                    regions: {
+                      pageInfo: { hasNextPage: false },
+                      nodes: [{ __typename: "MarketRegionCountry", name: "Canada", code: "CA" }],
+                    },
+                  },
+                },
+                parentMarkets: { nodes: [] },
+                delivery: {
+                  shipping: {
+                    isEnabled: true,
+                    optionDefinitions: {
+                      pageInfo: { hasNextPage: false },
+                      nodes: [
+                        {
+                          __typename: "DeliveryFlatRateOptionDefinition",
+                          description: null,
+                          isActive: true,
+                          freeDeliveryMinimumValue: null,
+                          name: "International Shipping",
+                          flatGroups: {
+                            pageInfo: { hasNextPage: false },
+                            nodes: [
+                              {
+                                conditions: { collectionsCount: null },
+                                rate: {
+                                  price: { amount: "30.0", currencyCode: "USD" },
+                                  transitTimeMinSeconds: null,
+                                  transitTimeMaxSeconds: null,
+                                },
+                              },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return { shop: { name: "Shop A" } };
+    }) as NonNullable<ChatTurnInput["admin"]>;
+    const reads = () => asked.filter((query) => query === MARKET_SHIPPING_QUERY).length;
+
+    // The assistant asks twice in one turn: once for a country, once for all of them.
+    const provider = scriptedProvider([
+      callTool("get_shipping_info", { country: "CA" }, "call_1"),
+      callTool("get_shipping_info", {}, "call_2"),
+      text("Delivery to Canada is 30.00 USD."),
+    ]);
+    await turn({ message: "what is delivery to Canada?", admin }, { provider });
+    expect(reads()).toBe(1);
+    // Both answers came from that one read, and from the markets, never the old profiles.
+    const results = provider.requests[2].messages.filter((entry) => entry.role === "tool");
+    expect(results).toHaveLength(2);
+    for (const result of results) expect(result.content).toContain("30.00 USD");
+    expect(asked).not.toContain(SHIPPING_RATES_QUERY);
+
+    // The next message reads Shopify again: nothing is kept between turns.
+    await turn(
+      { message: "and now?", admin },
+      { provider: scriptedProvider([callTool("get_shipping_info", { country: "CA" }), text("Still 30.00 USD.")]) },
+    );
+    expect(reads()).toBe(2);
+  });
+
+  it("tells the assistant the owner's delivery picks itself only when it has no shipping tool to ask", async () => {
+    await saveSettings(
+      SHOP_A,
+      { shipsTo: "domestic", shippingFee: "free", processingTime: "same_day", deliveryTime: "5_8", returnWindow: "30" },
+      db,
+    );
+    const picks = [
+      "Shipping area: the store's home country only. No international shipping.",
+      "Shipping cost: free on every order.",
+      "Dispatch: orders usually ship the same business day.",
+      "Delivery: usually 5 to 8 business days after the order ships.",
+    ];
+    const system = async (overrides: Partial<ChatTurnInput>) => {
+      const provider = scriptedProvider([text("ok")]);
+      await turn(overrides, { provider });
+      return {
+        tools: provider.requests[0].tools.map((tool) => tool.name),
+        prompt: provider.requests[0].messages[0].content as string,
+      };
+    };
+
+    // With the tool, delivery is the tool's to answer: the picks are its
+    // fallback and are not standing notes, where they could contradict Shopify.
+    const withTool = await system({});
+    expect(withTool.tools).toContain("get_shipping_info");
+    for (const pick of picks) expect(withTool.prompt).not.toContain(pick);
+    expect(withTool.prompt).toContain("Returns: accepted within 30 days of delivery.");
+
+    // Without it, the picks are all there is, so the assistant is told them.
+    const without = await system({ storefront: undefined });
+    expect(without.tools).not.toContain("get_shipping_info");
+    for (const pick of picks) expect(without.prompt).toContain(pick);
   });
 
   it("gives the assistant only the abilities the merchant ticked", async () => {
@@ -1149,13 +1282,13 @@ describe("settings", () => {
     expect(describeQuickPolicies(await getSettings(SHOP_A, db)).split("\n")).toEqual([
       "Returns: accepted within 30 days of delivery.",
       "Return shipping: free for the customer.",
-      "Dispatch: orders usually ship the same business day.",
-      "Delivery: usually 5 to 8 business days after the order ships.",
     ]);
-    // Where the store ships is read from Shopify; the pick is only the fallback.
-    expect(describeShippingPicks(await getSettings(SHOP_A, db))).toBe(
-      "Shipping area: the store's home country only. No international shipping.",
-    );
+    // Everything about delivery is read from Shopify; the picks are only the fallback.
+    expect(describeShippingPicks(await getSettings(SHOP_A, db))).toEqual({
+      area: "Shipping area: the store's home country only. No international shipping.",
+      dispatch: "Dispatch: orders usually ship the same business day.",
+      deliveryTime: "Delivery: usually 5 to 8 business days after the order ships.",
+    });
 
     // "No returns" drops the return-shipping line, which would contradict it.
     await saveSettings(SHOP_A, { returnWindow: "none" }, db);

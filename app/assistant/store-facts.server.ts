@@ -10,8 +10,6 @@
 import type { PrismaClient } from "@prisma/client";
 
 import prisma from "../db.server";
-import { PROCESSING_TIME_QUERY } from "./shipping.server";
-import { readProcessingDays } from "./shipping";
 import { cleanStoreFacts, readStoreFacts, type StoreFacts } from "./store-facts";
 import { STORE_FACTS_QUERY } from "./tools/storefront-queries";
 import type { GraphqlFn } from "./types";
@@ -131,21 +129,12 @@ export async function syncStoreFacts(
     return { facts: stored, reached: null };
   }
 
-  const [admin, storefront, processing] = await Promise.all([
+  const [admin, storefront] = await Promise.all([
     clients.admin
       ? clients.admin<AdminFacts>(STORE_FACTS_ADMIN_QUERY).catch(() => null)
       : Promise.resolve(null),
     clients.storefront
       ? clients.storefront<StorefrontFacts>(STORE_FACTS_QUERY).catch(() => null)
-      : Promise.resolve(null),
-    // Asked on its own: it needs a permission the rest does not, and a store
-    // that has not approved it yet must not lose its other facts over it.
-    clients.admin
-      ? clients
-          .admin<{ deliveryPromiseSettings: { processingTime: string | null } | null }>(
-            PROCESSING_TIME_QUERY,
-          )
-          .catch(() => null)
       : Promise.resolve(null),
   ]);
   const reached: FactsReached = { admin: Boolean(admin), storefront: Boolean(storefront) };
@@ -162,11 +151,6 @@ export async function syncStoreFacts(
       next.productsCapped = admin.productsCount.precision !== "EXACT";
     }
     if (admin.giftCardProducts) next.giftCards = admin.giftCardProducts.nodes.length > 0;
-  }
-  if (processing) {
-    const days = readProcessingDays(processing.deliveryPromiseSettings?.processingTime);
-    if (days === undefined) delete next.processingDays;
-    else next.processingDays = days;
   }
   if (storefront?.shop) {
     for (const key of STOREFRONT_KEYS) delete next[key];

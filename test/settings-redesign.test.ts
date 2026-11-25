@@ -27,6 +27,7 @@ import {
   aboutBusiness,
   describeQuickPolicies,
   describeShippingPicks,
+  shippingPicksText,
   getSettings,
   saveSettings,
   settingsFromForm,
@@ -293,15 +294,15 @@ describe("store policies as picks", () => {
     ]);
     // What delivery costs is asked of Shopify when a shopper asks. The pick is
     // kept apart, for when Shopify cannot say.
-    expect(describeShippingPicks(settings, FACTS)).toBe(
-      "Shipping cost: free on orders over 75 CAD. Below that, the checkout shows the cost.",
-    );
+    expect(describeShippingPicks(settings, FACTS)).toEqual({
+      cost: "Shipping cost: free on orders over 75 CAD. Below that, the checkout shows the cost.",
+    });
     expect(describeReturnConditions([])).toBe("");
   });
 
   it("states a shipping amount only with the pick it belongs to, in the store's currency", () => {
     const cost = (overrides: Partial<AssistantSettings>, facts: StoreFacts = FACTS) =>
-      describeShippingPicks({ ...DEFAULT_SETTINGS, ...overrides }, facts);
+      describeShippingPicks({ ...DEFAULT_SETTINGS, ...overrides }, facts).cost;
 
     expect(cost({ shippingFee: "free", shippingAmount: "75" })).toBe("Shipping cost: free on every order.");
     expect(cost({ shippingFee: "flat", shippingAmount: "4.99" })).toBe(
@@ -340,22 +341,33 @@ describe("store policies as picks", () => {
       "Cash on delivery: not available.",
     );
 
-    // How soon orders leave: Shopify's own setting, where the store has one, in place of the pick.
-    const dispatch = { ...DEFAULT_SETTINGS, processingTime: "3_5" as const };
-    expect(describeQuickPolicies(dispatch)).toBe("Dispatch: orders usually ship within 3 to 5 business days.");
-    expect(describeQuickPolicies(dispatch, { syncedAt: null, processingDays: 1 })).toBe(
-      "Dispatch: orders are handed to the carrier within 1 business day, as set in the store's shipping settings.",
-    );
-    expect(describeQuickPolicies(DEFAULT_SETTINGS, { syncedAt: null, processingDays: 0 })).toBe(
-      "Dispatch: orders are handed to the carrier the same business day, as set in the store's shipping settings.",
-    );
-
-    // Where the store ships is Shopify's to say: the pick is never among the
-    // policies, only in the fallback for when Shopify cannot be read.
-    const picked = { ...DEFAULT_SETTINGS, shipsTo: "international" as const };
+    // Nothing about delivery is among the policies. Where the store ships, how
+    // soon orders leave and how long they take are Shopify's to say, through
+    // the shipping tool: each pick is only what that tool falls back on.
+    const picked = {
+      ...DEFAULT_SETTINGS,
+      shipsTo: "international" as const,
+      processingTime: "3_5" as const,
+      deliveryTime: "5_8" as const,
+    };
     expect(describeQuickPolicies(picked)).toBe("");
-    expect(describeShippingPicks(picked)).toBe("Shipping area: ships internationally.");
-    expect(describeShippingPicks(DEFAULT_SETTINGS)).toBe("");
+    expect(describeShippingPicks(picked)).toEqual({
+      area: "Shipping area: ships internationally.",
+      dispatch: "Dispatch: orders usually ship within 3 to 5 business days.",
+      deliveryTime: "Delivery: usually 5 to 8 business days after the order ships.",
+    });
+    expect(describeShippingPicks({ ...DEFAULT_SETTINGS, processingTime: "same_day" })).toEqual({
+      dispatch: "Dispatch: orders usually ship the same business day.",
+    });
+    expect(describeShippingPicks(DEFAULT_SETTINGS)).toEqual({});
+    // An assistant with no shipping tool to ask is told them as lines, in one order.
+    expect(shippingPicksText(describeShippingPicks({ ...picked, shippingFee: "free" })).split("\n")).toEqual([
+      "Shipping area: ships internationally.",
+      "Shipping cost: free on every order.",
+      "Dispatch: orders usually ship within 3 to 5 business days.",
+      "Delivery: usually 5 to 8 business days after the order ships.",
+    ]);
+    expect(shippingPicksText({})).toBe("");
   });
 
   it("reads tick boxes, structured answers and switches out of a submitted form", () => {
@@ -475,7 +487,8 @@ describe("what Shopify says about the store", () => {
         policies: { refund: true, shipping: "yes" },
         products: -3,
         giftCards: "true",
-        processingDays: 1.5,
+        // Once kept here, now read live each time: a stored copy is dropped.
+        processingDays: 2,
         admin: true,
       }),
     ).toEqual({
@@ -512,39 +525,21 @@ describe("what Shopify says about the store", () => {
     const { facts, reached } = await syncStoreFacts(SHOP_A, { admin, storefront }, { db, now });
     expect(reached).toEqual({ admin: true, storefront: true });
     expect(facts).toEqual(FACTS);
-    // Two questions for the Admin API (the store, and its processing time), one for the Storefront API.
-    expect([admin.calls.length, storefront.calls.length]).toEqual([2, 1]);
+    // One question for each of Shopify's two APIs.
+    expect([admin.calls.length, storefront.calls.length]).toEqual([1, 1]);
     // Kept with the shop's settings, without touching the settings themselves.
     expect(await getStoredFacts(SHOP_A, db)).toEqual(FACTS);
     expect(await getSettings(SHOP_A, db)).toEqual(DEFAULT_SETTINGS);
 
-    // The processing time is asked for on its own and kept with the rest.
-    const withTime = (async (query: string) =>
-      query.includes("deliveryPromiseSettings")
-        ? { deliveryPromiseSettings: { processingTime: "P2D" } }
-        : adminAnswer()) as typeof admin;
-    const timed = await syncStoreFacts(SHOP_A, { admin: withTime, storefront: fakeGraphql(storefrontAnswer()) }, { db, now });
-    expect(timed.facts).toEqual({ ...FACTS, processingDays: 2 });
-    // A store that has not approved that permission keeps every other fact.
-    const withoutPermission = (async (query: string) => {
-      if (query.includes("deliveryPromiseSettings")) throw new Error("Access denied for deliveryPromiseSettings field.");
-      return adminAnswer();
-    }) as typeof admin;
-    const kept = await syncStoreFacts(
-      SHOP_A,
-      { admin: withoutPermission, storefront: fakeGraphql(storefrontAnswer()) },
-      { db, now },
-    );
-    expect(kept.reached).toEqual({ admin: true, storefront: true });
-    expect(kept.facts).toEqual({ ...FACTS, processingDays: 2 });
-    // And one that has cleared the setting in Shopify loses it here too.
-    const cleared = (async (query: string) =>
-      query.includes("deliveryPromiseSettings")
-        ? { deliveryPromiseSettings: { processingTime: null } }
-        : adminAnswer()) as typeof admin;
-    expect(
-      (await syncStoreFacts(SHOP_A, { admin: cleared, storefront: fakeGraphql(storefrontAnswer()) }, { db, now })).facts,
-    ).toEqual(FACTS);
+    // How soon orders leave is not among the facts kept: it is read from
+    // Shopify when a shopper asks, like everything else about delivery. A copy
+    // stored by an earlier version is dropped when the facts are read.
+    expect(admin.calls.map((call) => call.query).join()).not.toContain("deliveryPromiseSettings");
+    await db.shopSettings.update({
+      where: { shop: SHOP_A },
+      data: { storeFacts: JSON.stringify({ ...FACTS, processingDays: 2 }) },
+    });
+    expect(await getStoredFacts(SHOP_A, db)).toEqual(FACTS);
     expect(await getStoredFacts(SHOP_B, db)).toEqual(NO_FACTS);
     expect((await getSettings(SHOP_B, db)).assistantName).toBe("Other");
   });
@@ -887,7 +882,9 @@ describe("the settings pages on the server", () => {
         active: "policies",
         settings: DEFAULT_SETTINGS,
         facts: factsForPage(FACTS),
-        shipping: shippingForPage(NO_SHIPPING_RATES),
+        // A store that keeps its shipping in zones and has not yet approved the
+        // permission to read its rates: Shopify's list of countries is shown.
+        shipping: shippingForPage({ ...NO_SHIPPING_RATES, state: "no_access", model: "profiles" }),
         errors: {},
         shop: SHOP_A,
         draft: {

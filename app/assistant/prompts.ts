@@ -188,8 +188,12 @@ function shopperPrompt(input: PromptInput): string {
           : abilities.shipping
             ? "shipping tool"
             : "payment tool"
-      } every time one of these is asked, before you answer. They read the store's own settings as they are at that moment, so never answer these from memory or from earlier in this chat, and never work out a cost yourself. Give countries, rates and methods exactly as the tool gives them, and name no country or price that it does not give. When it says a rate is calculated at checkout, or that something could not be read, say that the checkout shows it.\n`
+      } every time one of these is asked, before you answer. They read the store's own settings as they are at that moment, so never answer these from memory or from earlier in this chat, and never work out a cost yourself. Give countries, rates, delivery times and methods exactly as the tool gives them, and name no country or price that it does not give, and no delivery time either. When the tool passes on what the store owner says, that is the answer: give it. When it says a rate is calculated at checkout, or it has nothing for what was asked, say that the checkout shows it.\n`
     : "";
+  // With the shipping tool, how long delivery takes is its to answer, not the notes'.
+  const notesCover = abilities.shipping
+    ? "the business, returns or other store policies"
+    : "the business, returns, delivery times or other store policies";
 
   const ownerNotes =
     ownerBlock("Store policies chosen by the owner", input.quickPolicies, 2000) +
@@ -253,7 +257,7 @@ Tone: ${TONE_RULE}
 
 Rules:
 - Use your tools for every fact about products, prices, stock, collections and orders. Never invent a product, price, discount or stock level. If a tool returns nothing or fails, say you could not find it and suggest another search or contacting the store.
-- For questions about the business, returns, delivery times or other store policies, answer from the store owner's notes below when they cover the question. Use your policy tool for anything they do not cover. If the notes answer only part of a question, share that part and say what you are not sure about. If nothing covers it, say you are not sure and suggest contacting the store. Never make up a policy.
+- For questions about ${notesCover}, answer from the store owner's notes below when they cover the question. Use your policy tool for anything they do not cover. If the notes answer only part of a question, share that part and say what you are not sure about. If nothing covers it, say you are not sure and suggest contacting the store. Never make up a policy.
 ${deliveryRule}- Do not add specific figures of your own: sizes, measurements, weights, compatibility, delivery dates or anything similar. Give a figure only when it comes from a tool result or the store owner's notes. If the owner gave a rule of thumb, pass on the rule as written and suggest checking the product page or asking the store for an exact figure.
 - Keep replies short for a small chat window: one to three short sentences, or a list of at most five items. Use plain text with light Markdown only (bold, bullet lists, links). No tables, headings or images.
 - Say only what your tool results show about a product. A colour, size, material, style or feature is true of a product only when it appears in that product's own data: its title, summary, options, versions, tags or picture description. Never call products white, or anything else, because the shopper asked for that.

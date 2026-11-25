@@ -451,11 +451,13 @@ function ShippingRatesLine({ shipping, shop }: { shipping: ShippingView; shop: s
       </SyncedLine>
     );
   }
+  // A store keeps its rates with its markets, or in the zones of its shipping profiles.
+  const units = shipping.model === "markets" ? "markets" : "zones";
   return (
     <s-stack direction="block" gap="small">
       <SyncedLine
         label="Shipping rates"
-        value="Read from Shopify each time a shopper asks, so the assistant always quotes your current rates."
+        value={`Read from your ${shipping.model === "markets" ? "markets" : "shipping zones"} in Shopify each time a shopper asks, so the assistant always quotes your current rates.`}
         state="live"
       />
       {shipping.zones.map((zone, index) => (
@@ -470,10 +472,15 @@ function ShippingRatesLine({ shipping, shop }: { shipping: ShippingView; shop: s
           </s-stack>
         </s-box>
       ))}
-      {shipping.more > 0 && (
-        <s-text color="subdued">
-          And {shipping.more} more {shipping.more === 1 ? "zone" : "zones"} in Shopify.
-        </s-text>
+      {shipping.truncated ? (
+        // Shopify has more than were read, so no count would be right.
+        <s-text color="subdued">Your store has more {units} in Shopify than are listed here.</s-text>
+      ) : (
+        shipping.more > 0 && (
+          <s-text color="subdued">
+            And {shipping.more} more {shipping.more === 1 ? units.slice(0, -1) : units} in Shopify.
+          </s-text>
+        )
       )}
       {shipping.otherProfiles && (
         <s-text color="subdued">
@@ -491,12 +498,17 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
   const takesAmount = SHIPPING_FEES_WITH_AMOUNT.includes(values.shippingFee);
   const chatOrders = values.allowChatOrders && values.allowCheckout;
 
-  // Where the store delivers: its shipping zones when they could be read,
-  // else the list of countries Shopify gives without that permission.
+  // Where the store delivers: its own delivery settings when they could be
+  // read. Without them Shopify still lists the countries with a shipping
+  // zone, which is right only for a store that keeps its shipping in zones:
+  // on one that has moved to markets, that list is left behind.
   const liveRates = shipping.state === "live" && shipping.zones.length > 0;
-  const countries = liveRates ? shipping.countries : facts.countries;
+  const fromZones = !liveRates && shipping.model === "profiles" && facts.shipsTo !== undefined;
+  const countries = liveRates ? shipping.countries : fromZones ? facts.countries : [];
   const everywhereElse = liveRates && shipping.restOfWorld;
-  const knowsCountries = liveRates || facts.shipsTo !== undefined;
+  const knowsCountries = liveRates || fromZones;
+  // More zones than were read: the countries found are some of them, not all.
+  const atLeast = liveRates && shipping.truncated ? "at least " : "";
   const { cards, wallets } = paymentNames(facts);
   const paysWith = [...cards, ...wallets];
   const paymentState: SyncState =
@@ -590,18 +602,22 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
                 value={
                   everywhereElse
                     ? countries.length
-                      ? `Delivers to ${countries.length} named ${countries.length === 1 ? "country" : "countries"} (${listed(countries)}) and the rest of the world.`
+                      ? `Delivers to ${atLeast}${countries.length} named ${countries.length === 1 ? "country" : "countries"} (${listed(countries)}) and the rest of the world.`
                       : "Delivers worldwide: one zone covers every country."
-                    : countries.length === 1
+                    : countries.length === 1 && !atLeast
                       ? `Delivers to ${countries[0]}.`
-                      : `Delivers to ${countries.length} countries: ${listed(countries)}.`
+                      : `Delivers to ${atLeast}${countries.length} ${countries.length === 1 ? "country" : "countries"}: ${listed(countries)}.`
                 }
                 state={liveRates ? "live" : "synced"}
               />
             ) : (
               <SyncedLine
                 label="Shipping regions"
-                value="No shipping zones found in Shopify."
+                value={
+                  liveRates
+                    ? "No country has a delivery option set in Shopify yet."
+                    : "No shipping zones found in Shopify."
+                }
                 state="missing"
               >
                 <s-link href={adminUrl(shop, "settings/shipping")} target="_top">
@@ -613,11 +629,11 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
           <Reveal open={countries.length === 0 && !everywhereElse}>
             <Pick
               name="shipsTo"
-              label={facts.shipsTo === undefined ? "Shipping regions" : "Where you ship, until then"}
+              label={knowsCountries ? "Where you ship, until then" : "Shipping regions"}
               details={
-                facts.shipsTo === undefined
-                  ? "Shopify couldn't be asked which countries you deliver to, so pick here."
-                  : "Used until your shipping zones in Shopify list some countries."
+                knowsCountries
+                  ? "Used until your shipping settings in Shopify list some countries."
+                  : "Shopify couldn't be read for the countries you deliver to, so pick here."
               }
               value={settings.shipsTo}
               options={policyOptions("shipsTo")}
@@ -639,13 +655,19 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
                 error={errors.processingTime}
               />
             </Reveal>
-            <Pick
-              name="deliveryTime"
-              label="Delivery time"
-              value={settings.deliveryTime}
-              options={policyOptions("deliveryTime")}
-              error={errors.deliveryTime}
-            />
+            {/* Asked only where the store's rates in Shopify do not all say it themselves. */}
+            <Reveal open={!(liveRates && shipping.deliveryTimes)}>
+              <Pick
+                name="deliveryTime"
+                label="Delivery time"
+                {...(liveRates
+                  ? { details: "Used for rates that have no delivery time set in Shopify." }
+                  : {})}
+                value={settings.deliveryTime}
+                options={policyOptions("deliveryTime")}
+                error={errors.deliveryTime}
+              />
+            </Reveal>
             {/* Asked only while Shopify's own rates cannot be read. */}
             <Reveal open={!liveRates}>
               <Pick
@@ -668,30 +690,28 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
               />
             </Reveal>
           </Columns>
-          {liveRates && settings.shippingInfo && (
-            <s-text color="subdued">
-              Your own note on shipping is kept, but not used while your shipping settings are read
-              live from Shopify: a typed note can fall behind them. For anything Shopify
-              doesn&apos;t hold, such as cut-off times, use custom instructions under Knowledge.
-            </s-text>
-          )}
-          <Reveal open={!liveRates}>
-            <AddOwnWords
-              open={ui.open.shippingInfo}
-              label="Add a note in your own words"
-              onOpen={() => draft.open("shippingInfo")}
-            >
-              <s-text-area
-                name="shippingInfo"
-                label="Your note on shipping"
-                details="Added to your picks above. Leave empty to remove it."
-                rows={3}
-                maxLength={1500}
-                defaultValue={settings.shippingInfo}
-                {...errorProp(errors.shippingInfo)}
-              />
-            </AddOwnWords>
-          </Reveal>
+          {/* Always within reach: a note that has fallen behind must be easy to change or clear. */}
+          <AddOwnWords
+            open={ui.open.shippingInfo}
+            label={
+              liveRates ? "Add a note for when Shopify can't be read" : "Add a note in your own words"
+            }
+            onOpen={() => draft.open("shippingInfo")}
+          >
+            <s-text-area
+              name="shippingInfo"
+              label={liveRates ? "Your note on shipping (backup only)" : "Your note on shipping"}
+              details={
+                liveRates
+                  ? "Not used while your shipping settings are read live from Shopify: a typed note can fall behind them. It is the assistant's answer only if Shopify can't be read. Leave empty to remove it. For anything Shopify doesn't hold, such as cut-off times, use custom instructions under Knowledge."
+                  : "Added to your picks above. Leave empty to remove it."
+              }
+              rows={3}
+              maxLength={1500}
+              defaultValue={settings.shippingInfo}
+              {...errorProp(errors.shippingInfo)}
+            />
+          </AddOwnWords>
         </s-stack>
       </s-section>
 
