@@ -2,8 +2,10 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
+import { getEmailStatus } from "../assistant/email.server";
 import { getLlmStatus } from "../assistant/llm/index.server";
 import { getSettings, getSetupState, setupProgress } from "../assistant/settings.server";
+import { stockAlertSummary } from "../assistant/stock-alerts.server";
 import { chatAnalytics } from "../assistant/store.server";
 import { ChatAnalyticsSection } from "../components/ChatAnalytics";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
@@ -18,7 +20,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const setup = await getSetupState(shop);
   if (!setup.started) throw redirect("/app/setup");
 
-  const [settings, analytics] = await Promise.all([getSettings(shop), chatAnalytics(db, shop)]);
+  const [settings, analytics, alerts] = await Promise.all([
+    getSettings(shop),
+    chatAnalytics(db, shop),
+    stockAlertSummary(db, shop),
+  ]);
+  const email = getEmailStatus();
   const llm = getLlmStatus();
 
   return {
@@ -30,6 +37,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     setupCompleted: setup.completed,
     progress: setupProgress(settings),
     analytics,
+    stockAlerts: {
+      on: settings.stockAlerts,
+      // Whether the app can send email at all, and what is missing when it cannot.
+      emailReady: email.ready,
+      emailProblem: email.problem,
+      ...alerts,
+    },
     retentionDays: settings.retentionDays,
     chatOrders: settings.allowChatOrders,
     llm: { ready: llm.ready, model: llm.model, provider: llm.provider, problem: llm.problem },
@@ -48,6 +62,7 @@ export default function Home() {
     apiKey,
     chatEnabled,
     analytics,
+    stockAlerts,
     retentionDays,
     chatOrders,
     llm,
@@ -115,6 +130,35 @@ export default function Home() {
       )}
 
       <ChatAnalyticsSection analytics={analytics} retentionDays={retentionDays} chatOrders={chatOrders} />
+
+      {stockAlerts.on || stockAlerts.waiting > 0 ? (
+        <s-section heading="Back-in-stock alerts">
+          <s-stack direction="block" gap="small-200">
+            {stockAlerts.on && !stockAlerts.emailReady ? (
+              <s-banner tone="warning" heading="Alerts are switched on, but the app cannot send email yet">
+                <s-paragraph>
+                  Shoppers will not see &quot;Notify me&quot; until an email service is connected (
+                  {stockAlerts.emailProblem}). See the email section of .env.example.
+                </s-paragraph>
+              </s-banner>
+            ) : null}
+            <s-paragraph>
+              {stockAlerts.waiting} {stockAlerts.waiting === 1 ? "request is" : "requests are"}{" "}
+              waiting for a product to come back, and {stockAlerts.sent}{" "}
+              {stockAlerts.sent === 1 ? "email was" : "emails were"} sent in the last 30 days.
+            </s-paragraph>
+            {stockAlerts.products.length > 0 ? (
+              <s-unordered-list>
+                {stockAlerts.products.map((product) => (
+                  <s-list-item key={product.title}>
+                    {product.title}: {product.waiting} waiting
+                  </s-list-item>
+                ))}
+              </s-unordered-list>
+            ) : null}
+          </s-stack>
+        </s-section>
+      ) : null}
 
       <s-section heading="Setup">
         <s-stack direction="block" gap="base">

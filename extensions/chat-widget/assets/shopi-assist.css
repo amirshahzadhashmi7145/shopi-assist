@@ -1093,6 +1093,91 @@ button.sa-order-online {
   font-weight: 400;
 }
 
+/* Back-in-stock alerts ---------------------------------------------------- */
+
+/* Under a sold-out product's picture and title, the full width of its card. */
+.sa-alert-host {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.sa-alert-host:empty {
+  display: none;
+}
+
+.sa-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--sa-line);
+}
+
+.sa-alert-label {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.sa-alert-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sa-alert-input {
+  flex: 1 1 150px;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--sa-line);
+  border-radius: 8px;
+  background: var(--sa-surface);
+  color: var(--sa-ink);
+  font: inherit;
+  /* 16px stops iOS Safari from zooming the page when the field is focused. */
+  font-size: 16px;
+}
+
+.sa-alert-input:focus-visible {
+  outline: 2px solid var(--sa-accent);
+  outline-offset: 0;
+}
+
+.sa-alert-status,
+.sa-alert-done {
+  margin: 0;
+  color: var(--sa-ink-soft);
+  font-size: 12.5px;
+}
+
+.sa-alert-done {
+  padding-top: 8px;
+  border-top: 1px solid var(--sa-line);
+  color: var(--sa-ink);
+  font-size: 13px;
+}
+
+.sa-alert-error {
+  color: var(--sa-danger);
+}
+
+/* "Notify me" beside a sold-out version in the picker. */
+.sa-variant-alert {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--sa-line);
+  border-radius: 999px;
+  background: var(--sa-surface);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.sa-variant-alert:hover {
+  border-color: var(--sa-ink);
+}
+
 /* Rating: a thumbs-up or thumbs-down for the chat ------------------------- */
 
 .sa-rating {

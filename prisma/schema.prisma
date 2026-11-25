@@ -80,6 +80,8 @@ model ShopSettings {
   recogniseCustomers  Boolean @default(false)
   // Shoppers can give the chat a thumbs-up or thumbs-down.
   chatRatings         Boolean @default(true)
+  // Opt-in: shoppers can ask for an email when a sold-out product is back.
+  stockAlerts         Boolean @default(false)
   // Opt-in: lets shoppers place a pay-on-delivery order from a form in the
   // chat. The app creates a real, unpaid order in the store.
   allowChatOrders     Boolean @default(false)
@@ -165,4 +167,26 @@ model ConversationOrder {
 
   @@unique([conversationId, orderId])
   @@index([shop])
+}
+
+// A shopper's request to be told, once, when a sold-out product is back.
+// The only place this app keeps an email address. It is typed into a form in
+// the widget, never into the chat, and is used for that one email only:
+// deleted a month after the email goes out, or after six months of waiting.
+model StockAlert {
+  id           String    @id @default(cuid())
+  shop         String
+  // Numeric Shopify ids. An empty variantId means any version of the product.
+  productId    String
+  variantId    String    @default("")
+  productTitle String
+  variantTitle String    @default("")
+  email        String
+  // Failed sends. After a few the alert is left alone.
+  attempts     Int       @default(0)
+  notifiedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@unique([shop, email, productId, variantId])
+  @@index([shop, productId, notifiedAt])
 }

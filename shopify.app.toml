@@ -37,6 +37,12 @@ api_version = "2026-10"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+  # A product changed, which includes its stock: tells shoppers who asked to
+  # hear when it is back. Handled by: /app/routes/webhooks.products.update.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/products/update"
+  topics = [ "products/update" ]
+
   # Mandatory privacy webhooks. Handled by: /app/routes/webhooks.compliance.tsx
   [[webhooks.subscriptions]]
   uri = "/webhooks/compliance"

@@ -297,6 +297,22 @@ export const CHECKOUT_CART_MUTATION = `#graphql
   }
 `;
 
+/** One product and whether it, and each version of it, can be bought now. */
+export const STOCK_ALERT_PRODUCT_QUERY = `#graphql
+  query ShopiAssistStockAlertProduct($id: ID!) {
+    node(id: $id) {
+      ... on Product {
+        id
+        title
+        availableForSale
+        variants(first: 100) {
+          nodes { id title availableForSale }
+        }
+      }
+    }
+  }
+`;
+
 /** The cards and wallets the store's checkout takes. */
 export const PAYMENT_SETTINGS_QUERY = `#graphql
   query ShopiAssistPaymentSettings {

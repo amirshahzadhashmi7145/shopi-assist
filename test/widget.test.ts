@@ -560,6 +560,123 @@ describe("chat widget", () => {
     expect(addButton.textContent).toBe("Added");
   });
 
+  it("offers an email when a sold-out product is back, and keeps the address out of the chat", async () => {
+    configMock.mockImplementation(() => appConfig({ stockAlerts: true }));
+    const alerts: unknown[] = [];
+    let answer: () => Promise<Response> = () => jsonResponse({ ok: true, status: "subscribed" });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/apps/shopi-assist/stock-alert") {
+        alerts.push(JSON.parse(init!.body as string));
+        return answer();
+      }
+      return reply("Here they are.", {
+        cards: [
+          card({ id: "gid://shopify/Product/7", title: "Snow <b>Board</b>", available: false }),
+          card({
+            id: "gid://shopify/Product/8",
+            title: "Ski Wax",
+            variantId: null,
+            variants: [
+              { id: "201", title: "Regular", price: { amount: "18.0", currencyCode: "USD" }, available: false },
+              { id: "202", title: "Sample", price: { amount: "18.0", currencyCode: "USD" }, available: true },
+            ],
+          }),
+          card({ id: "gid://shopify/Product/9", title: "Trail Mug" }),
+        ],
+      });
+    });
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("what do you have?");
+    await flush();
+
+    const [soldOut, partly, inStock] = widget.all(".sa-card");
+    const opener = (within: HTMLElement) => within.querySelector<HTMLButtonElement>(".sa-alert-open");
+    // Only what is sold out offers it: the whole product, or the one version.
+    expect(inStock.querySelector(".sa-alert-open")).toBeNull();
+    expect(partly.querySelectorAll(".sa-alert-open")).toHaveLength(1);
+    expect(opener(partly)!.closest(".sa-variant")!.textContent).toContain("Regular");
+    expect(opener(soldOut)!.textContent).toBe("Notify me");
+    expect(opener(soldOut)!.getAttribute("aria-label")).toBe(
+      "Email me when Snow <b>Board</b> is back in stock",
+    );
+
+    opener(soldOut)!.click();
+    const form = () => soldOut.querySelector<HTMLFormElement>(".sa-alert")!;
+    const field = () => form().querySelector<HTMLInputElement>("input")!;
+    const submit = () => form().dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    expect(opener(soldOut)!.hidden).toBe(true);
+    expect(field().type).toBe("email");
+    // The product's name is text, never markup.
+    expect(form().querySelector("label")!.textContent).toBe("Email me when Snow <b>Board</b> is back");
+    expect(form().querySelector("b")).toBeNull();
+
+    // Not an address: said so here, and nothing is sent.
+    field().value = "ada@";
+    submit();
+    await flush();
+    expect(alerts).toHaveLength(0);
+    expect(form().querySelector(".sa-alert-error")!.textContent).toBe("Enter a valid email address.");
+
+    // The app refuses: its message is shown and the shopper can try again.
+    answer = () => jsonResponse({ ok: false, error: { code: "rate_limited", message: "Too many requests. Try again later." } });
+    field().value = " ada@example.com ";
+    submit();
+    await flush();
+    expect(alerts).toEqual([{ productId: "7", variantId: "", email: "ada@example.com" }]);
+    expect(form().querySelector(".sa-alert-error")!.textContent).toBe("Too many requests. Try again later.");
+    expect(field().disabled).toBe(false);
+
+    answer = () => jsonResponse({ ok: true, status: "subscribed" });
+    submit();
+    await flush();
+    // Done: the form and the address in it are gone.
+    expect(soldOut.querySelector(".sa-alert")).toBeNull();
+    expect(soldOut.querySelector(".sa-alert-done")!.textContent).toBe(
+      "Done. We'll email you when it's back in stock.",
+    );
+
+    // One version of a product: the request names it. Cancel puts the button back.
+    opener(partly)!.click();
+    partly.querySelector<HTMLButtonElement>(".sa-alert button[type=button]")!.click();
+    expect(partly.querySelector(".sa-alert")).toBeNull();
+    expect(opener(partly)!.hidden).toBe(false);
+    opener(partly)!.click();
+    answer = () => jsonResponse({ ok: true, status: "in_stock" });
+    partly.querySelector<HTMLInputElement>(".sa-alert input")!.value = "ada@example.com";
+    partly
+      .querySelector<HTMLFormElement>(".sa-alert")!
+      .dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    await flush();
+    expect(alerts.at(-1)).toEqual({ productId: "8", variantId: "201", email: "ada@example.com" });
+    expect(partly.querySelector(".sa-alert-done")!.textContent).toBe("Good news: it's back in stock now.");
+
+    // The address went to the alert endpoint only: not into the chat, and
+    // not into anything the page keeps.
+    const kept = [window.localStorage, window.sessionStorage]
+      .map((storage) => Object.keys(storage).map((key) => storage.getItem(key)).join(" "))
+      .join(" ");
+    expect(kept).not.toContain("ada@");
+    expect(widget.bubbles().join(" ")).not.toContain("ada@");
+    widget.send("thanks");
+    await flush();
+    expect(JSON.stringify(lastBody(fetchMock))).not.toContain("ada@");
+    expect(lastBody(fetchMock).supports).toContain("stock_alerts");
+  });
+
+  it("offers no alert on a store that has not switched them on", async () => {
+    fetchMock.mockImplementation(() => reply("Sold out.", { cards: [card({ available: false })] }));
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("mug?");
+    await flush();
+
+    expect(widget.$(".sa-card-soldout").textContent).toBe("Sold out");
+    expect(widget.root.querySelector(".sa-alert-open")).toBeNull();
+  });
+
   it("lets the shopper give the chat a thumbs-up or thumbs-down", async () => {
     configMock.mockImplementation(() => appConfig({ ratings: true }));
     let saves = true;
@@ -665,7 +782,7 @@ describe("chat widget", () => {
     expect(lastBody(fetchMock).message).toBe("Damaged or defective");
     expect(widget.bubbles().slice(-2)).toEqual(["Damaged or defective", "Thanks."]);
     // Every message says this widget can draw answer buttons.
-    expect(lastBody(fetchMock).supports).toEqual(["choices"]);
+    expect(lastBody(fetchMock).supports).toContain("choices");
 
     // Other hands over the text box instead of sending anything.
     const sent = fetchMock.mock.calls.length;

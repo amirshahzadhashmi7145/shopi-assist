@@ -7,6 +7,7 @@ import type { PrismaClient } from "@prisma/client";
 
 import prisma from "../db.server";
 import { runAssistantTurn } from "./engine";
+import { getEmailStatus } from "./email.server";
 import { getLlmProvider } from "./llm/index.server";
 import type { LlmProvider } from "./llm/provider";
 import { buildSystemPrompt } from "./prompts";
@@ -26,6 +27,7 @@ import {
   findConversation,
   knownOrders,
   purgeAllExpiredConversations,
+  purgeStockAlerts,
   recentMessages,
   rememberOrder,
 } from "./store.server";
@@ -416,6 +418,12 @@ export async function handleChatTurn(
       chatOrders:
         settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
       returns: tools.some((tool) => tool.name === "request_return"),
+      // Only where the store sends these emails and this widget has the button.
+      stockAlerts:
+        input.audience === "shopper" &&
+        settings.stockAlerts &&
+        getEmailStatus().ready &&
+        Boolean(context.clientSupports?.includes("stock_alerts")),
       cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
       changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
       changeItems: tools.some((tool) => tool.name === "change_order_items"),
@@ -578,6 +586,8 @@ export function startRetentionSweeper(db: PrismaClient = prisma): void {
   if (globalThis.shopiAssistRetentionSweeper) return;
 
   const sweep = () => {
+    // Alerts that were sent a month ago, or waited half a year for nothing.
+    purgeStockAlerts(db).catch(() => undefined);
     purgeAllExpiredConversations(db, DEFAULT_SETTINGS.retentionDays).catch((error) => {
       console.error(
         "[shopi-assist] retention sweep failed:",

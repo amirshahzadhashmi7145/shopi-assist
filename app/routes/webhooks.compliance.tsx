@@ -2,8 +2,10 @@
  * Mandatory privacy webhooks (GDPR/CPRA). Shopify verifies delivery of all
  * three before an app can be listed.
  *
- * What this app stores about people: chat transcripts. A transcript is linked
- * to a Shopify customer id only when the shopper was logged in while chatting.
+ * What this app stores about people: chat transcripts, and the email address
+ * of a shopper who asked to hear when a product is back in stock. A
+ * transcript is linked to a Shopify customer id only when the shopper was
+ * logged in while chatting; an alert is found by its email address.
  */
 import type { ActionFunctionArgs } from "react-router";
 
@@ -12,13 +14,16 @@ import {
   deleteCustomerConversations,
   deleteShopData,
 } from "../assistant/store.server";
+import { deleteStockAlertsForEmail } from "../assistant/stock-alerts.server";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // Throws a 401 response when the HMAC signature is invalid.
   const { shop, topic, payload } = await authenticate.webhook(request);
-  const customerId = (payload as { customer?: { id?: number | string } })?.customer?.id;
+  const customer = (payload as { customer?: { id?: number | string; email?: string } })?.customer;
+  const customerId = customer?.id;
+  const customerEmail = typeof customer?.email === "string" ? customer.email : "";
 
   // Payloads contain personal data and are never logged. The only identifier
   // that appears in a log line is the numeric customer id on a data request.
@@ -45,6 +50,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (customerId !== undefined && customerId !== null) {
         const removed = await deleteCustomerConversations(db, shop, String(customerId));
         console.log(`[shopi-assist] redacted ${removed} conversation(s) for a customer of ${shop}`);
+      }
+      // Their back-in-stock alerts go too. The address itself is never logged.
+      if (customerEmail) {
+        const alerts = await deleteStockAlertsForEmail(db, shop, customerEmail);
+        console.log(`[shopi-assist] redacted ${alerts} back-in-stock alert(s) for a customer of ${shop}`);
       }
       break;
 

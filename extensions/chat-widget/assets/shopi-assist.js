@@ -18,7 +18,7 @@
   var MAX_ORDER_ITEMS = 10;
   var MAX_ITEM_QUANTITY = 10;
   // Told to the app with every message; see `request`.
-  var WIDGET_SUPPORTS = ["choices"];
+  var WIDGET_SUPPORTS = ["choices", "stock_alerts"];
   // Up to this many answers to a question are shown as buttons; more become a list.
   var MAX_CHOICE_BUTTONS = 4;
   // How long after the last press on − or + the cart is told the new quantity.
@@ -348,9 +348,14 @@
         data.orderEndpoint || (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "order"),
       ratingEndpoint:
         data.ratingEndpoint || (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "rating"),
+      stockAlertEndpoint:
+        data.stockAlertEndpoint ||
+        (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "stock-alert"),
     };
     // True when the merchant lets shoppers rate the chat.
     this.ratings = false;
+    // True when sold-out products offer an email when they are back.
+    this.stockAlerts = false;
     // True when the merchant takes pay-on-delivery orders in the chat.
     this.chatOrders = false;
     // True when product cards may start an order with "Buy now".
@@ -605,6 +610,16 @@
       changed = this.state.messages.some(function (message) {
         return message.cards && message.cards.length;
       });
+    }
+    var stockAlerts = remote.stockAlerts === true;
+    if (stockAlerts !== this.stockAlerts) {
+      this.stockAlerts = stockAlerts;
+      // Sold-out products already on screen gain or lose "Notify me".
+      changed =
+        changed ||
+        this.state.messages.some(function (message) {
+          return message.cards && message.cards.length;
+        });
     }
     this.ratings = remote.ratings === true;
     this.renderRating();
@@ -1280,6 +1295,107 @@
   }
 
   /**
+   * The form that asks for an email when a sold-out product is back. What is
+   * typed here is sent to the store's app and kept nowhere in this page: not
+   * in the chat, not with its saved messages, and not in browser storage.
+   */
+  Widget.prototype.stockAlertForm = function (productId, variantId, name, close) {
+    var self = this;
+    var form = el("form", "sa-alert");
+    form.noValidate = true;
+    form.setAttribute("aria-label", "Email me when " + name + " is back in stock");
+
+    var id = "sa-alert-" + productId + "-" + (variantId || "any");
+    var label = el("label", "sa-alert-label", "Email me when " + name + " is back");
+    label.htmlFor = id;
+    var input = el("input", "sa-alert-input");
+    input.type = "email";
+    input.id = id;
+    input.name = "email";
+    input.autocomplete = "email";
+    input.placeholder = "you@example.com";
+    input.required = true;
+    input.maxLength = 254;
+    var send = el("button", "sa-card-button sa-card-button-primary", "Notify me");
+    send.type = "submit";
+    var cancel = el("button", "sa-card-button", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", close);
+    var status = el("p", "sa-alert-status", "One email when it's back, and nothing else.");
+
+    var row = el("div", "sa-alert-row");
+    row.appendChild(input);
+    row.appendChild(send);
+    row.appendChild(cancel);
+    form.appendChild(label);
+    form.appendChild(row);
+    form.appendChild(status);
+
+    var say = function (text, isError) {
+      status.textContent = text;
+      status.className = "sa-alert-status" + (isError ? " sa-alert-error" : "");
+      if (isError) status.setAttribute("role", "alert");
+      else status.removeAttribute("role");
+    };
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var email = input.value.trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        say("Enter a valid email address.", true);
+        input.focus();
+        return;
+      }
+      input.disabled = send.disabled = cancel.disabled = true;
+      say("Setting up your alert…", false);
+      window
+        .fetch(self.config.stockAlertEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ productId: productId, variantId: variantId || "", email: email }),
+        })
+        .then(function (response) {
+          return response.json().then(
+            function (body) {
+              return { ok: response.ok && body && body.ok === true, body: body || {} };
+            },
+            function () {
+              return { ok: false, body: {} };
+            },
+          );
+        })
+        .catch(function () {
+          return { ok: false, body: {} };
+        })
+        .then(function (result) {
+          if (result.ok) {
+            // Done: the form, and the address in it, go away.
+            var done = el(
+              "p",
+              "sa-alert-done",
+              result.body.status === "in_stock"
+                ? "Good news: it's back in stock now."
+                : "Done. We'll email you when it's back in stock.",
+            );
+            done.setAttribute("role", "status");
+            if (form.parentNode) form.parentNode.replaceChild(done, form);
+            return;
+          }
+          var error = result.body && result.body.error;
+          input.disabled = send.disabled = cancel.disabled = false;
+          say(
+            error && typeof error.message === "string"
+              ? error.message
+              : "That alert couldn't be set up. Please try again.",
+            true,
+          );
+          input.focus();
+        });
+    });
+    return form;
+  };
+
+  /**
    * "Add to cart" and, where the store allows it, "Buy now", acting on
    * whatever `picked` returns when one of them is pressed.
    */
@@ -1408,8 +1524,36 @@
       if (!card.available) price.appendChild(el("span", "sa-card-soldout", "Sold out"));
       body.appendChild(price);
 
+      // Sold out: one email when it is back, asked for in a form of its own.
+      // The address goes from that form to the store's app and nowhere else.
+      var productId = /(\d{1,20})$/.exec(String(card.id || ""));
+      var alertHost = el("div", "sa-alert-host");
+      var offerAlert = function (variantId, name, opener) {
+        opener.hidden = true;
+        alertHost.textContent = "";
+        alertHost.appendChild(
+          self.stockAlertForm(productId[1], variantId, name, function () {
+            alertHost.textContent = "";
+            opener.hidden = false;
+            opener.focus();
+          }),
+        );
+        var field = alertHost.querySelector("input");
+        if (field) field.focus();
+      };
+      var canAlert = self.stockAlerts && Boolean(productId);
+
       var actions = el("div", "sa-card-actions");
       var ownButtons = [];
+      if (canAlert && !card.available) {
+        var notify = el("button", "sa-card-button sa-card-button-primary sa-alert-open", "Notify me");
+        notify.type = "button";
+        notify.setAttribute("aria-label", "Email me when " + card.title + " is back in stock");
+        notify.addEventListener("click", function () {
+          offerAlert("", card.title, notify);
+        });
+        actions.appendChild(notify);
+      }
       if (!options.length) {
         // Too many versions for a card: they are chosen on the product page.
         if (href && card.available) {
@@ -1456,6 +1600,18 @@
           if (!choice.available) {
             row.classList.add("sa-variant-off");
             row.appendChild(el("span", "sa-variant-note", "Sold out"));
+            if (canAlert) {
+              var notifyVersion = el("button", "sa-variant-alert sa-alert-open", "Notify me");
+              notifyVersion.type = "button";
+              notifyVersion.setAttribute(
+                "aria-label",
+                "Email me when " + card.title + ", " + choice.title + ", is back in stock",
+              );
+              notifyVersion.addEventListener("click", function () {
+                offerAlert(choice.id, card.title + " (" + choice.title + ")", notifyVersion);
+              });
+              row.appendChild(notifyVersion);
+            }
             rows.appendChild(row);
             return;
           }
@@ -1531,6 +1687,10 @@
 
       item.appendChild(body);
       if (picker) item.appendChild(picker);
+      if (canAlert) {
+        item.classList.add("sa-card-choices");
+        item.appendChild(alertHost);
+      }
       list.appendChild(item);
     });
 
