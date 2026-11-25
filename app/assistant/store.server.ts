@@ -39,6 +39,46 @@ export async function findConversation(
   });
 }
 
+/**
+ * Records, changes or takes back the shopper's rating of their own chat.
+ * Like `findConversation`, the id must belong to the same shop, audience and
+ * visitor: nobody rates a chat that is not theirs. False when there is none.
+ * The chat's own "last activity" time is left alone.
+ */
+export async function rateConversation(
+  db: PrismaClient,
+  key: ConversationKey,
+  conversationId: string,
+  rating: "up" | "down" | null,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const mine = await findConversation(db, key, conversationId);
+  if (!mine) return false;
+  const current = await db.conversation.findFirst({
+    where: { id: mine.id, shop: key.shop },
+    select: { updatedAt: true },
+  });
+  const changed = await db.conversation.updateMany({
+    where: { id: mine.id, shop: key.shop },
+    data: { rating, ratedAt: rating ? now : null, updatedAt: current?.updatedAt },
+  });
+  return changed.count > 0;
+}
+
+/** How shoppers rated the chats still on record for a shop. */
+export async function ratingCounts(
+  db: PrismaClient,
+  shop: string,
+): Promise<{ up: number; down: number }> {
+  const rows = await db.conversation.groupBy({
+    by: ["rating"],
+    where: { shop, audience: "shopper", isPreview: false, rating: { not: null } },
+    _count: { _all: true },
+  });
+  const count = (rating: string) => rows.find((row) => row.rating === rating)?._count._all ?? 0;
+  return { up: count("up"), down: count("down") };
+}
+
 export async function createConversation(
   db: PrismaClient,
   key: ConversationKey,
@@ -187,6 +227,7 @@ export async function listConversations(
       updatedAt: true,
       createdAt: true,
       customerId: true,
+      rating: true,
       _count: { select: { messages: true } },
       messages: {
         where: { role: "user" },
@@ -201,6 +242,7 @@ export async function listConversations(
     startedAt: row.createdAt,
     updatedAt: row.updatedAt,
     loggedIn: Boolean(row.customerId),
+    rating: row.rating === "up" || row.rating === "down" ? row.rating : null,
     messageCount: row._count.messages,
     firstMessage: row.messages[0]?.content ?? "",
   }));
@@ -217,6 +259,7 @@ export async function getConversationTranscript(
       id: true,
       audience: true,
       isPreview: true,
+      rating: true,
       createdAt: true,
       updatedAt: true,
       messages: {
@@ -225,6 +268,98 @@ export async function getConversationTranscript(
       },
     },
   });
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface ChatAnalytics {
+  /** Shopper chats started in the last 7 and the last 30 days. */
+  conversations: { last7: number; last30: number };
+  /** Messages shoppers wrote in the last 30 days. */
+  shopperMessages: number;
+  /** Chats of the last 30 days by a customer signed in to their account. */
+  signedIn: number;
+  /** How the chats of the last 30 days were rated. */
+  ratings: { up: number; down: number };
+  /** Pay-on-delivery orders placed through the chat in the last 30 days. */
+  ordersPlaced: number;
+  /**
+   * The chats of the last 30 days by how much the shopper wrote: one
+   * message, two to four, or five and more.
+   */
+  lengths: { one: number; few: number; many: number };
+  /** Chats started on each of the last 7 days, oldest first. Days are in UTC. */
+  perDay: Array<{ date: string; count: number }>;
+}
+
+/**
+ * A few numbers about a shop's storefront chats for the merchant's home page.
+ * They cover only what is still on record: chats are deleted after the shop's
+ * retention period, and their messages and orders go with them. The
+ * merchant's own test chats are left out.
+ */
+export async function chatAnalytics(
+  db: PrismaClient,
+  shop: string,
+  now: Date = new Date(),
+): Promise<ChatAnalytics> {
+  const since30 = new Date(now.getTime() - 30 * DAY_MS);
+  // Seven calendar days ending today, so the chart has whole days.
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const since7 = new Date(today - 6 * DAY_MS);
+  const chats = { shop, audience: "shopper", isPreview: false } as const;
+
+  const [last30, signedIn, rated, shopperMessages, ordersPlaced, week, written] = await Promise.all([
+    db.conversation.count({ where: { ...chats, createdAt: { gte: since30 } } }),
+    db.conversation.count({
+      where: { ...chats, createdAt: { gte: since30 }, customerId: { not: null } },
+    }),
+    db.conversation.groupBy({
+      by: ["rating"],
+      where: { ...chats, createdAt: { gte: since30 }, rating: { not: null } },
+      _count: { _all: true },
+    }),
+    db.message.count({
+      where: { role: "user", createdAt: { gte: since30 }, conversation: chats },
+    }),
+    db.conversationOrder.count({
+      where: { shop, source: "placed", createdAt: { gte: since30 }, conversation: chats },
+    }),
+    db.conversation.findMany({
+      where: { ...chats, createdAt: { gte: since7 } },
+      select: { createdAt: true },
+    }),
+    db.message.groupBy({
+      by: ["conversationId"],
+      where: { role: "user", conversation: { ...chats, createdAt: { gte: since30 } } },
+      _count: { _all: true },
+    }),
+  ]);
+  const lengths = { one: 0, few: 0, many: 0 };
+  for (const chat of written) {
+    const messages = chat._count._all;
+    lengths[messages <= 1 ? "one" : messages <= 4 ? "few" : "many"] += 1;
+  }
+
+  const perDay = Array.from({ length: 7 }, (_, index) => ({
+    date: new Date(since7.getTime() + index * DAY_MS).toISOString().slice(0, 10),
+    count: 0,
+  }));
+  for (const chat of week) {
+    const day = perDay.find((entry) => entry.date === chat.createdAt.toISOString().slice(0, 10));
+    if (day) day.count += 1;
+  }
+  const ratedAs = (rating: string) => rated.find((row) => row.rating === rating)?._count._all ?? 0;
+
+  return {
+    conversations: { last7: week.length, last30 },
+    shopperMessages,
+    signedIn,
+    ratings: { up: ratedAs("up"), down: ratedAs("down") },
+    ordersPlaced,
+    lengths,
+    perDay,
+  };
 }
 
 export async function countConversationsSince(

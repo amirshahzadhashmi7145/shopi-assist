@@ -21,6 +21,10 @@
   var WIDGET_SUPPORTS = ["choices"];
   // Up to this many answers to a question are shown as buttons; more become a list.
   var MAX_CHOICE_BUTTONS = 4;
+  // How long after the last press on − or + the cart is told the new quantity.
+  // Several quick presses become one request.
+  var CART_CHANGE_DELAY_MS = 350;
+  var EMPTY_CART_TEXT = "Your cart is empty. Tell me what you'd like to order.";
   var MAX_CARD_VARIANTS = 12;
   var MAX_SUMMARY_LINES = 12;
 
@@ -35,6 +39,12 @@
     close: { size: 20, stroke: 2, d: "M6 6l12 12M18 6L6 18" },
     reset: { size: 18, stroke: 2, d: "M4 5v5h5M4.6 14a8 8 0 1 0 1.6-7.5L4 10" },
     send: { size: 18, stroke: 2.2, d: "M12 19V5M6 11l6-6 6 6" },
+    // A raised thumb. Turned over by its button's class for the other answer.
+    thumb: {
+      size: 17,
+      stroke: 1.9,
+      d: "M7 10.5l3.6-6.9c1.4-.3 2.5.7 2.5 2.1v3.4h5.1c1.5 0 2.5 1.3 2.2 2.7l-1.3 6.6c-.2 1.2-1.2 2-2.4 2H7zM7 10.5H3.5v10H7",
+    },
   };
 
   function icon(name) {
@@ -322,8 +332,10 @@
     this.config = {
       endpoint: data.endpoint || "/apps/shopi-assist/chat",
       stylesheet: data.stylesheet || "",
-      title: data.title || "Shopping assistant",
-      greeting: data.greeting || "Hi! How can I help?",
+      // The app's own defaults, shown until the app has answered with the
+      // name and welcome message the merchant set there.
+      title: data.title || "Ava",
+      greeting: data.greeting || "Hi there! 👋 Welcome! How can I help you today?",
       accent: /^#[0-9a-f]{6}$/i.test(data.accent || "") ? data.accent : "#1F3D2F",
       position: data.position === "left" ? "left" : "right",
       suggestions: [data.suggestion1, data.suggestion2, data.suggestion3].filter(function (s) {
@@ -336,7 +348,11 @@
       checkoutUrl: "/checkout",
       orderEndpoint:
         data.orderEndpoint || (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "order"),
+      ratingEndpoint:
+        data.ratingEndpoint || (data.endpoint || "/apps/shopi-assist/chat").replace(/chat$/, "rating"),
     };
+    // True when the merchant lets shoppers rate the chat.
+    this.ratings = false;
     // True when the merchant takes pay-on-delivery orders in the chat.
     this.chatOrders = false;
     // True when product cards may start an order with "Buy now".
@@ -344,6 +360,14 @@
     // False until the app's settings have arrived. A page that loaded while
     // the app was unreachable asks again once a reply shows it is back.
     this.remoteLoaded = false;
+    // Quantity changes on their way to the cart, by cart line: see queueCartQuantity.
+    this.cartQueue = {};
+    // The most of a line the store would put in the cart, once it has said so.
+    this.cartLimits = {};
+    // Lines the shopper has removed and the cart has not heard about yet.
+    this.cartRemoving = {};
+    // Removals reach the cart one after another, in the order they were made.
+    this.cartWork = Promise.resolve();
     // The open order form, if any. Its contents are never stored.
     this.orderForm = null;
     // True on a development store: the order form offers to fill in test details.
@@ -363,12 +387,15 @@
       visitorId: /^[A-Za-z0-9_-]{8,64}$/.test(stored.visitorId || "") ? stored.visitorId : randomId(),
       conversationId: typeof stored.conversationId === "string" ? stored.conversationId : null,
       messages: Array.isArray(stored.messages) ? stored.messages : [],
+      // What the shopper said of this chat: "up", "down", or nothing yet.
+      rating: stored.rating === "up" || stored.rating === "down" ? stored.rating : null,
       updatedAt: Number(stored.updatedAt) || 0,
     };
     // A stale conversation is confusing; start fresh after a day of silence.
     if (state.updatedAt && Date.now() - state.updatedAt > IDLE_RESET_MS) {
       state.conversationId = null;
       state.messages = [];
+      state.rating = null;
     }
     return state;
   };
@@ -467,6 +494,31 @@
     var suggestions = el("div", "sa-suggestions");
     this.suggestionsEl = suggestions;
 
+    // Thumbs up or down for the chat as a whole, under the messages.
+    var rating = el("div", "sa-rating");
+    rating.hidden = true;
+    rating.setAttribute("role", "group");
+    rating.setAttribute("aria-label", "Rate this chat");
+    this.ratingEl = rating;
+    this.ratingTextEl = el("span", "sa-rating-text", "");
+    rating.appendChild(this.ratingTextEl);
+    this.ratingButtons = {};
+    [
+      ["up", "Good"],
+      ["down", "Not good"],
+    ].forEach(function (choice) {
+      var button = el("button", "sa-rating-button sa-rating-" + choice[0]);
+      button.type = "button";
+      button.setAttribute("aria-label", choice[1]);
+      button.title = choice[1];
+      button.appendChild(icon("thumb"));
+      button.addEventListener("click", function () {
+        self.rateChat(choice[0]);
+      });
+      rating.appendChild(button);
+      self.ratingButtons[choice[0]] = button;
+    });
+
     var form = el("form", "sa-form");
     form.noValidate = true;
     var input = el("textarea", "sa-input");
@@ -504,6 +556,7 @@
     panel.appendChild(header);
     panel.appendChild(messages);
     panel.appendChild(suggestions);
+    panel.appendChild(rating);
     panel.appendChild(form);
     panel.appendChild(footnote);
     panel.addEventListener("keydown", function (event) {
@@ -555,6 +608,8 @@
         return message.cards && message.cards.length;
       });
     }
+    this.ratings = remote.ratings === true;
+    this.renderRating();
     var chatOrders = remote.chatOrders === true;
     if (chatOrders !== this.chatOrders) {
       this.chatOrders = chatOrders;
@@ -663,6 +718,8 @@
     if (this.pending) return;
     this.state.conversationId = null;
     this.state.messages = [];
+    // A new chat has not been rated.
+    this.state.rating = null;
     this.lastFailedMessage = null;
     this.saveState();
     this.renderAll();
@@ -701,7 +758,82 @@
       self.renderMessage(message);
     });
     this.renderSuggestions();
+    this.renderRating();
     this.scrollToEnd();
+  };
+
+  /**
+   * The thumbs under the chat. Shown once the assistant has answered in a
+   * chat the app knows, where the merchant asks for ratings.
+   */
+  Widget.prototype.renderRating = function () {
+    var answered = this.state.messages.some(function (message) {
+      return message.role === "assistant";
+    });
+    var show = this.ratings && Boolean(this.state.conversationId) && answered;
+    this.ratingEl.hidden = !show;
+    if (!show) return;
+    var given = this.state.rating;
+    this.ratingTextEl.textContent = this.ratingFailed
+      ? "That rating couldn't be saved. Try again?"
+      : given
+        ? "Thanks for your feedback."
+        : "How is this chat going?";
+    var self = this;
+    ["up", "down"].forEach(function (value) {
+      var button = self.ratingButtons[value];
+      button.setAttribute("aria-pressed", given === value ? "true" : "false");
+      button.classList.toggle("sa-rating-on", given === value);
+    });
+  };
+
+  /**
+   * Gives the chat a thumbs-up or thumbs-down, or takes it back when the same
+   * thumb is pressed again. Shown at once and sent in the background.
+   */
+  Widget.prototype.rateChat = function (value) {
+    var self = this;
+    var conversationId = this.state.conversationId;
+    if (!conversationId) return Promise.resolve();
+    var before = this.state.rating;
+    var rating = before === value ? null : value;
+    this.state.rating = rating;
+    this.ratingFailed = false;
+    this.saveState();
+    this.renderRating();
+
+    return window
+      .fetch(this.config.ratingEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          visitorId: this.state.visitorId,
+          conversationId: conversationId,
+          rating: rating,
+        }),
+      })
+      .then(function (response) {
+        return response.json().then(
+          function (body) {
+            return response.ok && body && body.ok === true;
+          },
+          function () {
+            return false;
+          },
+        );
+      })
+      .catch(function () {
+        return false;
+      })
+      .then(function (saved) {
+        // The shopper may have moved on, or pressed again, since.
+        if (saved || self.state.conversationId !== conversationId || self.state.rating !== rating) return;
+        self.state.rating = before;
+        self.ratingFailed = true;
+        self.saveState();
+        self.renderRating();
+      });
   };
 
   Widget.prototype.renderSuggestions = function () {
@@ -792,24 +924,25 @@
     box.setAttribute("aria-label", "Order summary");
     box.appendChild(el("h3", "sa-order-title", "Your order"));
 
-    // One change to the cart at a time: the summary is drawn again from the
-    // cart once Shopify has answered.
-    var busy = function () {
-      var buttons = box.querySelectorAll("button, input");
-      for (var i = 0; i < buttons.length; i += 1) buttons[i].disabled = true;
-    };
-
-    /** Draws the summary again in place after a line is ticked or unticked. */
-    var redraw = function (line) {
+    /**
+     * Draws the summary again in place after a line is ticked, unticked or
+     * given another quantity, and puts the focus back where it was.
+     */
+    var redraw = function (line, control) {
       // An order form opened from the summary was for the lines as they were.
       if (self.orderForm && !self.orderForm.mode) self.closeOrderForm();
       self.saveState();
       var fresh = self.appendOrder(entry);
-      if (!fresh || !box.parentNode) return;
+      if (!fresh || !box.parentNode) return null;
       box.parentNode.insertBefore(fresh, box);
       box.parentNode.removeChild(box);
-      var again = fresh.querySelector('.sa-order-pick[data-line="' + lines.indexOf(line) + '"]');
+      var at = lines.indexOf(line);
+      var again = control
+        ? fresh.querySelector('[data-step="' + control + ":" + at + '"]:not([disabled])') ||
+          fresh.querySelector('[data-step$=":' + at + '"]:not([disabled])')
+        : fresh.querySelector('.sa-order-pick[data-line="' + at + '"]');
       if (again) again.focus();
+      return fresh;
     };
 
     var addLine = function (list, line) {
@@ -844,26 +977,63 @@
         var more = el("button", "sa-stepper-button", "+");
         more.type = "button";
         more.setAttribute("aria-label", "One more: " + line.title);
-        more.disabled = quantity >= MAX_ITEM_QUANTITY;
+        // No more than the store has said it can put in the cart.
+        var stock = self.cartLimits[line.key];
+        var most = Math.min(MAX_ITEM_QUANTITY, stock || MAX_ITEM_QUANTITY);
+        more.disabled = quantity >= most;
+        less.setAttribute("data-step", "less:" + lines.indexOf(line));
+        more.setAttribute("data-step", "more:" + lines.indexOf(line));
+        // The new quantity shows at once, with the price worked out from the
+        // line as it stood. The cart is told a moment later, once for however
+        // many presses, and the summary is then drawn again from its answer.
+        var step = function (next, control) {
+          var each = typeof line.total === "number" ? line.total / quantity : null;
+          if (each !== null) {
+            if (typeof entry.subtotal === "number") entry.subtotal += each * (next - quantity);
+            line.total = each * next;
+          }
+          line.quantity = next;
+          self.queueCartQuantity(line.key, next);
+          redraw(line, control);
+        };
         less.addEventListener("click", function () {
-          busy();
-          self.setCartQuantity(line.key, quantity - 1);
+          step(quantity - 1, "less");
         });
         more.addEventListener("click", function () {
-          busy();
-          self.setCartQuantity(line.key, quantity + 1);
+          step(quantity + 1, "more");
         });
         stepper.appendChild(less);
         stepper.appendChild(count);
         stepper.appendChild(more);
         edit.appendChild(stepper);
+        if (stock && quantity >= stock) {
+          edit.appendChild(el("span", "sa-order-limit", "Only " + stock + " available"));
+        }
 
         var remove = el("button", "sa-order-remove", "Remove");
         remove.type = "button";
         remove.setAttribute("aria-label", "Remove " + line.title);
+        // Gone from the summary at once. The cart is told in the background,
+        // and the line comes back, with a note, only if the cart says no.
         remove.addEventListener("click", function () {
-          busy();
-          self.removeFromCart(line.key);
+          var at = lines.indexOf(line);
+          entry.lines = entry.lines.filter(function (other) {
+            return other !== line;
+          });
+          if (typeof entry.subtotal === "number" && typeof line.total === "number") {
+            entry.subtotal -= line.total;
+          }
+          var left = lines.length - 1;
+          self.removeFromCart(line.key, left === 0);
+          if (left === 0) {
+            self.dropOrderSummary();
+            self.pushEntry({ role: "notice", text: EMPTY_CART_TEXT });
+            return;
+          }
+          var fresh = redraw(null);
+          var buttons = fresh ? fresh.querySelectorAll(".sa-order-remove") : [];
+          var next = buttons[Math.min(at, buttons.length - 1)] || (fresh && fresh.querySelector("button, input"));
+          if (next) next.focus();
         });
         edit.appendChild(remove);
         item.appendChild(edit);
@@ -1506,11 +1676,16 @@
         }
 
         var body = result.body;
-        if (typeof body.conversationId === "string") self.state.conversationId = body.conversationId;
+        if (typeof body.conversationId === "string") {
+          // Another chat than the one that was rated: its rating starts empty.
+          if (body.conversationId !== self.state.conversationId) self.state.rating = null;
+          self.state.conversationId = body.conversationId;
+        }
         var cards = Array.isArray(body.cards) ? body.cards : [];
         var entry = { role: "assistant", text: body.reply, cards: cards };
         self.state.messages.push(entry);
         self.saveState();
+        self.renderRating();
         self.scrollToMessage(self.renderMessage(entry));
 
         // A failed action reports itself in the chat. It must never look like
@@ -1832,9 +2007,10 @@
    * empty. `picked` lists the variants just asked for: they are ticked for
    * the order and the rest of the cart is listed unticked.
    */
-  Widget.prototype.showOrderSummary = function (picked) {
+  Widget.prototype.showOrderSummary = function (picked, known) {
     var self = this;
-    return this.fetchCart().then(function (cart) {
+    // A change to the cart answers with the cart: no need to ask for it again.
+    return (known ? Promise.resolve(known) : this.fetchCart()).then(function (cart) {
       if (!cart) {
         // The cart could not be read. The checkout link itself still works.
         self.pushEntry({
@@ -1863,14 +2039,39 @@
       // One summary at a time: an older one would show a cart that has changed.
       self.dropOrderSummary();
 
+      // A line the shopper has removed stays gone while the cart is being told.
+      var waitingToGo = Object.keys(self.cartRemoving).length > 0;
+      if (waitingToGo) {
+        cart = {
+          currency: cart.currency,
+          items: cart.items.filter(function (item) {
+            return !self.cartRemoving[item.key];
+          }),
+          total_price: cart.items.reduce(function (sum, item) {
+            var amount = item.final_line_price !== undefined ? item.final_line_price : item.line_price;
+            return self.cartRemoving[item.key] ? sum : sum + (Number(amount) || 0);
+          }, 0),
+        };
+      }
       if (!cart.items.length) {
-        self.pushEntry({
-          role: "notice",
-          text: "Your cart is empty. Tell me what you'd like to order.",
-        });
+        // Said already, when the last line was removed.
+        if (!waitingToGo) self.pushEntry({ role: "notice", text: EMPTY_CART_TEXT });
         return;
       }
-      self.pushEntry(orderSummary(cart, chosen, before));
+      var summary = orderSummary(cart, chosen, before);
+      // A quantity the shopper has just set, and the cart has not heard yet,
+      // is what they see: it is on its way.
+      summary.lines.forEach(function (line) {
+        var job = self.cartQueue[line.key];
+        if (!job || job.target === line.quantity) return;
+        if (typeof line.total === "number") {
+          var each = line.total / line.quantity;
+          if (typeof summary.subtotal === "number") summary.subtotal += each * (job.target - line.quantity);
+          line.total = each * job.target;
+        }
+        line.quantity = job.target;
+      });
+      self.pushEntry(summary);
     });
   };
 
@@ -1921,7 +2122,8 @@
 
   /**
    * Sets one cart line's quantity; none given takes the line out. Resolves
-   * true when Shopify agreed.
+   * with the cart as Shopify now has it, or with `refused` when Shopify said
+   * no to the change itself (there is not that much in stock, for one).
    */
   Widget.prototype.changeCartLine = function (key, quantity) {
     return window
@@ -1932,41 +2134,120 @@
         body: JSON.stringify({ id: key, quantity: quantity > 0 ? quantity : 0 }),
       })
       .then(function (response) {
-        return response.ok ? response.json() : null;
-      })
-      .then(function (cart) {
-        if (cart) {
-          document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: cart }));
-        }
-        return Boolean(cart);
+        if (!response.ok) return { cart: null, refused: response.status === 422 };
+        return response.json().then(function (cart) {
+          var read = cart && Array.isArray(cart.items) ? cart : null;
+          if (read) {
+            document.dispatchEvent(new CustomEvent("shopi-assist:cart-updated", { detail: read }));
+          }
+          return { cart: read, refused: false };
+        });
       })
       .catch(function () {
-        return false;
+        return { cart: null, refused: false };
       });
   };
 
-  /** Takes one line out of the storefront cart, then shows the summary again. */
-  Widget.prototype.removeFromCart = function (key) {
+  /**
+   * Takes one line out of the storefront cart. The summary has already been
+   * drawn without it, so this only tells the cart, one removal after
+   * another, and puts the line back with a note if the cart will not let go
+   * of it. `wasLast` means the summary already says the cart is empty.
+   */
+  Widget.prototype.removeFromCart = function (key, wasLast) {
     var self = this;
-    // The summary is read from the cart again, so it shows the truth either way.
-    return this.changeCartLine(key).then(function () {
-      return self.showOrderSummary();
+    delete this.cartQueue[key];
+    this.cartRemoving[key] = true;
+    this.cartWork = this.cartWork.then(function () {
+      return self.changeCartLine(key).then(function (result) {
+        delete self.cartRemoving[key];
+        if (result.cart) {
+          // Nothing new to show: the summary was right already.
+          if (wasLast && !result.cart.items.length) return undefined;
+          return self.showOrderSummary(undefined, result.cart);
+        }
+        // Still in the cart. Take back "your cart is empty" if that was said.
+        self.state.messages = self.state.messages.filter(function (message) {
+          return !(message.role === "notice" && message.text === EMPTY_CART_TEXT);
+        });
+        self.renderAll();
+        return self.showOrderSummary().then(function () {
+          self.pushEntry({
+            role: "notice",
+            tone: "error",
+            text: "That item couldn't be removed. Your order is as shown above.",
+          });
+        });
+      });
     });
+    return this.cartWork;
   };
 
-  /** Changes how many of one line the cart holds, then shows the summary again. */
-  Widget.prototype.setCartQuantity = function (key, quantity) {
+  /**
+   * Notes the quantity the shopper wants for a line and tells the cart a
+   * moment later. Presses that follow quickly replace the quantity instead of
+   * each making a request, so tapping + four times is one change to the cart.
+   */
+  Widget.prototype.queueCartQuantity = function (key, quantity) {
     var self = this;
-    return this.changeCartLine(key, quantity).then(function (changed) {
-      return self.showOrderSummary().then(function () {
-        // Shopify says no when, for one, there is not that much in stock.
-        if (!changed) {
+    var job = this.cartQueue[key] || (this.cartQueue[key] = { target: quantity, timer: null, sending: false });
+    job.target = quantity;
+    window.clearTimeout(job.timer);
+    job.timer = window.setTimeout(function () {
+      self.sendCartQuantity(key);
+    }, CART_CHANGE_DELAY_MS);
+  };
+
+  /**
+   * Tells the cart the quantity waiting for a line, then shows the cart's
+   * answer. When Shopify refuses because it does not have that many, the
+   * most it does have is found by asking for one fewer until it agrees, and
+   * remembered, so + stops there without asking again.
+   */
+  Widget.prototype.sendCartQuantity = function (key) {
+    var self = this;
+    var job = this.cartQueue[key];
+    // One at a time for a line: the request on its way looks again when it is back.
+    if (!job || job.sending) return Promise.resolve();
+    var sent = job.target;
+    job.sending = true;
+    return this.changeCartLine(key, sent).then(function (result) {
+      job.sending = false;
+      if (self.cartQueue[key] !== job) return undefined;
+      // Pressed again meanwhile: that quantity is the one that counts.
+      if (job.target !== sent) return self.sendCartQuantity(key);
+
+      if (result.cart) {
+        delete self.cartQueue[key];
+        // One more than this was refused a moment ago: this is all there is.
+        if (job.refused === sent + 1) self.cartLimits[key] = sent;
+        return self.showOrderSummary(undefined, result.cart);
+      }
+
+      // Not set. See what the cart holds, to tell too many from anything else.
+      return self.fetchCart().then(function (cart) {
+        if (self.cartQueue[key] !== job) return undefined;
+        var line = (cart ? cart.items : []).filter(function (item) {
+          return item.key === key;
+        })[0];
+        var held = line ? Number(line.quantity) : 0;
+        var tooMany = result.refused && held > 0 && sent > held;
+        if (tooMany && sent - 1 > held && job.target === sent) {
+          // Somewhere between what the cart holds and what was asked for.
+          job.refused = sent;
+          job.target = sent - 1;
+          return self.sendCartQuantity(key);
+        }
+        delete self.cartQueue[key];
+        if (tooMany) self.cartLimits[key] = held;
+        return self.showOrderSummary(undefined, cart || undefined).then(function () {
+          if (tooMany) return;
           self.pushEntry({
             role: "notice",
             tone: "error",
             text: "That quantity couldn't be set. Your order is as shown above.",
           });
-        }
+        });
       });
     });
   };
@@ -1985,8 +2266,8 @@
       // One after another: each change gives the remaining lines new positions.
       return keys.reduce(function (chain, key) {
         return chain.then(function (removed) {
-          return self.changeCartLine(key).then(function (ok) {
-            return removed || ok;
+          return self.changeCartLine(key).then(function (result) {
+            return removed || Boolean(result.cart);
           });
         });
       }, Promise.resolve(false));

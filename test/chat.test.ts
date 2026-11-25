@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -365,8 +367,7 @@ describe("handleChatTurn", () => {
         returnPolicy: "30 days, unused, free return label.",
         shippingInfo: "Ships next business day from Calgary.",
         faq: "Do you wax boards? Yes, free on request.",
-        assistantName: "Ava",
-        tone: "professional",
+        assistantName: "Mia",
       },
       db,
     );
@@ -374,8 +375,8 @@ describe("handleChatTurn", () => {
     await turn({}, { provider });
 
     const system = provider.requests[0].messages[0].content as string;
-    expect(system).toContain("You are Ava, the shopping assistant");
-    expect(system).toContain("Polite, precise and businesslike");
+    expect(system).toContain("You are Mia, the shopping assistant");
+    expect(system).toContain("Tone: Professional, polite and precise.");
     for (const fact of [
       "Small-batch snowboards for beginners.",
       "30 days, unused, free return label.",
@@ -1006,21 +1007,44 @@ describe("settings", () => {
       enabled: true,
       orderLookupEnabled: false,
       retentionDays: 30,
-      tone: "friendly",
+      // Named, and with a welcome, before the merchant has written either.
+      assistantName: "Ava",
+      greeting: "Hi there! 👋 Welcome! How can I help you today?",
       businessDescription: "",
     });
+    expect(DEFAULT_SETTINGS).not.toHaveProperty("tone");
+  });
+
+  it("goes back to the default name and welcome when the merchant clears them", async () => {
+    await saveSettings(SHOP_A, { assistantName: "Mia", greeting: "Hello from Alpine!" }, db);
+    expect(await getSettings(SHOP_A, db)).toMatchObject({ assistantName: "Mia", greeting: "Hello from Alpine!" });
+
+    await saveSettings(SHOP_A, { assistantName: "  ", greeting: "" }, db);
+    expect(await getSettings(SHOP_A, db)).toMatchObject({
+      assistantName: DEFAULT_SETTINGS.assistantName,
+      greeting: DEFAULT_SETTINGS.greeting,
+    });
+  });
+
+  it("has the same default name and welcome in the app and in the widget", () => {
+    const widget = readFileSync("extensions/chat-widget/assets/shopi-assist.js", "utf8");
+    for (const value of [DEFAULT_SETTINGS.assistantName, DEFAULT_SETTINGS.greeting]) {
+      expect(widget).toContain(JSON.stringify(value));
+    }
+    // Neither is a theme editor setting any more: the app is where they are changed.
+    const block = readFileSync("extensions/chat-widget/blocks/shopi-assist-chat.liquid", "utf8");
+    expect(block).not.toMatch(/"id": "(title|greeting)"/);
   });
 
   it("saves one setup step without touching the others", async () => {
     await saveSettings(SHOP_A, { businessDescription: "We sell snowboards." }, db);
     await saveSettings(SHOP_A, { returnPolicy: "30 days.", shippingInfo: "" }, db);
-    await saveSettings(SHOP_A, { assistantName: "  Ava  ", tone: "playful" }, db);
+    await saveSettings(SHOP_A, { assistantName: "  Mia  " }, db);
 
     expect(await getSettings(SHOP_A, db)).toMatchObject({
       businessDescription: "We sell snowboards.",
       returnPolicy: "30 days.",
-      assistantName: "Ava",
-      tone: "playful",
+      assistantName: "Mia",
       enabled: true,
       retentionDays: 30,
     });
@@ -1028,7 +1052,7 @@ describe("settings", () => {
     expect((await getSettings(SHOP_B, db)).businessDescription).toBe("");
   });
 
-  it("rejects an unknown tone and over-long answers", async () => {
+  it("rejects over-long answers, and has no tone to set", async () => {
     const result = await saveSettings(
       SHOP_A,
       { tone: "sarcastic", assistantName: "x".repeat(41), faq: "y".repeat(3001) },
@@ -1036,8 +1060,11 @@ describe("settings", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(Object.keys(result.errors).sort()).toEqual(["assistantName", "faq", "tone"]);
+      expect(Object.keys(result.errors).sort()).toEqual(["assistantName", "faq"]);
     }
+    // A tone sent anyway is not a setting: it is dropped, not stored.
+    const saved = await saveSettings(SHOP_A, { tone: "sarcastic" }, db);
+    expect(saved.ok && "tone" in saved.settings).toBe(false);
   });
 
   it("reads only the fields a page is allowed to change", () => {
@@ -1057,6 +1084,43 @@ describe("settings", () => {
     });
   });
 
+  it("asks for nothing typed in the setup tour, and keeps typed settings folded away in Settings", async () => {
+    const TYPED = /<s-(text-field|text-area|number-field)\b/;
+    const fields = readFileSync("app/components/AssistantFields.tsx", "utf8");
+    const component = (name: string) => {
+      const start = fields.indexOf(`function ${name}(`);
+      expect(start).toBeGreaterThan(-1);
+      const end = fields.indexOf("\nexport function ", start + 1);
+      return fields.slice(start, end < 0 ? undefined : end);
+    };
+
+    // The tour shows the abilities and the policy picks: ticks and lists only.
+    const tour = readFileSync("app/routes/app.setup.tsx", "utf8");
+    expect(tour).not.toMatch(TYPED);
+    expect(tour.match(/<(\w+Fields)\b/g)).toEqual(["<AbilityFields", "<QuickPolicyFields"]);
+    for (const name of ["AbilityFields", "OrderFormFields", "QuickPolicyFields", "RetentionField"]) {
+      expect(component(name)).not.toMatch(TYPED);
+    }
+
+    // On the Settings page everything typed comes after the fold.
+    const page = readFileSync("app/routes/app.settings.tsx", "utf8");
+    const fold = page.indexOf("<details");
+    expect(fold).toBeGreaterThan(-1);
+    expect(page.slice(0, fold)).not.toMatch(TYPED);
+    expect(page.slice(0, fold)).not.toMatch(/<(Personality|PaymentWording|Business|Policy|Question)Fields/);
+
+    // Saving a tour step leaves what was typed in Settings alone.
+    await saveSettings(SHOP_A, { orderPaymentName: "Pay the courier", assistantName: "Mia" }, db);
+    const { FIELD_GROUPS } = await import("../app/components/AssistantFields");
+    const step = settingsFromForm(new FormData(), [...FIELD_GROUPS.abilities, ...FIELD_GROUPS.quickPolicies]);
+    expect(Object.keys(step)).not.toContain("orderPaymentName");
+    await saveSettings(SHOP_A, step, db);
+    expect(await getSettings(SHOP_A, db)).toMatchObject({
+      orderPaymentName: "Pay the courier",
+      assistantName: "Mia",
+    });
+  });
+
   it("tracks the setup tour and reports progress from what is actually saved", async () => {
     expect(await getSetupState(SHOP_A, db)).toEqual({ started: false, completed: false });
 
@@ -1065,7 +1129,6 @@ describe("settings", () => {
     // Opening the tour fills nothing in.
     expect(setupProgress(await getSettings(SHOP_A, db))).toEqual({
       policies: false,
-      personality: false,
       details: false,
     });
 
@@ -1074,7 +1137,7 @@ describe("settings", () => {
     expect(await getSetupState(SHOP_A, db)).toEqual({ started: true, completed: true });
     expect(setupProgress(await getSettings(SHOP_A, db))).toMatchObject({
       policies: true,
-      personality: false,
+      details: false,
     });
     // Starting the tour never wiped the saved pick.
     expect((await getSettings(SHOP_A, db)).returnWindow).toBe("30");

@@ -43,6 +43,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       greeting: settings.greeting,
       // Whether the order summary offers "Order here, pay on delivery".
       chatOrders,
+      // Whether shoppers can give the chat a thumbs-up or thumbs-down.
+      ratings: settings.chatRatings,
       // Whether product cards offer "Buy now", which starts an order.
       buyNow: settings.allowCheckout && settings.allowAddToCart,
       // On a development store the order form offers to fill in test details.

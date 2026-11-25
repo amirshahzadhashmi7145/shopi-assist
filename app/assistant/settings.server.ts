@@ -2,9 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 
 import prisma from "../db.server";
+import { DEFAULT_ASSISTANT_NAME, DEFAULT_GREETING } from "./assistant-defaults";
 
-export const TONES = ["friendly", "professional", "playful"] as const;
-export type Tone = (typeof TONES)[number];
 
 const text = (max: number, label: string) =>
   z
@@ -52,7 +51,6 @@ export const settingsSchema = z.object({
   // Personality.
   assistantName: text(40, "the name"),
   greeting: text(300, "the welcome message"),
-  tone: z.enum(TONES, "Choose one of the listed tones."),
   // What the assistant may do for shoppers.
   allowAddToCart: z.boolean(),
   allowCheckout: z.boolean(),
@@ -62,6 +60,7 @@ export const settingsSchema = z.object({
   allowAddressChange: z.boolean(),
   allowOrderEdit: z.boolean(),
   recogniseCustomers: z.boolean(),
+  chatRatings: z.boolean(),
   // The order form's fields.
   orderFirstName: choice(ORDER_FORM_CHOICES.orderFirstName),
   orderCompany: choice(ORDER_FORM_CHOICES.orderCompany),
@@ -90,9 +89,8 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   returnPolicy: "",
   shippingInfo: "",
   faq: "",
-  assistantName: "",
-  greeting: "",
-  tone: "friendly",
+  assistantName: DEFAULT_ASSISTANT_NAME,
+  greeting: DEFAULT_GREETING,
   allowAddToCart: true,
   allowCheckout: true,
   allowReturns: false,
@@ -101,6 +99,7 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   allowAddressChange: false,
   allowOrderEdit: false,
   recogniseCustomers: false,
+  chatRatings: true,
   orderFirstName: "optional",
   orderCompany: "hidden",
   orderAddress2: "optional",
@@ -140,9 +139,9 @@ export async function getSettings(
     returnPolicy: row.returnPolicy,
     shippingInfo: row.shippingInfo,
     faq: row.faq,
-    assistantName: row.assistantName,
-    greeting: row.greeting,
-    tone: (TONES as readonly string[]).includes(row.tone) ? (row.tone as Tone) : "friendly",
+    // Left empty, or never set: the defaults.
+    assistantName: row.assistantName || DEFAULT_ASSISTANT_NAME,
+    greeting: row.greeting || DEFAULT_GREETING,
     allowAddToCart: row.allowAddToCart,
     allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
@@ -151,6 +150,7 @@ export async function getSettings(
     allowAddressChange: row.allowAddressChange,
     allowOrderEdit: row.allowOrderEdit,
     recogniseCustomers: row.recogniseCustomers,
+    chatRatings: row.chatRatings ?? true,
     orderFirstName: pickOr(ORDER_FORM_CHOICES.orderFirstName, row.orderFirstName),
     orderCompany: pickOr(ORDER_FORM_CHOICES.orderCompany, row.orderCompany),
     orderAddress2: pickOr(ORDER_FORM_CHOICES.orderAddress2, row.orderAddress2),
@@ -204,6 +204,7 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "allowAddressChange",
   "allowOrderEdit",
   "recogniseCustomers",
+  "chatRatings",
 ];
 const NUMBER_FIELDS: readonly SettingsField[] = ["retentionDays"];
 
@@ -295,7 +296,6 @@ export function setupProgress(settings: AssistantSettings) {
         settings.returnPolicy,
         settings.shippingInfo,
       ].some((value) => value.length > 0),
-    personality: settings.assistantName.length > 0 || settings.greeting.length > 0,
     details:
       settings.businessDescription.length > 0 ||
       settings.faq.length > 0 ||

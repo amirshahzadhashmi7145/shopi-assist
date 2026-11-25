@@ -17,7 +17,7 @@
   browser never keeps running an older cached copy after an update. Written by
   `npm run widget:stamp`; a test fails when it is out of date.
 {%- endcomment -%}
-{%- assign shopi_assist_build = 'b14973026d4b' -%}
+{%- assign shopi_assist_build = '59d6b2cc3916' -%}
 {%- assign shopi_assist_js = 'shopi-assist.js' | asset_url -%}
 {%- assign shopi_assist_css = 'shopi-assist.css' | asset_url -%}
 {%- if shopi_assist_js contains '?' -%}
@@ -30,8 +30,6 @@
   style="display: block !important;"
   data-endpoint="/apps/shopi-assist/chat"
   data-stylesheet="{{ shopi_assist_css | append: shopi_assist_stamp | escape }}"
-  data-title="{{ block.settings.title | escape }}"
-  data-greeting="{{ block.settings.greeting | escape }}"
   data-accent="{{ block.settings.accent_color | escape }}"
   data-position="{{ block.settings.position | escape }}"
   data-suggestion-1="{{ block.settings.suggestion_1 | escape }}"
@@ -59,18 +57,6 @@
   "name": "Shopi Assist chat",
   "target": "body",
   "settings": [
-    {
-      "type": "text",
-      "id": "title",
-      "label": "Chat title",
-      "default": "Shopping assistant"
-    },
-    {
-      "type": "textarea",
-      "id": "greeting",
-      "label": "Welcome message",
-      "default": "Hi! Ask me about products, best sellers, shipping or returns."
-    },
     {
       "type": "color",
       "id": "accent_color",

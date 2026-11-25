@@ -31,7 +31,6 @@ import { AssistantChat } from "../components/AssistantChat";
 import {
   AbilityFields,
   FIELD_GROUPS,
-  PersonalityFields,
   QuickPolicyFields,
 } from "../components/AssistantFields";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
@@ -40,7 +39,6 @@ import { authenticate } from "../shopify.server";
 const STEPS = [
   { key: "abilities", title: "What it can do" },
   { key: "policies", title: "Your policies" },
-  { key: "personality", title: "Name and tone" },
   { key: "live", title: "Go live" },
 ] as const;
 
@@ -50,7 +48,6 @@ const LAST_STEP = STEPS.length;
 const STEP_FIELDS: Record<number, readonly SettingsField[]> = {
   1: FIELD_GROUPS.abilities,
   2: FIELD_GROUPS.quickPolicies,
-  3: FIELD_GROUPS.personality,
 };
 
 function clampStep(value: unknown): number {
@@ -78,7 +75,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     progress: setupProgress(settings),
     completed: state.completed,
     llmReady: llm.ready,
-    llmProblem: llm.problem ?? null,
   };
 };
 
@@ -111,7 +107,7 @@ const PREVIEW_SUGGESTIONS = [
 ];
 
 export default function Setup() {
-  const { step, shop, apiKey, settings, progress, completed, llmReady, llmProblem } =
+  const { step, shop, apiKey, settings, progress, completed, llmReady } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -132,7 +128,6 @@ export default function Setup() {
     // Abilities have sensible defaults, so the step counts once the tour moves past it.
     abilities: step > 1 || completed,
     policies: progress.policies,
-    personality: progress.personality,
     live: embedStatus === "active",
   };
   const current = STEPS[step - 1];
@@ -145,8 +140,8 @@ export default function Setup() {
           {step === 1 && (
             <s-paragraph>
               Welcome! Your assistant already knows your products and reads your published
-              store policies. Setup is mostly ticking boxes and picking from lists, takes
-              about two minutes, and can be changed later in Settings.
+              store policies. Setup is ticking boxes and picking from lists, with nothing to
+              type. It takes about two minutes and can be changed later in Settings.
             </s-paragraph>
           )}
 
@@ -170,17 +165,6 @@ export default function Setup() {
                     <QuickPolicyFields {...fieldProps} />
                   </>
                 )}
-                {step === 3 && (
-                  <>
-                    <s-paragraph>
-                      Optional. Give the assistant a name and a voice that fits your brand. You
-                      can pick the chat window&apos;s color in the theme editor in the next
-                      step.
-                    </s-paragraph>
-                    <PersonalityFields {...fieldProps} />
-                  </>
-                )}
-
                 <s-stack direction="inline" gap="small">
                   {step > 1 && (
                     <s-button href={`/app/setup?step=${step - 1}`} variant="tertiary">
@@ -236,8 +220,8 @@ export default function Setup() {
               <s-stack direction="block" gap="small-200">
                 <s-heading>Try it as a shopper</s-heading>
                 {!llmReady && (
-                  <s-banner tone="warning" heading="The assistant can't answer yet">
-                    {llmProblem} Add it to the app server&apos;s environment and restart the app.
+                  <s-banner tone="warning" heading="The assistant can't answer right now">
+                    This is a problem on our side, not in your store. Please try again in a little while.
                   </s-banner>
                 )}
                 <AssistantChat
@@ -300,8 +284,8 @@ export default function Setup() {
       <s-section slot="aside" heading="Good to know">
         <s-paragraph>
           Nothing here is required. You can leave the tour at any time and finish from the
-          Home page. In Settings you can also add more detail in your own words, such as a
-          description of your business or answers to common questions.
+          Home page. Your assistant is called {settings.assistantName}; in Settings you can rename
+          it, change its welcome message, or add notes in your own words.
         </s-paragraph>
       </s-section>
     </s-page>

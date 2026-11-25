@@ -18,6 +18,8 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 - The assistant knows what is in the cart. It answers "what's in my cart?", says when an order will include items that were already there, takes an item out ("remove the blanket"), empties the cart ("clear the cart") and orders only what was named ("only the mug"). Each summary line also has a Remove button.
 - Normally, delivery details and payment happen on the store's Shopify checkout. The assistant never asks for an address or card in the chat messages.
 - **The order form asks for what Shopify's checkout asks for**, in the same order: email, country, first and last name, address, city, state, ZIP and phone. Where Shopify knows a country's states, the state is a list to pick from, as in the checkout. The lists come from the data Shopify gives themes for address forms; the theme editor has a switch for it.
+- **Chat ratings** (on by default). Once the assistant has answered, a thumbs-up and a thumbs-down sit under the chat. The shopper's rating is kept with the conversation, can be changed or taken back, and shows on the merchant's Conversations page with the totals.
+- **A few numbers on the app's home page.** Conversations in the last 7 and 30 days, shopper messages, the share of thumbs up, signed-in customers, orders placed in the chat, and a bar for each of the last seven days. Counted from the chats still on record, so never further back than the retention period.
 - **Pay-on-delivery orders in the chat** (off by default). The order summary gets an "Order here, pay on delivery" button. The shopper fills in a form laid out like the checkout (contact, delivery address), sees delivery options, tax and the total, and presses Complete order. The order appears in the Shopify admin as unpaid, tagged `shopi-assist`, and the chat shows the order number.
   - The form follows the delivery country: which address fields there are, their order and names ("State" and "ZIP code" in the United States, "Postcode" and no county in the United Kingdom, no postal code in the Emirates), whether a postal code is needed and what one looks like. These rules come from the address data Shopify publishes and builds its checkout on (`app/assistant/address-rules.json`; rebuild it with `node scripts/build-address-rules.mjs <path to a Shopify/worldwide checkout>`). The server checks every order against them.
   - Three choices are the store's: whether a first name is required, and whether a company name and a second address line are asked for. Shopify has the same options under Settings > Checkout but does not let apps read them, so the merchant sets them in this app's settings. The defaults are Shopify's.
@@ -36,13 +38,13 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 
 **For the merchant (inside Shopify admin)**
 
-- A **setup tour** that opens the first time the app is opened after install. It is built around ticking boxes and picking from lists, not writing:
+- A **setup tour** that opens the first time the app is opened after install. It is ticking boxes and picking from lists, with nothing to type:
   1. *What it can do:* add to cart, place an order, pay-on-delivery orders in the chat, order status, return requests. Ordering in chat needs both "add to cart" and "place an order" ticked; with only "place an order", the assistant shows the summary of the existing cart.
   2. *Your policies:* return window, who pays return shipping, how fast orders ship, delivery time, where you ship.
-  3. *Name and tone.*
-  4. *Go live.*
+  3. *Go live.*
 
-  Every step is optional and saves on its own. Longer free-text answers (a business description, common questions, extra guidance) are available in Settings for merchants who want them.
+  Every step is optional and saves on its own. The assistant is called Ava and greets shoppers with "Hi there! 👋 Welcome! How can I help you today?" until the merchant changes either. Its tone is not a setting: always professional, polite and precise.
+- **Settings without typing.** The Settings page is tick boxes and lists too. Everything that is typed (the name, the welcome message, what the store calls paying on delivery, a business description, common questions, extra guidance) is optional and sits folded away in one section at the bottom, "Your own wording".
 - **Try it as a shopper** on the last step: a test chat in the admin that behaves exactly like the storefront widget, so answers can be checked before going live. Test chats stay out of the conversation log.
 
 - A store assistant that answers from private store data: top-selling products by units or revenue, sales summaries, recent and unfulfilled orders, low stock, catalog search including drafts.
@@ -168,8 +170,8 @@ npm run graphql-codegen     # validates every GraphQL query against Shopify's Ad
 
 What the merchant sets, and where:
 
-- **In the app (setup tour or Settings):** which abilities are on, the policy picks, the assistant's name, welcome message and tone, optional free-text detail, pause chat, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
-- **In the theme editor:** accent color, position and suggested questions, plus a fallback title and welcome message used until the app's are filled in.
+- **In the app (setup tour or Settings):** which abilities are on, the policy picks, the assistant's name and welcome message, optional free-text detail, pause chat, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
+- **In the theme editor:** accent color, position and suggested questions. The name and welcome message are set in the app only.
 
 What the merchant writes is added to the assistant's instructions as "notes from the store owner", below the fixed rules, which it cannot override. It should be treated as public: a determined shopper can get the assistant to repeat it.
 

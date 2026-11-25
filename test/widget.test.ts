@@ -560,6 +560,81 @@ describe("chat widget", () => {
     expect(addButton.textContent).toBe("Added");
   });
 
+  it("lets the shopper give the chat a thumbs-up or thumbs-down", async () => {
+    configMock.mockImplementation(() => appConfig({ ratings: true }));
+    let saves = true;
+    const ratings: unknown[] = [];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url !== "/apps/shopi-assist/rating") return reply("Standard delivery takes 3 to 5 days.");
+      ratings.push(JSON.parse(init!.body as string));
+      return saves ? jsonResponse({ ok: true }) : jsonResponse({ ok: false, error: { code: "rate_limited" } });
+    });
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+
+    const bar = () => widget.$(".sa-rating");
+    const thumb = (which: "up" | "down") => widget.$<HTMLButtonElement>(`.sa-rating-${which}`);
+    const pressed = () => [thumb("up"), thumb("down")].map((button) => button.getAttribute("aria-pressed"));
+    // Nothing to rate before the assistant has answered.
+    expect(bar().hidden).toBe(true);
+
+    widget.send("how long is delivery?");
+    await flush();
+    expect(bar().hidden).toBe(false);
+    expect(widget.$(".sa-rating-text").textContent).toBe("How is this chat going?");
+    expect([thumb("up").getAttribute("aria-label"), thumb("down").getAttribute("aria-label")]).toEqual([
+      "Good",
+      "Not good",
+    ]);
+    expect(pressed()).toEqual(["false", "false"]);
+
+    // Shown at once, and sent for this chat and this visitor.
+    thumb("up").click();
+    expect(pressed()).toEqual(["true", "false"]);
+    expect(widget.$(".sa-rating-text").textContent).toBe("Thanks for your feedback.");
+    await flush();
+    expect(ratings).toEqual([
+      { visitorId: expect.stringMatching(/^[a-f0-9]{32}$/), conversationId: "conv12345678", rating: "up" },
+    ]);
+
+    // The other thumb changes it; the same thumb again takes it back.
+    thumb("down").click();
+    await flush();
+    expect(pressed()).toEqual(["false", "true"]);
+    thumb("down").click();
+    await flush();
+    expect(pressed()).toEqual(["false", "false"]);
+    expect(ratings.map((sent) => (sent as { rating: unknown }).rating)).toEqual(["up", "down", null]);
+    expect(widget.$(".sa-rating-text").textContent).toBe("How is this chat going?");
+
+    // Not saved: the thumb goes back to how it was, and says why.
+    thumb("up").click();
+    await flush();
+    saves = false;
+    thumb("down").click();
+    expect(pressed()).toEqual(["false", "true"]);
+    await flush();
+    expect(pressed()).toEqual(["true", "false"]);
+    expect(widget.$(".sa-rating-text").textContent).toBe("That rating couldn't be saved. Try again?");
+
+    // The rating is kept with the chat for the next page, and a new chat starts unrated.
+    expect(JSON.parse(Object.values({ ...window.localStorage }).join("")).rating).toBe("up");
+    widget.$<HTMLButtonElement>('[aria-label="Start a new chat"]').click();
+    expect(bar().hidden).toBe(true);
+    expect(JSON.parse(Object.values({ ...window.localStorage }).join("")).rating).toBeNull();
+  });
+
+  it("asks for no rating where the merchant has ratings off", async () => {
+    fetchMock.mockImplementation(() => reply("Hello!"));
+    const widget = mountWidget();
+    await flush();
+    widget.launcher.click();
+    widget.send("hi");
+    await flush();
+    expect(widget.$(".sa-rating").hidden).toBe(true);
+  });
+
   it("shows the answers to the assistant's question as buttons, with Other for typing", async () => {
     const choices = {
       type: "choices",
@@ -959,13 +1034,16 @@ describe("chat widget", () => {
     expect(lines).toHaveLength(0);
   });
 
-  it("lets the shopper remove a line from the summary", async () => {
+  it("removes a line from the summary at once and tells the cart in the background", async () => {
     const lines = [
       { ...cartLine(101, 1, "Trail Mug", 1800), key: "101:abc" },
       { ...cartLine(103, 1, "Camp Blanket", 8950), key: "103:def" },
+      { ...cartLine(105, 2, "Camp Kettle", 4500), key: "105:ghi" },
     ];
+    let broken = false;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url !== "/cart/change.js") return reply("Here.", { actions: [{ type: "checkout" }] });
+      if (broken) return jsonResponse({ message: "Server error" }, 500);
       const change = JSON.parse(init!.body as string);
       const index = lines.findIndex((line) => line.key === change.id);
       if (index >= 0 && change.quantity === 0) lines.splice(index, 1);
@@ -977,36 +1055,73 @@ describe("chat widget", () => {
     widget.send("checkout");
     await flush();
 
-    const remove = widget.all(".sa-order-remove");
-    expect(remove.map((button) => button.getAttribute("aria-label"))).toEqual([
+    const items = () => widget.all(".sa-order-item").map((item) => item.textContent);
+    const changes = () =>
+      fetchMock.mock.calls
+        .filter((call) => call[0] === "/cart/change.js")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+    const remove = () => widget.all(".sa-order-remove") as HTMLButtonElement[];
+    expect(remove().map((button) => button.getAttribute("aria-label"))).toEqual([
       "Remove Trail Mug",
       "Remove Camp Blanket",
+      "Remove Camp Kettle",
     ]);
-    remove[1].click();
-    await flush();
 
-    const change = fetchMock.mock.calls.find((call) => call[0] === "/cart/change.js")!;
-    expect(JSON.parse((change[1] as RequestInit).body as string)).toEqual({ id: "103:def", quantity: 0 });
+    // Gone at once, with the total, before the cart has answered...
+    remove()[1].click();
+    expect(items()).toEqual(["Trail Mug", "Camp Kettle"]);
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$108.00");
     expect(widget.all(".sa-order")).toHaveLength(1);
-    expect(widget.all(".sa-order-item").map((item) => item.textContent)).toEqual(["Trail Mug"]);
-    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$18.00");
+    // ...and the focus moves to the line that took its place.
+    expect(widget.root.activeElement).toBe(remove()[1]);
 
-    // Removing the last line leaves no summary, only a note.
-    widget.$<HTMLButtonElement>(".sa-order-remove").click();
+    // A second one straight after: neither comes back while the cart is being told.
+    remove()[1].click();
+    expect(items()).toEqual(["Trail Mug"]);
     await flush();
+    expect(changes()).toEqual([
+      { id: "103:def", quantity: 0 },
+      { id: "105:ghi", quantity: 0 },
+    ]);
+    expect(items()).toEqual(["Trail Mug"]);
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$18.00");
+    expect(widget.all(".sa-order")).toHaveLength(1);
+
+    // The cart will not let go of the last one: it comes back, with a note,
+    // and "your cart is empty" is taken back.
+    broken = true;
+    remove()[0].click();
     expect(widget.root.querySelector(".sa-order")).toBeNull();
     expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
       "Your cart is empty. Tell me what you'd like to order.",
     );
+    await flush();
+    expect(items()).toEqual(["Trail Mug"]);
+    expect(widget.all(".sa-notice").map((notice) => notice.textContent)).toEqual([
+      "That item couldn't be removed. Your order is as shown above.",
+    ]);
+
+    // Removing the last line leaves no summary, only the one note.
+    broken = false;
+    remove()[0].click();
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    await flush();
+    expect(widget.root.querySelector(".sa-order")).toBeNull();
+    expect(
+      widget.all(".sa-notice").filter((notice) => notice.textContent === "Your cart is empty. Tell me what you'd like to order."),
+    ).toHaveLength(1);
   });
 
-  it("changes how many of a line the order holds, without leaving the chat", async () => {
+  it("changes how many of a line the order holds at once, and tells the cart once", async () => {
     const lines = [{ ...cartLine(101, 2, "Trail Mug", 1800), key: "101:abc" }];
-    let refuse = false;
+    // How many the store has. Asking for more is refused, as Shopify does.
+    let stock = 99;
+    let broken = false;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url !== "/cart/change.js") return reply("Here.", { actions: [{ type: "checkout" }] });
-      if (refuse) return jsonResponse({ status: 422, description: "Sold out" }, 422);
+      if (broken) return jsonResponse({ message: "Server error" }, 500);
       const change = JSON.parse(init!.body as string);
+      if (change.quantity > stock) return jsonResponse({ status: 422, description: "Sold out" }, 422);
       lines[0] = { ...cartLine(101, change.quantity, "Trail Mug", 1800), key: "101:abc" };
       return jsonResponse(cartJson(...lines));
     });
@@ -1018,39 +1133,81 @@ describe("chat widget", () => {
 
     const step = (label: string) =>
       widget.all(".sa-order .sa-stepper-button").find((button) => button.textContent === label) as HTMLButtonElement;
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("2");
-    expect(step("+").getAttribute("aria-label")).toBe("One more: Trail Mug");
-    // No link out to the cart page.
-    expect(widget.$(".sa-order").textContent).not.toContain("Edit cart");
-
-    step("+").click();
-    await flush();
+    const count = () => widget.$(".sa-order .sa-stepper-count").textContent;
     const changes = () =>
       fetchMock.mock.calls
         .filter((call) => call[0] === "/cart/change.js")
         .map((call) => JSON.parse((call[1] as RequestInit).body as string));
-    expect(changes()).toEqual([{ id: "101:abc", quantity: 3 }]);
-    expect(widget.all(".sa-order")).toHaveLength(1);
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("3");
-    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$54.00");
+    /** Long enough for the widget to tell the cart, and for the answer to be drawn. */
+    const settle = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 420));
+      await flush();
+    };
+    expect(count()).toBe("2");
+    expect(step("+").getAttribute("aria-label")).toBe("One more: Trail Mug");
+    // No link out to the cart page.
+    expect(widget.$(".sa-order").textContent).not.toContain("Edit cart");
 
-    step("\u2212").click();
-    step("\u2212").click();
-    await flush();
-    // The second press landed on a disabled button: one change at a time.
-    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 2 });
-    expect(changes()).toHaveLength(2);
-
-    step("\u2212").click();
-    await flush();
-    // At one, less is off: Remove is the way to take the line out.
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
-    expect(step("\u2212").disabled).toBe(true);
-
-    refuse = true;
+    // Three quick presses: the number and the price move at once, on each press...
     step("+").click();
-    await flush();
-    expect(widget.$(".sa-order .sa-stepper-count").textContent).toBe("1");
+    expect(count()).toBe("3");
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$54.00");
+    step("+").click();
+    step("+").click();
+    expect(count()).toBe("5");
+    expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$90.00");
+    // ...the focus stays on the button, and the cart has not been asked yet.
+    expect(widget.root.activeElement).toBe(step("+"));
+    expect(changes()).toHaveLength(0);
+
+    // Then the cart is told once, with where the presses ended up, and is not read again.
+    const reads = cartMock.mock.calls.length;
+    await settle();
+    expect(changes()).toEqual([{ id: "101:abc", quantity: 5 }]);
+    expect(cartMock.mock.calls).toHaveLength(reads);
+    expect(widget.all(".sa-order")).toHaveLength(1);
+    expect(count()).toBe("5");
+
+    step("\u2212").click();
+    await settle();
+    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 4 });
+    expect(count()).toBe("4");
+
+    // The store has six. Asking for eight finds that out, settles on six and stops there.
+    stock = 6;
+    for (let press = 0; press < 4; press += 1) step("+").click();
+    expect(count()).toBe("8");
+    await settle();
+    expect(changes().slice(2)).toEqual([
+      { id: "101:abc", quantity: 8 },
+      { id: "101:abc", quantity: 7 },
+      { id: "101:abc", quantity: 6 },
+    ]);
+    expect(count()).toBe("6");
+    expect(step("+").disabled).toBe(true);
+    expect(widget.$(".sa-order-limit").textContent).toBe("Only 6 available");
+    // Said beside the quantity, not as an error in the chat.
+    expect(widget.all(".sa-notice")).toHaveLength(0);
+    // Fewer is still theirs to choose, and the note goes when it no longer applies.
+    step("\u2212").click();
+    await settle();
+    expect(count()).toBe("5");
+    expect(widget.root.querySelector(".sa-order-limit")).toBeNull();
+    expect(step("+").disabled).toBe(false);
+
+    // At one, less is off: Remove is the way to take the line out.
+    for (let press = 0; press < 4; press += 1) step("\u2212").click();
+    expect(count()).toBe("1");
+    expect(step("\u2212").disabled).toBe(true);
+    await settle();
+    expect(changes().at(-1)).toEqual({ id: "101:abc", quantity: 1 });
+
+    // Anything else going wrong puts the cart's own quantity back and says so.
+    broken = true;
+    step("+").click();
+    expect(count()).toBe("2");
+    await settle();
+    expect(count()).toBe("1");
     expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
       "That quantity couldn't be set. Your order is as shown above.",
     );
@@ -2246,7 +2403,17 @@ describe("chat widget", () => {
     expect(nextPage.$(".sa-title").textContent).toBe("Ava");
   });
 
-  it("keeps the theme editor's values when the app has none or cannot be reached", async () => {
+  it("is called Ava and welcomes shoppers before the app has said anything", () => {
+    configMock.mockImplementation(() => new Promise(() => {}));
+    // As the theme block mounts it: the name and welcome are not theme settings.
+    const widget = mountWidget({ title: "", greeting: "" });
+
+    expect(widget.$(".sa-title").textContent).toBe("Ava");
+    widget.launcher.click();
+    expect(widget.bubbles()).toEqual(["Hi there! 👋 Welcome! How can I help you today?"]);
+  });
+
+  it("keeps what it started with when the app has none or cannot be reached", async () => {
     configMock.mockImplementation(() => Promise.reject(new TypeError("offline")));
     const widget = mountWidget();
     await flush();

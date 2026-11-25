@@ -4,7 +4,8 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { getLlmStatus } from "../assistant/llm/index.server";
 import { getSettings, getSetupState, setupProgress } from "../assistant/settings.server";
-import { countConversationsSince } from "../assistant/store.server";
+import { chatAnalytics } from "../assistant/store.server";
+import { ChatAnalyticsSection } from "../components/ChatAnalytics";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
@@ -17,11 +18,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const setup = await getSetupState(shop);
   if (!setup.started) throw redirect("/app/setup");
 
-  const [settings, conversationsThisWeek] = await Promise.all([
-    getSettings(shop),
-    countConversationsSince(db, shop, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)),
-  ]);
+  const [settings, analytics] = await Promise.all([getSettings(shop), chatAnalytics(db, shop)]);
+  // Which model answers, and how it is connected, is the app operator's
+  // business: the merchant is told only whether the assistant can answer.
   const llm = getLlmStatus();
+  if (!llm.ready) console.warn(`[shopi-assist] assistant not ready: ${llm.problem}`);
 
   return {
     shop,
@@ -31,20 +32,30 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     chatEnabled: settings.enabled,
     setupCompleted: setup.completed,
     progress: setupProgress(settings),
-    conversationsThisWeek,
-    llm: { ready: llm.ready, model: llm.model, provider: llm.provider, problem: llm.problem },
+    analytics,
+    retentionDays: settings.retentionDays,
+    chatOrders: settings.allowChatOrders,
+    llmReady: llm.ready,
   };
 };
 
 const SETUP_ITEMS = [
   { key: "policies", label: "Pick your return and shipping policies" },
-  { key: "personality", label: "Name your assistant" },
   { key: "live", label: "Turn on the chat widget" },
 ] as const;
 
 export default function Home() {
-  const { shop, apiKey, chatEnabled, conversationsThisWeek, llm, setupCompleted, progress } =
-    useLoaderData<typeof loader>();
+  const {
+    shop,
+    apiKey,
+    chatEnabled,
+    analytics,
+    retentionDays,
+    chatOrders,
+    llmReady,
+    setupCompleted,
+    progress,
+  } = useLoaderData<typeof loader>();
   const embedStatus = useEmbedStatus();
 
   // Opens the theme editor with the widget already toggled on; the merchant
@@ -53,7 +64,7 @@ export default function Home() {
   const storefrontUrl = `https://${shop}`;
 
   const widgetLive = embedStatus === "active";
-  const allSet = widgetLive && llm.ready && chatEnabled;
+  const allSet = widgetLive && llmReady && chatEnabled;
 
   return (
     <s-page heading="Shopi Assist">
@@ -98,12 +109,15 @@ export default function Home() {
         </s-banner>
       )}
 
-      {!llm.ready && (
-        <s-banner tone="warning" heading="The assistant can't answer yet">
-          {llm.problem} Add it to the app server&apos;s environment and restart the app.
-          Until then, shoppers who open the chat see a short &quot;not set up yet&quot; message.
+      {!llmReady && (
+        <s-banner tone="warning" heading="The assistant can't answer right now">
+          This is a problem on our side, not in your store, and nothing needs changing in
+          your settings. Until it is fixed, shoppers who open the chat see a short message
+          saying it is not available.
         </s-banner>
       )}
+
+      <ChatAnalyticsSection analytics={analytics} retentionDays={retentionDays} chatOrders={chatOrders} />
 
       <s-section heading="Setup">
         <s-stack direction="block" gap="base">
@@ -142,27 +156,7 @@ export default function Home() {
 
           <s-stack direction="block" gap="small-200">
             <s-stack direction="inline" gap="small" alignItems="center">
-              <s-heading>2. Connect the AI model</s-heading>
-              {llm.ready ? (
-                <s-badge tone="success">Connected</s-badge>
-              ) : (
-                <s-badge tone="critical">Not connected</s-badge>
-              )}
-            </s-stack>
-            <s-paragraph>
-              {llm.ready
-                ? llm.provider === "mock"
-                  ? "Running in mock mode: replies are canned test responses, not real AI answers."
-                  : `Using ${llm.model}.`
-                : "The model's API key is set on the app server, not on this page, so it is never exposed to browsers."}
-            </s-paragraph>
-          </s-stack>
-
-          <s-divider />
-
-          <s-stack direction="block" gap="small-200">
-            <s-stack direction="inline" gap="small" alignItems="center">
-              <s-heading>3. Tune how it answers</s-heading>
+              <s-heading>2. Tune how it answers</s-heading>
               {chatEnabled ? (
                 <s-badge tone="success">Chat enabled</s-badge>
               ) : (
@@ -196,15 +190,6 @@ export default function Home() {
         </s-stack>
       </s-section>
 
-      <s-section slot="aside" heading="Last 7 days">
-        <s-stack direction="block" gap="small-200">
-          <s-heading>{conversationsThisWeek}</s-heading>
-          <s-paragraph>
-            {conversationsThisWeek === 1 ? "shopper conversation" : "shopper conversations"}
-          </s-paragraph>
-          <s-link href="/app/conversations">View conversations</s-link>
-        </s-stack>
-      </s-section>
 
       <s-section slot="aside" heading="What shoppers can ask">
         <s-unordered-list>

@@ -1,13 +1,10 @@
 import type { Audience, CartLine, KnownOrder } from "./types";
 
-export type PromptTone = "friendly" | "professional" | "playful";
-
 export interface PromptInput {
   audience: Audience;
   shopName: string;
   /** What the assistant calls itself. Optional. */
   assistantName?: string;
-  tone?: PromptTone;
   /**
    * What the merchant switched on. Missing means the default: cart, checkout
    * and ordering in chat on, returns off. `placeOrder` needs both cart and
@@ -53,11 +50,8 @@ export interface PromptInput {
   today: Date;
 }
 
-const TONE_RULES: Record<PromptTone, string> = {
-  friendly: "Warm, friendly and brief, like a helpful person in the shop.",
-  professional: "Polite, precise and businesslike. No slang or emoji.",
-  playful: "Upbeat and a little playful, but never at the cost of a clear answer.",
-};
+// The same for every store: not a setting.
+const TONE_RULE = "Professional, polite and precise. No slang.";
 
 export function buildSystemPrompt(input: PromptInput): string {
   return input.audience === "shopper"
@@ -90,6 +84,21 @@ const orderName = (order: KnownOrder) => order.name.replace(/[^#A-Za-z0-9\-_.]/g
 function rememberedOrdersNote(orders: KnownOrder[] | undefined, message: string | undefined): string {
   if (!orders?.length) return "";
   const text = message ?? "";
+  // "order 1009" or "#1009", said outright, and not one of the orders already
+  // theirs: that order is what the message is about. Without this the model
+  // answers about the orders it knows instead. A bare number is left alone:
+  // it may be a phone number given as proof.
+  const stated = /(?:\border\s*(?:number|no\.?)?\s*#?\s*|#)([A-Za-z0-9][A-Za-z0-9\-_.]{2,19})\b/i.exec(text)?.[1];
+  if (
+    stated &&
+    /\d{3}/.test(stated) &&
+    !/^\d{9,}$/.test(stated) &&
+    !orders.some((order) => orderName(order).replace(/^#/, "").toLowerCase() === stated.toLowerCase())
+  ) {
+    return `
+
+About the shopper's latest message: it names order #${stated.replace(/[^A-Za-z0-9\-_.]/g, "")}, which is not one of the orders already known to be theirs. Answer about that order and no other: use your tools with that order number (the return tool when they want to return it). The tool says whether an email address or phone number is needed. Do not answer about their other orders instead.`;
+  }
   const describe = (order: KnownOrder) =>
     `${orderName(order)} (${
       order.source === "placed"
@@ -217,7 +226,7 @@ function shopperPrompt(input: PromptInput): string {
 
 What you help with: finding products, recommending best sellers, and answering questions about products and store policies. What else you may do is set out in the rules below.
 
-Tone: ${TONE_RULES[input.tone ?? "friendly"]}
+Tone: ${TONE_RULE}
 
 Rules:
 - Use your tools for every fact about products, prices, stock, collections and orders. Never invent a product, price, discount or stock level. If a tool returns nothing or fails, say you could not find it and suggest another search or contacting the store.

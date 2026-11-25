@@ -194,8 +194,6 @@ function page(url) {
   id="shopi-assist-root"
   data-endpoint="/apps/shopi-assist/chat"
   data-stylesheet="/assets/shopi-assist.css"
-  data-title="Shopping assistant"
-  data-greeting="Hi! Ask me about products, best sellers, shipping or returns."
   data-accent="${accent}"
   data-position="${position}"
   data-suggestion-1="What are your best sellers?"

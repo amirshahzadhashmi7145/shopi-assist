@@ -56,12 +56,10 @@ model ShopSettings {
   shippingInfo        String  @default("")
   faq                 String  @default("")
   // Shown in the widget header and used by the assistant to refer to itself.
-  // Empty means "use the title set in the theme editor".
+  // Empty means the app's default name (see settings.server.ts).
   assistantName       String  @default("")
-  // First message in the widget. Empty means "use the theme editor's".
+  // First message in the widget. Empty means the app's default welcome.
   greeting            String  @default("")
-  // "friendly" | "professional" | "playful"
-  tone                String  @default("friendly")
 
   // What the assistant is allowed to do for shoppers (ticked in setup).
   allowAddToCart      Boolean @default(true)
@@ -78,6 +76,8 @@ model ShopSettings {
   // Opt-in: a shopper signed in to their store account gets their own recent
   // orders without giving an order number or email.
   recogniseCustomers  Boolean @default(false)
+  // Shoppers can give the chat a thumbs-up or thumbs-down.
+  chatRatings         Boolean @default(true)
   // Opt-in: lets shoppers place a pay-on-delivery order from a form in the
   // chat. The app creates a real, unpaid order in the store.
   allowChatOrders     Boolean @default(false)
@@ -119,6 +119,10 @@ model Conversation {
   // True for the merchant's "try it as a shopper" chats in the admin. Set by
   // the server only; these are kept out of the shopper conversation log.
   isPreview  Boolean   @default(false)
+  // The shopper's own verdict on the chat: "up" or "down". Null until they
+  // give one. Written only by the rating endpoint, for their own chat.
+  rating     String?
+  ratedAt    DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   messages   Message[]
