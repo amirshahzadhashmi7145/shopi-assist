@@ -21,13 +21,14 @@ export interface PromptInput {
     cancelOrder?: boolean;
     changeAddress?: boolean;
     changeItems?: boolean;
+    /** The tools that read delivery zones and rates, and payment methods, from Shopify. */
+    shipping?: boolean;
+    payment?: boolean;
   };
   /** The shopper is signed in to their store account (Shopify says so). */
   signedIn?: boolean;
   /** Plain sentences built from the merchant's policy picks. */
   quickPolicies?: string;
-  /** Plain sentences from the store's own Shopify settings: where it delivers, how to pay. */
-  storeFacts?: string;
   /** Plain sentences built from the answers the merchant picked for common questions. */
   topicNotes?: string;
   /** Written by the merchant in setup. Every field is optional. */
@@ -173,9 +174,25 @@ function shopperPrompt(input: PromptInput): string {
       ? `- When the shopper is ready to buy, show them the checkout summary and its button. ${noPaymentRule}`
       : "- You cannot start a checkout. Tell shoppers to open their cart and check out there.";
 
+  // Delivery and payment are read from Shopify when asked, never recalled.
+  const liveFacts = [
+    abilities.shipping
+      ? "anything about delivery (which countries the store delivers to, what delivery costs, how soon orders are sent out, how long delivery takes)"
+      : "",
+    abilities.payment ? "how shoppers can pay" : "",
+  ].filter(Boolean);
+  const deliveryRule = liveFacts.length
+    ? `- Delivery and payment: for ${liveFacts.join(", and ")}, use your ${
+        abilities.shipping && abilities.payment
+          ? "shipping and payment tools"
+          : abilities.shipping
+            ? "shipping tool"
+            : "payment tool"
+      } every time one of these is asked, before you answer. They read the store's own settings as they are at that moment, so never answer these from memory or from earlier in this chat, and never work out a cost yourself. Give countries, rates and methods exactly as the tool gives them, and name no country or price that it does not give. When it says a rate is calculated at checkout, or that something could not be read, say that the checkout shows it.\n`
+    : "";
+
   const ownerNotes =
     ownerBlock("Store policies chosen by the owner", input.quickPolicies, 2000) +
-    ownerBlock("From the store's own Shopify settings", input.storeFacts, 2500) +
     ownerBlock("About the business", knowledge.businessDescription, 1500) +
     ownerBlock("Returns and exchanges", knowledge.returnPolicy, 1500) +
     ownerBlock("Shipping and delivery", knowledge.shippingInfo, 1500) +
@@ -236,8 +253,8 @@ Tone: ${TONE_RULE}
 
 Rules:
 - Use your tools for every fact about products, prices, stock, collections and orders. Never invent a product, price, discount or stock level. If a tool returns nothing or fails, say you could not find it and suggest another search or contacting the store.
-- For questions about the business, returns, shipping or other store policies, answer from the store owner's notes below when they cover the question. Use your policy tool for anything they do not cover. If the notes answer only part of a question, share that part and say what you are not sure about. If nothing covers it, say you are not sure and suggest contacting the store. Never make up a policy.
-- Do not add specific figures of your own: sizes, measurements, weights, compatibility, delivery dates or anything similar. Give a figure only when it comes from a tool result or the store owner's notes. If the owner gave a rule of thumb, pass on the rule as written and suggest checking the product page or asking the store for an exact figure.
+- For questions about the business, returns, delivery times or other store policies, answer from the store owner's notes below when they cover the question. Use your policy tool for anything they do not cover. If the notes answer only part of a question, share that part and say what you are not sure about. If nothing covers it, say you are not sure and suggest contacting the store. Never make up a policy.
+${deliveryRule}- Do not add specific figures of your own: sizes, measurements, weights, compatibility, delivery dates or anything similar. Give a figure only when it comes from a tool result or the store owner's notes. If the owner gave a rule of thumb, pass on the rule as written and suggest checking the product page or asking the store for an exact figure.
 - Keep replies short for a small chat window: one to three short sentences, or a list of at most five items. Use plain text with light Markdown only (bold, bullet lists, links). No tables, headings or images.
 - Say only what your tool results show about a product. A colour, size, material, style or feature is true of a product only when it appears in that product's own data: its title, summary, options, versions, tags or picture description. Never call products white, or anything else, because the shopper asked for that.
 - When the shopper asks for something specific (white, waterproof, for kids, with a hood), search once with the kind of product as the query and the specific thing in 'mustMention', with close synonyms as alternatives ('grey or gray', 'teal or turquoise'). The search then returns only products whose own data mentions it. Do not repeat the search with other wordings. Present only those products, each with a few words taken from its data that show why it fits. If the search says nothing matches, say so plainly, for example "I couldn't find any white snowboards", and you may then offer its 'others', saying what they actually are. Leave out products that do not fit instead of listing them as extras.

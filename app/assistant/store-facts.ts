@@ -5,9 +5,13 @@
  *
  * The facts are read from Shopify with the merchant's own session (see
  * store-facts.server.ts), kept with the shop's settings, and shown in the
- * admin as "Synced from Shopify". The public ones are also told to the
- * assistant. A fact Shopify did not answer for is simply absent: absent means
- * "unknown", which is different from "none".
+ * admin as "Synced from Shopify". The assistant is told the store's own
+ * description and, if the merchant chooses, its contact address. Where the
+ * store delivers, what delivery costs and how shoppers can pay are not taken
+ * from here: the assistant reads those from Shopify at the moment it is asked
+ * (see shipping.server.ts and the shopper tools). A fact Shopify did not
+ * answer for is simply absent: absent means "unknown", which is different
+ * from "none".
  *
  * Nothing here touches Shopify, the database or an LLM.
  */
@@ -36,6 +40,8 @@ export interface StoreFacts {
   products?: number;
   productsCapped?: boolean;
   giftCards?: boolean;
+  /** Business days the store takes to hand an order to the carrier, where it has set that in Shopify. */
+  processingDays?: number;
 }
 
 export const NO_FACTS: StoreFacts = { syncedAt: null };
@@ -107,6 +113,14 @@ export function cleanStoreFacts(input: unknown): StoreFacts {
     if (raw.productsCapped === true) facts.productsCapped = true;
   }
   if (typeof raw.giftCards === "boolean") facts.giftCards = raw.giftCards;
+  if (
+    typeof raw.processingDays === "number" &&
+    Number.isInteger(raw.processingDays) &&
+    raw.processingDays >= 0 &&
+    raw.processingDays <= 365
+  ) {
+    facts.processingDays = raw.processingDays;
+  }
   return facts;
 }
 
@@ -193,36 +207,4 @@ export interface StoreFactsView extends StoreFacts {
 
 export function factsForPage(facts: StoreFacts): StoreFactsView {
   return { ...facts, countries: shipsToNames(facts) };
-}
-
-/** Above this many countries the names are not spelled out. */
-const NAMED_COUNTRIES = 40;
-
-/**
- * What the assistant is told from the store's own Shopify settings. Only
- * things a visitor could find out at the checkout anyway: where the store
- * delivers and how they can pay. The contact address is not here; it is
- * shared only when the merchant picks it as their contact answer.
- */
-export function describeStoreFacts(facts: StoreFacts): string {
-  const lines: string[] = [];
-  const countries = shipsToNames(facts);
-  if (countries.length === 1) {
-    lines.push(
-      `Delivery area: this store delivers to ${countries[0]}. It has no shipping set up for any other country.`,
-    );
-  } else if (countries.length > 1 && countries.length <= NAMED_COUNTRIES) {
-    lines.push(
-      `Delivery area: this store delivers to these ${countries.length} countries: ${countries.join(", ")}. It has no shipping set up for any other country.`,
-    );
-  } else if (countries.length > NAMED_COUNTRIES) {
-    lines.push(
-      `Delivery area: this store delivers to ${countries.length} countries and regions, too many to list here. That is not everywhere: never say it ships worldwide or to any one country. For a particular country, say that the checkout confirms whether delivery is available.`,
-    );
-  }
-
-  const { cards, wallets } = paymentNames(facts);
-  if (cards.length) lines.push(`Cards accepted at checkout: ${cards.join(", ")}.`);
-  if (wallets.length) lines.push(`Wallets accepted at checkout: ${wallets.join(", ")}.`);
-  return lines.join("\n");
 }

@@ -118,16 +118,20 @@ export function Columns({
 }
 
 /**
- * synced: Shopify has it. missing: Shopify has none and the store would do
- * well to add it. none: Shopify has none, which is fine. unknown: Shopify
- * could not be asked.
+ * synced: Shopify has it. live: Shopify has it and it is read again every
+ * time it is used. missing: Shopify has none and the store would do well to
+ * add it. none: Shopify has none, which is fine. blocked: Shopify will not
+ * say until the merchant approves a permission. unknown: Shopify could not
+ * be asked.
  */
-export type SyncState = "synced" | "missing" | "none" | "unknown";
+export type SyncState = "synced" | "live" | "missing" | "none" | "blocked" | "unknown";
 
 const SYNC_BADGE: Record<SyncState, { tone: "success" | "warning" | "neutral"; text: string }> = {
   synced: { tone: "success", text: "Synced from Shopify" },
+  live: { tone: "success", text: "Live from Shopify" },
   missing: { tone: "warning", text: "Not set in Shopify" },
   none: { tone: "neutral", text: "Nothing in Shopify" },
+  blocked: { tone: "warning", text: "Needs your approval" },
   unknown: { tone: "neutral", text: "Couldn't check" },
 };
 
@@ -156,7 +160,10 @@ export function SyncedLine({
         <s-text color="subdued">{value}</s-text>
         {children}
       </s-stack>
-      <s-badge tone={tone} {...(state === "synced" ? { icon: "check" as const } : {})}>
+      <s-badge
+        tone={tone}
+        {...(state === "synced" || state === "live" ? { icon: "check" as const } : {})}
+      >
         {text}
       </s-badge>
     </s-grid>

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { OrderActionGrant } from "../action-grant.server";
 import type { LlmToolCall, LlmToolSpec } from "../llm/provider";
 import type { RateLimiter } from "../rate-limit";
+import type { ShippingRates } from "../shipping";
 import type {
   Audience,
   CartLine,
@@ -37,7 +38,33 @@ export interface ToolContext {
     allowOrderCancel?: boolean;
     allowAddressChange?: boolean;
     allowOrderEdit?: boolean;
+    /**
+     * Whether shoppers can pay when the order arrives: "chat" when the
+     * assistant takes those orders itself, else what the merchant picked.
+     * Shopify does not tell apps this, so it is the one payment fact that is
+     * a setting.
+     */
+    cashOnDelivery?: "chat" | "yes" | "no" | "";
   };
+  /**
+   * Reads the store's shipping zones and rates from Shopify, now. The rates
+   * are public (every visitor sees them at the checkout) but live in the
+   * Admin API, so a shopper's tools are given this one question to ask
+   * instead of an Admin client.
+   */
+  shippingRates?: () => Promise<ShippingRates>;
+  /**
+   * The merchant's own picks for where the store delivers and what delivery
+   * costs, in words. Said only when Shopify's rates cannot be read.
+   */
+  shippingPicks?: string;
+  /**
+   * What the merchant wrote about shipping in their own words. Like the
+   * picks, it is said only when Shopify's settings cannot be read. Given to
+   * the assistant alongside them, a note that had fallen behind (other
+   * countries, other prices) was repeated as fact next to the real ones.
+   */
+  shippingNote?: string;
   /**
    * What the page showing the chat has said it can draw, beyond text and
    * product cards. A shopper's browser can be running a widget older than

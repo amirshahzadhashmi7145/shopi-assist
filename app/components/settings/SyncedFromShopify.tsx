@@ -4,6 +4,7 @@
  */
 import type { ReactNode } from "react";
 
+import type { ShippingView } from "../../assistant/shipping";
 import { paymentNames, type StoreFactsView } from "../../assistant/store-facts";
 import type { FactsReached } from "../../assistant/store-facts.server";
 
@@ -29,6 +30,7 @@ function Row({ label, value, tone }: { label: string; value: string; tone: Tone 
 /** What each line says, worked out from the facts alone. */
 export function syncedRows(
   facts: StoreFactsView,
+  shipping?: ShippingView,
 ): Array<{ label: string; value: string; tone: Tone }> {
   const unknown = "Couldn't check just now";
   const rows: Array<{ label: string; value: string; tone: Tone }> = [];
@@ -59,7 +61,42 @@ export function syncedRows(
     });
   }
 
-  if (facts.shipsTo === undefined) {
+  // Zones and rates are read live; without that permission, Shopify still
+  // lists the countries.
+  const liveRates = shipping?.state === "live" && shipping.zones.length > 0;
+  if (liveRates) {
+    const zones = shipping.zones.length + shipping.more;
+    rows.push({
+      label: "Shipping rates",
+      value: `${zones} ${zones === 1 ? "zone" : "zones"}, read live each time a shopper asks`,
+      tone: "success",
+    });
+  } else if (shipping?.state === "no_access") {
+    rows.push({
+      label: "Shipping rates",
+      value: "Waiting for you to approve the app's updated permission",
+      tone: "warning",
+    });
+  } else if (shipping?.state === "live") {
+    rows.push({ label: "Shipping rates", value: "None set up yet", tone: "warning" });
+  } else if (shipping) {
+    rows.push({ label: "Shipping rates", value: unknown, tone: "neutral" });
+  }
+
+  if (liveRates) {
+    const { countries, restOfWorld } = shipping;
+    rows.push({
+      label: "Shipping regions",
+      value: restOfWorld
+        ? countries.length
+          ? `${countries.length} named ${countries.length === 1 ? "country" : "countries"} and the rest of the world`
+          : "Worldwide"
+        : countries.length <= 3
+          ? countries.join(", ")
+          : `${countries.length} countries`,
+      tone: "success",
+    });
+  } else if (facts.shipsTo === undefined) {
     rows.push({ label: "Shipping regions", value: unknown, tone: "neutral" });
   } else {
     const { countries } = facts;
@@ -106,10 +143,13 @@ export function syncedRows(
 
 export function SyncedFromShopify({
   facts,
+  shipping,
   reached,
   action,
 }: {
   facts: StoreFactsView;
+  /** The store's shipping rates as read when the page was opened. */
+  shipping?: ShippingView;
   /** What the last attempt reached. Null when Shopify was not asked this time. */
   reached: FactsReached | null;
   /** A "Check again" control, where the page offers one. */
@@ -128,7 +168,7 @@ export function SyncedFromShopify({
             : "Shopify couldn't be reached just now. Nothing is lost: check again in a moment."}
         </s-banner>
       )}
-      {syncedRows(facts).map((row) => (
+      {syncedRows(facts, shipping).map((row) => (
         <Row key={row.label} {...row} />
       ))}
       {action}

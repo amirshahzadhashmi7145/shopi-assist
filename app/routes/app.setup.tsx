@@ -34,6 +34,9 @@ import {
   type AssistantSettings,
   type SettingsErrors,
 } from "../assistant/settings.server";
+import { shippingForPage, type ShippingView } from "../assistant/shipping";
+import { loadShippingRates } from "../assistant/shipping.server";
+import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
 import { syncStoreFactsForPage } from "../assistant/store-facts.server";
 import { SettingsFields } from "../components/settings/SettingsFields";
@@ -66,12 +69,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Remember that the tour has been seen, so the app stops opening on it.
   if (!state.started) await markSetupStarted(shop);
 
-  const [settings, synced] = await Promise.all([
+  const [settings, synced, rates] = await Promise.all([
     getSettings(shop),
     // The first thing the tour shows is what the store already told us.
     factClients(shop, admin).then((clients) =>
-      syncStoreFactsForPage(shop, clients, { maxAgeMs: 60 * 1000 }),
+      syncStoreFactsForPage(shop, clients, { maxAgeMs: 10 * 1000 }),
     ),
+    loadShippingRates(toGraphqlFn(admin, "Admin")),
   ]);
 
   return {
@@ -81,6 +85,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     apiKey: process.env.SHOPIFY_API_KEY || "",
     settings,
     facts: factsForPage(synced.facts),
+    shipping: shippingForPage(rates),
     reached: synced.reached,
     progress: setupProgress(settings),
     completed: state.completed,
@@ -126,6 +131,7 @@ function StepForm({
   sections,
   settings,
   facts,
+  shipping,
   errors,
   shop,
   saving,
@@ -135,6 +141,7 @@ function StepForm({
   sections: readonly SectionKey[];
   settings: AssistantSettings;
   facts: StoreFactsView;
+  shipping: ShippingView;
   errors: SettingsErrors;
   shop: string;
   saving: boolean;
@@ -149,6 +156,7 @@ function StepForm({
           show={sections}
           settings={settings}
           facts={facts}
+          shipping={shipping}
           errors={errors}
           shop={shop}
           draft={draft}
@@ -172,7 +180,7 @@ function StepForm({
 }
 
 export default function Setup() {
-  const { step, shop, apiKey, settings, facts, reached, progress, completed, llmReady } =
+  const { step, shop, apiKey, settings, facts, shipping, reached, progress, completed, llmReady } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -253,6 +261,7 @@ export default function Setup() {
             sections={current.sections}
             settings={settings}
             facts={facts}
+            shipping={shipping}
             errors={errors}
             shop={shop}
             saving={saving}
@@ -304,7 +313,7 @@ export default function Setup() {
       </s-section>
 
       <s-section slot="aside" heading="From your Shopify store">
-        <SyncedFromShopify facts={facts} reached={reached} />
+        <SyncedFromShopify facts={facts} shipping={shipping} reached={reached} />
       </s-section>
 
       <s-section slot="aside" heading="Good to know">

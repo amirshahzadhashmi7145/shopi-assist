@@ -2,15 +2,16 @@
  * Reads a store's facts from Shopify and keeps them with the shop's settings.
  *
  * Shopify is asked when the merchant has the app open (their own admin
- * session), and again in the background once a day while the store's chat is
- * in use, so an answer never rests on facts older than that. A chat turn
- * itself only ever reads what is stored: it does not wait on Shopify for this.
+ * session), and again by the chat whenever what is stored is more than a few
+ * minutes old, so an answer does not rest on facts older than that.
  *
  * `shop` must always come from an authenticated request.
  */
 import type { PrismaClient } from "@prisma/client";
 
 import prisma from "../db.server";
+import { PROCESSING_TIME_QUERY } from "./shipping.server";
+import { readProcessingDays } from "./shipping";
 import { cleanStoreFacts, readStoreFacts, type StoreFacts } from "./store-facts";
 import { STORE_FACTS_QUERY } from "./tools/storefront-queries";
 import type { GraphqlFn } from "./types";
@@ -130,12 +131,21 @@ export async function syncStoreFacts(
     return { facts: stored, reached: null };
   }
 
-  const [admin, storefront] = await Promise.all([
+  const [admin, storefront, processing] = await Promise.all([
     clients.admin
       ? clients.admin<AdminFacts>(STORE_FACTS_ADMIN_QUERY).catch(() => null)
       : Promise.resolve(null),
     clients.storefront
       ? clients.storefront<StorefrontFacts>(STORE_FACTS_QUERY).catch(() => null)
+      : Promise.resolve(null),
+    // Asked on its own: it needs a permission the rest does not, and a store
+    // that has not approved it yet must not lose its other facts over it.
+    clients.admin
+      ? clients
+          .admin<{ deliveryPromiseSettings: { processingTime: string | null } | null }>(
+            PROCESSING_TIME_QUERY,
+          )
+          .catch(() => null)
       : Promise.resolve(null),
   ]);
   const reached: FactsReached = { admin: Boolean(admin), storefront: Boolean(storefront) };
@@ -152,6 +162,11 @@ export async function syncStoreFacts(
       next.productsCapped = admin.productsCount.precision !== "EXACT";
     }
     if (admin.giftCardProducts) next.giftCards = admin.giftCardProducts.nodes.length > 0;
+  }
+  if (processing) {
+    const days = readProcessingDays(processing.deliveryPromiseSettings?.processingTime);
+    if (days === undefined) delete next.processingDays;
+    else next.processingDays = days;
   }
   if (storefront?.shop) {
     for (const key of STOREFRONT_KEYS) delete next[key];
@@ -200,15 +215,16 @@ export async function syncStoreFactsForPage(
   }
 }
 
-const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
-const RETRY_AFTER_MS = 60 * 60 * 1000;
+/** Facts older than this are read from Shopify again before they are used. */
+const STALE_AFTER_MS = 10 * 60 * 1000;
 const lastAttempt = new Map<string, number>();
 
 /**
- * For the chat: starts a refresh in the background when the stored facts are
- * more than a day old, at most once an hour per shop. Never waited on, and a
- * store that has never been synced is left alone (the merchant opening the
- * app does the first sync).
+ * For the chat: reads the facts from Shopify again when what is stored is
+ * more than a few minutes old, at most once in that time per shop. Returns
+ * the refresh for the caller to wait on as long as it sees fit, or null when
+ * there is nothing to do. A store that has never been synced is left alone
+ * (the merchant opening the app does the first sync).
  */
 export function refreshStoreFactsIfStale(
   shop: string,
@@ -218,7 +234,7 @@ export function refreshStoreFactsIfStale(
 ): Promise<void> | null {
   const now = options.now ?? new Date();
   if (!facts.syncedAt || now.getTime() - Date.parse(facts.syncedAt) < STALE_AFTER_MS) return null;
-  if (now.getTime() - (lastAttempt.get(shop) ?? 0) < RETRY_AFTER_MS) return null;
+  if (now.getTime() - (lastAttempt.get(shop) ?? 0) < STALE_AFTER_MS) return null;
   if (!clients.admin && !clients.storefront) return null;
   lastAttempt.set(shop, now.getTime());
 

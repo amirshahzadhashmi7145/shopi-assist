@@ -17,6 +17,7 @@ import { fieldsOf } from "../app/assistant/setting-options";
 import {
   DEFAULT_SETTINGS,
   describeQuickPolicies,
+  describeShippingPicks,
   getSettings,
   getSetupState,
   markSetupCompleted,
@@ -383,11 +384,14 @@ describe("handleChatTurn", () => {
     for (const fact of [
       "Small-batch snowboards for beginners.",
       "30 days, unused, free return label.",
-      "Ships next business day from Calgary.",
       "Do you wax boards? Yes, free on request.",
     ]) {
       expect(system).toContain(fact);
     }
+    // What the owner wrote about shipping is not among the standing notes:
+    // delivery is read from the store's settings when a shopper asks, and
+    // the note is only what the shipping tool falls back on.
+    expect(system).not.toContain("Ships next business day from Calgary.");
     // Owner notes come after the fixed rules, which they cannot override.
     expect(system.indexOf("Rules:")).toBeLessThan(system.indexOf("Notes from the store owner"));
   });
@@ -1147,8 +1151,11 @@ describe("settings", () => {
       "Return shipping: free for the customer.",
       "Dispatch: orders usually ship the same business day.",
       "Delivery: usually 5 to 8 business days after the order ships.",
-      "Shipping area: the store's home country only. No international shipping.",
     ]);
+    // Where the store ships is read from Shopify; the pick is only the fallback.
+    expect(describeShippingPicks(await getSettings(SHOP_A, db))).toBe(
+      "Shipping area: the store's home country only. No international shipping.",
+    );
 
     // "No returns" drops the return-shipping line, which would contradict it.
     await saveSettings(SHOP_A, { returnWindow: "none" }, db);

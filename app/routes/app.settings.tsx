@@ -33,6 +33,9 @@ import {
   type AssistantSettings,
   type SettingsErrors,
 } from "../assistant/settings.server";
+import { shippingForPage, type ShippingView } from "../assistant/shipping";
+import { loadShippingRates } from "../assistant/shipping.server";
+import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
 import { syncStoreFactsForPage, type FactsReached } from "../assistant/store-facts.server";
 import { SectionNav, SettingsFields } from "../components/settings/SettingsFields";
@@ -44,24 +47,30 @@ import { authenticate } from "../shopify.server";
 
 const ALL_SECTIONS = SECTIONS.map((section) => section.key);
 
-/** Shopify is asked again when what is stored is older than this. */
-const FACTS_MAX_AGE_MS = 60 * 1000;
+/**
+ * Opening the page asks Shopify afresh. This only keeps the reload that
+ * follows a save from asking a second time within seconds of the first.
+ */
+const FACTS_MAX_AGE_MS = 10 * 1000;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const wanted = new URL(request.url).searchParams.get("section");
 
-  const [settings, synced] = await Promise.all([
+  const [settings, synced, rates] = await Promise.all([
     getSettings(shop),
     factClients(shop, admin).then((clients) =>
       syncStoreFactsForPage(shop, clients, { maxAgeMs: FACTS_MAX_AGE_MS }),
     ),
+    // Shipping zones and rates are never kept: read now, shown as they are.
+    loadShippingRates(toGraphqlFn(admin, "Admin")),
   ]);
   return {
     shop,
     settings,
     facts: factsForPage(synced.facts),
+    shipping: shippingForPage(rates),
     reached: synced.reached,
     section: isSectionKey(wanted) ? wanted : ("assistant" as SectionKey),
     llmReady: getLlmStatus().ready,
@@ -106,7 +115,7 @@ type FormSubmitEvent =
 const NO_ERRORS: SettingsErrors = {};
 
 export default function Settings() {
-  const { shop, settings, facts, reached, section: startAt, llmReady } =
+  const { shop, settings, facts, shipping, reached, section: startAt, llmReady } =
     useLoaderData<typeof loader>();
   const save = useFetcher<typeof action>({ key: "settings-save" });
   const sync = useFetcher<typeof action>({ key: "settings-sync" });
@@ -148,6 +157,7 @@ export default function Settings() {
         shop={shop}
         settings={settings}
         facts={facts}
+        shipping={shipping}
         reached={sync.data?.reached ?? reached}
         errors={errors}
         failed={failed}
@@ -166,6 +176,7 @@ function Workspace({
   shop,
   settings,
   facts,
+  shipping,
   reached,
   errors,
   failed,
@@ -179,6 +190,7 @@ function Workspace({
   shop: string;
   settings: AssistantSettings;
   facts: StoreFactsView;
+  shipping: ShippingView;
   reached: FactsReached | null;
   errors: SettingsErrors;
   failed: boolean;
@@ -212,6 +224,7 @@ function Workspace({
             active={section}
             settings={settings}
             facts={facts}
+            shipping={shipping}
             errors={errors}
             shop={shop}
             draft={draft}
@@ -231,6 +244,7 @@ function Workspace({
       <s-section slot="aside" heading="From your Shopify store">
         <SyncedFromShopify
           facts={facts}
+          shipping={shipping}
           reached={reached}
           action={
             <s-stack direction="inline">

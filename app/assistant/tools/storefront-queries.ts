@@ -332,6 +332,15 @@ export const STORE_FACTS_QUERY = `#graphql
   }
 `;
 
+/** The countries the store has a shipping zone for. */
+export const SHIPS_TO_QUERY = `#graphql
+  query ShopiAssistShipsTo {
+    shop {
+      shipsToCountries
+    }
+  }
+`;
+
 /** Every line of an order in one request, priced for the buyer's country. */
 export const VARIANTS_FOR_ORDER_QUERY = `#graphql
   query ShopiAssistVariantsForOrder($ids: [ID!]!, $country: CountryCode)

@@ -16,6 +16,7 @@ import {
   type ReturnCondition,
   type TopicAnswers,
 } from "./setting-options";
+import { processingText } from "./shipping";
 import { NO_FACTS, type StoreFacts } from "./store-facts";
 
 // The lists themselves live in setting-options.ts, which the settings pages
@@ -436,9 +437,12 @@ const DAYS: Record<string, string> = {
  * Turns the policy picks into plain sentences for the assistant. Only what
  * the merchant actually chose is stated; unset picks say nothing.
  *
- * `facts` are what Shopify says about the store. Where Shopify has answered
- * (the countries the store delivers to), its answer is used and the
- * merchant's own pick for the same thing is left out.
+ * Where the store delivers and what delivery costs are not here: those are
+ * read from Shopify when a shopper asks (the shipping tool), and the
+ * merchant's picks for them are only the fallback, see describeShippingPicks.
+ *
+ * `facts` are what Shopify says about the store. Where it says how soon
+ * orders are sent out, that is stated and the merchant's pick is left out.
  */
 export function describeQuickPolicies(
   settings: AssistantSettings,
@@ -476,7 +480,11 @@ export function describeQuickPolicies(
     lines.push("Exchanges: not offered.");
   }
 
-  if (settings.processingTime === "same_day") {
+  if (facts.processingDays !== undefined) {
+    lines.push(
+      `Dispatch: orders are handed to the carrier ${processingText(facts.processingDays)}, as set in the store's shipping settings.`,
+    );
+  } else if (settings.processingTime === "same_day") {
     lines.push("Dispatch: orders usually ship the same business day.");
   } else if (settings.processingTime) {
     lines.push(`Dispatch: orders usually ship within ${DAYS[settings.processingTime]} business days.`);
@@ -486,14 +494,34 @@ export function describeQuickPolicies(
       `Delivery: usually ${DAYS[settings.deliveryTime]} business days after the order ships.`,
     );
   }
-  // Shopify's own list of countries says this better than a pick can. With
-  // no list, or an empty one, the merchant's pick is what there is.
-  if (!facts.shipsTo?.length) {
-    if (settings.shipsTo === "domestic") {
-      lines.push("Shipping area: the store's home country only. No international shipping.");
-    } else if (settings.shipsTo === "international") {
-      lines.push("Shipping area: ships internationally.");
+
+  // With pay-on-delivery orders in the chat the assistant is told about them
+  // in its own rules, so this pick would only repeat or contradict that.
+  if (!(settings.allowChatOrders && settings.allowCheckout)) {
+    if (settings.codAvailable === "yes") {
+      lines.push("Cash on delivery: available. The shopper chooses it at checkout.");
+    } else if (settings.codAvailable === "no") {
+      lines.push("Cash on delivery: not available.");
     }
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * The merchant's own picks for where the store delivers and what delivery
+ * costs, in plain sentences. Used only when Shopify's shipping zones and
+ * rates cannot be read: with them, Shopify's answer is the one given.
+ */
+export function describeShippingPicks(
+  settings: AssistantSettings,
+  facts: StoreFacts = NO_FACTS,
+): string {
+  const lines: string[] = [];
+  if (settings.shipsTo === "domestic") {
+    lines.push("Shipping area: the store's home country only. No international shipping.");
+  } else if (settings.shipsTo === "international") {
+    lines.push("Shipping area: ships internationally.");
   }
 
   const amount =
@@ -517,17 +545,6 @@ export function describeQuickPolicies(
   } else if (settings.shippingFee === "calculated") {
     lines.push("Shipping cost: calculated at checkout from the delivery address.");
   }
-
-  // With pay-on-delivery orders in the chat the assistant is told about them
-  // in its own rules, so this pick would only repeat or contradict that.
-  if (!(settings.allowChatOrders && settings.allowCheckout)) {
-    if (settings.codAvailable === "yes") {
-      lines.push("Cash on delivery: available. The shopper chooses it at checkout.");
-    } else if (settings.codAvailable === "no") {
-      lines.push("Cash on delivery: not available.");
-    }
-  }
-
   return lines.join("\n");
 }
 

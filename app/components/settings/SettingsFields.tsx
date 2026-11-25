@@ -37,6 +37,7 @@ import {
   type SectionKey,
 } from "../../assistant/setting-options";
 import type { AssistantSettings, SettingsErrors } from "../../assistant/settings.server";
+import type { ShippingView } from "../../assistant/shipping";
 import { paymentNames, type StoreFacts, type StoreFactsView } from "../../assistant/store-facts";
 import {
   AddOwnWords,
@@ -57,6 +58,8 @@ interface SectionProps {
   settings: AssistantSettings;
   /** What Shopify says about the store. */
   facts: StoreFactsView;
+  /** The store's shipping zones and rates, as Shopify had them when the page was opened. */
+  shipping: ShippingView;
   errors: SettingsErrors;
   /** The shop's domain, for links into the Shopify admin. */
   shop: string;
@@ -401,7 +404,7 @@ function PolicyLine({
   return (
     <SyncedLine
       label={name}
-      value="Not published in Shopify yet. The assistant answers from your picks below."
+      value="Not published in Shopify yet. The assistant answers from what is set below."
       state="missing"
     >
       <s-link href={adminUrl(shop, "settings/legal")} target="_top">
@@ -411,13 +414,89 @@ function PolicyLine({
   );
 }
 
-function PoliciesSection({ settings, facts, errors, shop, draft }: SectionProps) {
+/** The store's shipping rates as Shopify has them, or why they could not be read. */
+function ShippingRatesLine({ shipping, shop }: { shipping: ShippingView; shop: string }) {
+  const settingsLink = (label: string) => (
+    <s-link href={adminUrl(shop, "settings/shipping")} target="_top">
+      {label}
+    </s-link>
+  );
+
+  if (shipping.state === "no_access") {
+    return (
+      <SyncedLine
+        label="Shipping rates"
+        value="The assistant can quote your real rates once you approve the app's updated permission. Shopify asks for it the next time you open the app from your admin. Until then it uses your pick below."
+        state="blocked"
+      />
+    );
+  }
+  if (shipping.state === "unreachable") {
+    return (
+      <SyncedLine
+        label="Shipping rates"
+        value="Shopify couldn't be reached to read them just now. Your pick below is used meanwhile."
+        state="unknown"
+      />
+    );
+  }
+  if (shipping.zones.length === 0) {
+    return (
+      <SyncedLine
+        label="Shipping rates"
+        value="No shipping zones or rates are set up in Shopify yet. Your pick below is used until there are."
+        state="missing"
+      >
+        {settingsLink("Set up shipping in Shopify")}
+      </SyncedLine>
+    );
+  }
+  return (
+    <s-stack direction="block" gap="small">
+      <SyncedLine
+        label="Shipping rates"
+        value="Read from Shopify each time a shopper asks, so the assistant always quotes your current rates."
+        state="live"
+      />
+      {shipping.zones.map((zone, index) => (
+        <s-box key={index} padding="small" background="subdued" borderRadius="base">
+          <s-stack direction="block" gap="small-500">
+            <s-text type="strong">{zone.where}</s-text>
+            {zone.rates.map((rate, rateIndex) => (
+              <s-text key={rateIndex} color="subdued">
+                {rate}
+              </s-text>
+            ))}
+          </s-stack>
+        </s-box>
+      ))}
+      {shipping.more > 0 && (
+        <s-text color="subdued">
+          And {shipping.more} more {shipping.more === 1 ? "zone" : "zones"} in Shopify.
+        </s-text>
+      )}
+      {shipping.otherProfiles && (
+        <s-text color="subdued">
+          Some products have shipping rates of their own. The checkout shows those.
+        </s-text>
+      )}
+      {settingsLink("Change them in Shopify")}
+    </s-stack>
+  );
+}
+
+function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: SectionProps) {
   const { values, ui } = draft.state;
   const noReturns = values.returnWindow === "none";
   const takesAmount = SHIPPING_FEES_WITH_AMOUNT.includes(values.shippingFee);
   const chatOrders = values.allowChatOrders && values.allowCheckout;
 
-  const { countries } = facts;
+  // Where the store delivers: its shipping zones when they could be read,
+  // else the list of countries Shopify gives without that permission.
+  const liveRates = shipping.state === "live" && shipping.zones.length > 0;
+  const countries = liveRates ? shipping.countries : facts.countries;
+  const everywhereElse = liveRates && shipping.restOfWorld;
+  const knowsCountries = liveRates || facts.shipsTo !== undefined;
   const { cards, wallets } = paymentNames(facts);
   const paysWith = [...cards, ...wallets];
   const paymentState: SyncState =
@@ -504,16 +583,20 @@ function PoliciesSection({ settings, facts, errors, shop, draft }: SectionProps)
       <s-section heading="Shipping">
         <s-stack direction="block" gap="base">
           <PolicyLine name="Shipping policy" published={facts.policies?.shipping} shop={shop} />
-          {facts.shipsTo !== undefined &&
-            (countries.length ? (
+          {knowsCountries &&
+            (countries.length || everywhereElse ? (
               <SyncedLine
                 label="Shipping regions"
                 value={
-                  countries.length === 1
-                    ? `Delivers to ${countries[0]}.`
-                    : `Delivers to ${countries.length} countries: ${listed(countries)}.`
+                  everywhereElse
+                    ? countries.length
+                      ? `Delivers to ${countries.length} named ${countries.length === 1 ? "country" : "countries"} (${listed(countries)}) and the rest of the world.`
+                      : "Delivers worldwide: one zone covers every country."
+                    : countries.length === 1
+                      ? `Delivers to ${countries[0]}.`
+                      : `Delivers to ${countries.length} countries: ${listed(countries)}.`
                 }
-                state="synced"
+                state={liveRates ? "live" : "synced"}
               />
             ) : (
               <SyncedLine
@@ -527,7 +610,7 @@ function PoliciesSection({ settings, facts, errors, shop, draft }: SectionProps)
               </SyncedLine>
             ))}
           {/* Asked only when Shopify has no list to give: its own says it better. */}
-          <Reveal open={countries.length === 0}>
+          <Reveal open={countries.length === 0 && !everywhereElse}>
             <Pick
               name="shipsTo"
               label={facts.shipsTo === undefined ? "Shipping regions" : "Where you ship, until then"}
@@ -541,14 +624,21 @@ function PoliciesSection({ settings, facts, errors, shop, draft }: SectionProps)
               error={errors.shipsTo}
             />
           </Reveal>
+          <ShippingRatesLine shipping={shipping} shop={shop} />
+          {shipping.processing && (
+            <SyncedLine label="Order processing time" value={shipping.processing} state="live" />
+          )}
           <Columns>
-            <Pick
-              name="processingTime"
-              label="Order processing time"
-              value={settings.processingTime}
-              options={policyOptions("processingTime")}
-              error={errors.processingTime}
-            />
+            {/* Asked only where the store has not set it in Shopify. */}
+            <Reveal open={!shipping.processing}>
+              <Pick
+                name="processingTime"
+                label="Order processing time"
+                value={settings.processingTime}
+                options={policyOptions("processingTime")}
+                error={errors.processingTime}
+              />
+            </Reveal>
             <Pick
               name="deliveryTime"
               label="Delivery time"
@@ -556,14 +646,17 @@ function PoliciesSection({ settings, facts, errors, shop, draft }: SectionProps)
               options={policyOptions("deliveryTime")}
               error={errors.deliveryTime}
             />
-            <Pick
-              name="shippingFee"
-              label="Shipping fees"
-              value={settings.shippingFee}
-              options={policyOptions("shippingFee")}
-              error={errors.shippingFee}
-            />
-            <Reveal open={takesAmount}>
+            {/* Asked only while Shopify's own rates cannot be read. */}
+            <Reveal open={!liveRates}>
+              <Pick
+                name="shippingFee"
+                label="Shipping fees"
+                value={settings.shippingFee}
+                options={policyOptions("shippingFee")}
+                error={errors.shippingFee}
+              />
+            </Reveal>
+            <Reveal open={!liveRates && takesAmount}>
               <s-number-field
                 name="shippingAmount"
                 label={values.shippingFee === "flat" ? "Flat rate" : "Free on orders over"}
@@ -575,21 +668,30 @@ function PoliciesSection({ settings, facts, errors, shop, draft }: SectionProps)
               />
             </Reveal>
           </Columns>
-          <AddOwnWords
-            open={ui.open.shippingInfo}
-            label="Add a note in your own words"
-            onOpen={() => draft.open("shippingInfo")}
-          >
-            <s-text-area
-              name="shippingInfo"
-              label="Your note on shipping"
-              details="Added to your picks above. Leave empty to remove it."
-              rows={3}
-              maxLength={1500}
-              defaultValue={settings.shippingInfo}
-              {...errorProp(errors.shippingInfo)}
-            />
-          </AddOwnWords>
+          {liveRates && settings.shippingInfo && (
+            <s-text color="subdued">
+              Your own note on shipping is kept, but not used while your shipping settings are read
+              live from Shopify: a typed note can fall behind them. For anything Shopify
+              doesn&apos;t hold, such as cut-off times, use custom instructions under Knowledge.
+            </s-text>
+          )}
+          <Reveal open={!liveRates}>
+            <AddOwnWords
+              open={ui.open.shippingInfo}
+              label="Add a note in your own words"
+              onOpen={() => draft.open("shippingInfo")}
+            >
+              <s-text-area
+                name="shippingInfo"
+                label="Your note on shipping"
+                details="Added to your picks above. Leave empty to remove it."
+                rows={3}
+                maxLength={1500}
+                defaultValue={settings.shippingInfo}
+                {...errorProp(errors.shippingInfo)}
+              />
+            </AddOwnWords>
+          </Reveal>
         </s-stack>
       </s-section>
 

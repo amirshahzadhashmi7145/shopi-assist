@@ -4,19 +4,27 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { getLlmStatus } from "../assistant/llm/index.server";
 import { getSettings, getSetupState, setupProgress } from "../assistant/settings.server";
+import { syncStoreFactsForPage } from "../assistant/store-facts.server";
 import { chatAnalytics } from "../assistant/store.server";
 import { ChatAnalyticsSection } from "../components/ChatAnalytics";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
 import db from "../db.server";
+import { factClients } from "../facts-clients.server";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
+  const { session, admin, redirect } = await authenticate.admin(request);
   const shop = session.shop;
 
   // First open after install: start with the setup tour.
   const setup = await getSetupState(shop);
   if (!setup.started) throw redirect("/app/setup");
+
+  // Opening the app is a good moment to hear from Shopify again about the
+  // store itself. Nothing on this page waits for the answer.
+  void factClients(shop, admin)
+    .then((clients) => syncStoreFactsForPage(shop, clients, { maxAgeMs: 60 * 1000 }))
+    .catch(() => undefined);
 
   const [settings, analytics] = await Promise.all([getSettings(shop), chatAnalytics(db, shop)]);
   // Which model answers, and how it is connected, is the app operator's

@@ -22,9 +22,11 @@ import {
   aboutBusiness,
   DEFAULT_SETTINGS,
   describeQuickPolicies,
+  describeShippingPicks,
   getSettings,
 } from "./settings.server";
-import { describeStoreFacts, NO_FACTS } from "./store-facts";
+import { loadShippingRates } from "./shipping.server";
+import { NO_FACTS } from "./store-facts";
 import { getStoredFacts, refreshStoreFactsIfStale } from "./store-facts.server";
 import { GRANT_LIFETIME_MS, grantSecret, signGrant } from "./action-grant.server";
 import { getShopName, isDevelopmentStore, ordersOfCustomer } from "./shopify-clients.server";
@@ -57,6 +59,8 @@ import type {
 } from "./types";
 
 export const MAX_MESSAGE_LENGTH = 2000;
+/** How long a turn waits for the store's facts to be read again before going ahead. */
+const FACTS_WAIT_MS = 2000;
 const HISTORY_MESSAGES = 20;
 /** A turn that has not finished by now is abandoned; the widget gives up at 60s. */
 const TURN_DEADLINE_MS = 50_000;
@@ -347,6 +351,26 @@ export async function handleChatTurn(
   }
   const secret = grantSecret();
 
+  // What Shopify says about the store itself (its description, its contact
+  // address), as stored. When that is more than a few minutes old it is read
+  // again first, briefly: if Shopify is slow the turn goes ahead with what it
+  // has and the fresh answer is there for the next one.
+  let facts = NO_FACTS;
+  if (input.audience === "shopper") {
+    facts = await getStoredFacts(input.shop, deps.db);
+    const refresh = refreshStoreFactsIfStale(
+      input.shop,
+      facts,
+      { admin: input.admin, storefront: input.storefront },
+      { db: deps.db, now },
+    );
+    if (refresh) {
+      await Promise.race([refresh, new Promise((resolve) => setTimeout(resolve, FACTS_WAIT_MS))]);
+      facts = await getStoredFacts(input.shop, deps.db);
+    }
+  }
+  const chatOrders = settings.allowChatOrders && settings.allowCheckout;
+
   // 5. Run the model with the tools this audience is allowed to use.
   const context: ToolContext = {
     shop: input.shop,
@@ -372,7 +396,15 @@ export async function handleChatTurn(
       allowOrderCancel: settings.allowOrderCancel,
       allowAddressChange: settings.allowAddressChange,
       allowOrderEdit: settings.allowOrderEdit,
+      cashOnDelivery: chatOrders ? "chat" : settings.codAvailable,
     },
+    // Shipping rates are asked of Shopify each time the assistant needs them.
+    shippingRates:
+      input.audience === "shopper" && input.admin
+        ? () => loadShippingRates(input.admin)
+        : undefined,
+    shippingPicks: describeShippingPicks(settings, facts) || undefined,
+    shippingNote: settings.shippingInfo.trim().slice(0, 1500) || undefined,
     isTestStore: () => isDevelopmentStore(input.shop, input.admin),
     // A grant names this shop and this chat, and stops working after a while.
     grantOrderAction:
@@ -411,15 +443,6 @@ export async function handleChatTurn(
   };
   const tools = toolsFor(deps.tools, context);
   const shopName = await getShopName(input.shop, input.admin, now.getTime());
-  // What Shopify says about the store, as last stored. Never waited on here:
-  // when it is more than a day old a refresh starts in the background.
-  const facts = input.audience === "shopper" ? await getStoredFacts(input.shop, deps.db) : NO_FACTS;
-  void refreshStoreFactsIfStale(
-    input.shop,
-    facts,
-    { admin: input.admin, storefront: input.storefront },
-    { db: deps.db, now },
-  );
 
   const systemPrompt = buildSystemPrompt({
     audience: input.audience,
@@ -435,15 +458,20 @@ export async function handleChatTurn(
       cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
       changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
       changeItems: tools.some((tool) => tool.name === "change_order_items"),
+      shipping: tools.some((tool) => tool.name === "get_shipping_info"),
+      payment: tools.some((tool) => tool.name === "get_payment_methods"),
     },
     signedIn,
     quickPolicies: describeQuickPolicies(settings, facts),
-    storeFacts: describeStoreFacts(facts),
     topicNotes: describeTopics(settings.topics, facts.contactEmail),
     knowledge: {
       businessDescription: aboutBusiness(settings, facts),
       returnPolicy: settings.returnPolicy,
-      shippingInfo: settings.shippingInfo,
+      // With the shipping tool, the owner's note on shipping is only its
+      // fallback for when Shopify cannot be read: see shippingNote.
+      shippingInfo: tools.some((tool) => tool.name === "get_shipping_info")
+        ? ""
+        : settings.shippingInfo,
       faq: settings.faq,
     },
     merchantInstructions: settings.instructions,

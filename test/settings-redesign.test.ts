@@ -26,6 +26,7 @@ import {
   DEFAULT_SETTINGS,
   aboutBusiness,
   describeQuickPolicies,
+  describeShippingPicks,
   getSettings,
   saveSettings,
   settingsFromForm,
@@ -35,7 +36,6 @@ import {
 import {
   NO_FACTS,
   cleanStoreFacts,
-  describeStoreFacts,
   factsForPage,
   paymentNames,
   readStoreFacts,
@@ -55,6 +55,7 @@ import {
   sameDraft,
   type ControlInput,
 } from "../app/components/settings/draft";
+import { NO_SHIPPING_RATES, shippingForPage } from "../app/assistant/shipping";
 import { SettingsFields } from "../app/components/settings/SettingsFields";
 import { PreviewWindow, previewSuggestions } from "../app/components/settings/StorefrontPreview";
 import { syncedRows } from "../app/components/settings/SyncedFromShopify";
@@ -282,21 +283,25 @@ describe("store policies as picks", () => {
       shippingAmount: "75",
       codAvailable: "yes",
     };
-    expect(describeQuickPolicies(settings, FACTS).split("\n")).toEqual([
+    expect(describeQuickPolicies(settings).split("\n")).toEqual([
       "Returns: accepted within 30 days of delivery.",
       "Return conditions: Items must be unused and unworn. Tags must still be attached. Sale items cannot be returned.",
       "Return shipping: paid by the customer.",
       "Refunds: the customer chooses between the original payment method and store credit, once the store approves the return.",
       "Exchanges: the store exchanges items. The shopper contacts the store to arrange one.",
-      "Shipping cost: free on orders over 75 CAD. Below that, the checkout shows the cost.",
       "Cash on delivery: available. The shopper chooses it at checkout.",
     ]);
+    // What delivery costs is asked of Shopify when a shopper asks. The pick is
+    // kept apart, for when Shopify cannot say.
+    expect(describeShippingPicks(settings, FACTS)).toBe(
+      "Shipping cost: free on orders over 75 CAD. Below that, the checkout shows the cost.",
+    );
     expect(describeReturnConditions([])).toBe("");
   });
 
   it("states a shipping amount only with the pick it belongs to, in the store's currency", () => {
     const cost = (overrides: Partial<AssistantSettings>, facts: StoreFacts = FACTS) =>
-      describeQuickPolicies({ ...DEFAULT_SETTINGS, ...overrides }, facts);
+      describeShippingPicks({ ...DEFAULT_SETTINGS, ...overrides }, facts);
 
     expect(cost({ shippingFee: "free", shippingAmount: "75" })).toBe("Shipping cost: free on every order.");
     expect(cost({ shippingFee: "flat", shippingAmount: "4.99" })).toBe(
@@ -335,14 +340,22 @@ describe("store policies as picks", () => {
       "Cash on delivery: not available.",
     );
 
-    // Shopify's own list of countries replaces the merchant's pick for the same thing.
-    const picked = { ...DEFAULT_SETTINGS, shipsTo: "international" as const };
-    expect(describeQuickPolicies(picked, NO_FACTS)).toBe("Shipping area: ships internationally.");
-    expect(describeQuickPolicies(picked, FACTS)).toBe("");
-    // An empty list is no answer: the pick is all there is to go on.
-    expect(describeQuickPolicies(picked, { syncedAt: FACTS.syncedAt, shipsTo: [] })).toBe(
-      "Shipping area: ships internationally.",
+    // How soon orders leave: Shopify's own setting, where the store has one, in place of the pick.
+    const dispatch = { ...DEFAULT_SETTINGS, processingTime: "3_5" as const };
+    expect(describeQuickPolicies(dispatch)).toBe("Dispatch: orders usually ship within 3 to 5 business days.");
+    expect(describeQuickPolicies(dispatch, { syncedAt: null, processingDays: 1 })).toBe(
+      "Dispatch: orders are handed to the carrier within 1 business day, as set in the store's shipping settings.",
     );
+    expect(describeQuickPolicies(DEFAULT_SETTINGS, { syncedAt: null, processingDays: 0 })).toBe(
+      "Dispatch: orders are handed to the carrier the same business day, as set in the store's shipping settings.",
+    );
+
+    // Where the store ships is Shopify's to say: the pick is never among the
+    // policies, only in the fallback for when Shopify cannot be read.
+    const picked = { ...DEFAULT_SETTINGS, shipsTo: "international" as const };
+    expect(describeQuickPolicies(picked)).toBe("");
+    expect(describeShippingPicks(picked)).toBe("Shipping area: ships internationally.");
+    expect(describeShippingPicks(DEFAULT_SETTINGS)).toBe("");
   });
 
   it("reads tick boxes, structured answers and switches out of a submitted form", () => {
@@ -462,6 +475,7 @@ describe("what Shopify says about the store", () => {
         policies: { refund: true, shipping: "yes" },
         products: -3,
         giftCards: "true",
+        processingDays: 1.5,
         admin: true,
       }),
     ).toEqual({
@@ -478,37 +492,15 @@ describe("what Shopify says about the store", () => {
     expect(readStoreFacts(JSON.stringify(FACTS))).toEqual(FACTS);
   });
 
-  it("tells the assistant where the store delivers and how shoppers can pay", () => {
-    expect(describeStoreFacts(NO_FACTS)).toBe("");
-    expect(describeStoreFacts(FACTS).split("\n")).toEqual([
-      "Delivery area: this store delivers to these 2 countries: Canada, United States. It has no shipping set up for any other country.",
-      "Cards accepted at checkout: Visa, Mastercard.",
-      "Wallets accepted at checkout: Shop Pay.",
-    ]);
-    expect(describeStoreFacts({ syncedAt: null, shipsTo: ["PK"] })).toBe(
-      "Delivery area: this store delivers to Pakistan. It has no shipping set up for any other country.",
-    );
-    // No zones, no cards: nothing is claimed either way.
-    expect(describeStoreFacts({ syncedAt: null, shipsTo: [], cards: [], wallets: [] })).toBe("");
-
-    // Too many countries to name: no list, and no promise about any one of them.
-    const worldwide = describeStoreFacts({
-      syncedAt: null,
-      shipsTo: Array.from({ length: 60 }, (_, index) =>
-        String.fromCharCode(65 + (index % 26)) + String.fromCharCode(65 + Math.floor(index / 26)),
-      ),
-    });
-    expect(worldwide).toMatch(/^Delivery area: this store delivers to 60 countries and regions, too many to list here\./);
-    expect(worldwide).toContain("never say it ships worldwide");
-    expect(worldwide).toContain("the checkout confirms");
-
-    // Never the contact address, the product count or anything else here.
-    expect(describeStoreFacts(FACTS)).not.toContain("hello@");
-    expect(describeStoreFacts(FACTS)).not.toContain("42");
-    expect(paymentNames({ syncedAt: null, cards: ["AMERICAN_EXPRESS", "SOME_NEW_CARD"], wallets: ["ANDROID_PAY", "GOOGLE_PAY"] })).toEqual({
-      cards: ["American Express", "Some New Card"],
-      wallets: ["Google Pay"],
-    });
+  it("names cards and wallets the way shoppers know them", () => {
+    expect(
+      paymentNames({
+        syncedAt: null,
+        cards: ["AMERICAN_EXPRESS", "SOME_NEW_CARD"],
+        wallets: ["ANDROID_PAY", "GOOGLE_PAY"],
+      }),
+    ).toEqual({ cards: ["American Express", "Some New Card"], wallets: ["Google Pay"] });
+    expect(paymentNames(NO_FACTS)).toEqual({ cards: [], wallets: [] });
   });
 
   it("asks Shopify and stores the answer for the signed-in shop only", async () => {
@@ -520,10 +512,39 @@ describe("what Shopify says about the store", () => {
     const { facts, reached } = await syncStoreFacts(SHOP_A, { admin, storefront }, { db, now });
     expect(reached).toEqual({ admin: true, storefront: true });
     expect(facts).toEqual(FACTS);
-    expect([admin.calls.length, storefront.calls.length]).toEqual([1, 1]);
+    // Two questions for the Admin API (the store, and its processing time), one for the Storefront API.
+    expect([admin.calls.length, storefront.calls.length]).toEqual([2, 1]);
     // Kept with the shop's settings, without touching the settings themselves.
     expect(await getStoredFacts(SHOP_A, db)).toEqual(FACTS);
     expect(await getSettings(SHOP_A, db)).toEqual(DEFAULT_SETTINGS);
+
+    // The processing time is asked for on its own and kept with the rest.
+    const withTime = (async (query: string) =>
+      query.includes("deliveryPromiseSettings")
+        ? { deliveryPromiseSettings: { processingTime: "P2D" } }
+        : adminAnswer()) as typeof admin;
+    const timed = await syncStoreFacts(SHOP_A, { admin: withTime, storefront: fakeGraphql(storefrontAnswer()) }, { db, now });
+    expect(timed.facts).toEqual({ ...FACTS, processingDays: 2 });
+    // A store that has not approved that permission keeps every other fact.
+    const withoutPermission = (async (query: string) => {
+      if (query.includes("deliveryPromiseSettings")) throw new Error("Access denied for deliveryPromiseSettings field.");
+      return adminAnswer();
+    }) as typeof admin;
+    const kept = await syncStoreFacts(
+      SHOP_A,
+      { admin: withoutPermission, storefront: fakeGraphql(storefrontAnswer()) },
+      { db, now },
+    );
+    expect(kept.reached).toEqual({ admin: true, storefront: true });
+    expect(kept.facts).toEqual({ ...FACTS, processingDays: 2 });
+    // And one that has cleared the setting in Shopify loses it here too.
+    const cleared = (async (query: string) =>
+      query.includes("deliveryPromiseSettings")
+        ? { deliveryPromiseSettings: { processingTime: null } }
+        : adminAnswer()) as typeof admin;
+    expect(
+      (await syncStoreFacts(SHOP_A, { admin: cleared, storefront: fakeGraphql(storefrontAnswer()) }, { db, now })).facts,
+    ).toEqual(FACTS);
     expect(await getStoredFacts(SHOP_B, db)).toEqual(NO_FACTS);
     expect((await getSettings(SHOP_B, db)).assistantName).toBe("Other");
   });
@@ -651,7 +672,7 @@ describe("what Shopify says about the store", () => {
     expect(page).toEqual({ facts: NO_FACTS, reached: { admin: false, storefront: false } });
   });
 
-  it("refreshes in the background once a day, and leaves a never-synced store alone", async () => {
+  it("reads the facts again once they are a few minutes old, and leaves a never-synced store alone", async () => {
     const clients = () => ({ admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer()) });
     const shop = "refresh-test.myshopify.com";
     const now = new Date("2026-11-28T12:00:00Z");
@@ -659,9 +680,9 @@ describe("what Shopify says about the store", () => {
     // Never synced: the merchant opening the app does the first sync, not a chat.
     const untouched = clients();
     expect(refreshStoreFactsIfStale(shop, NO_FACTS, untouched, { db, now })).toBeNull();
-    // Synced within the day: still good.
+    // Synced a few minutes ago: still good.
     expect(
-      refreshStoreFactsIfStale(shop, { syncedAt: "2026-11-28T01:00:00.000Z" }, untouched, { db, now }),
+      refreshStoreFactsIfStale(shop, { syncedAt: "2026-11-28T11:55:00.000Z" }, untouched, { db, now }),
     ).toBeNull();
     expect(untouched.admin.calls).toHaveLength(0);
 
@@ -729,7 +750,7 @@ describe("what the assistant is told from Settings", () => {
       { db, provider, rateLimiter: new RateLimiter(), tokenBudget: new DailyBudget() },
     ).then(() => provider.requests[0].messages[0].content as string);
 
-  it("adds the picks and Shopify's facts to the owner's notes, without asking Shopify during the chat", async () => {
+  it("adds the picks, the answers and the store's own description to the owner's notes", async () => {
     await saveSettings(
       SHOP_A,
       {
@@ -746,9 +767,6 @@ describe("what the assistant is told from Settings", () => {
     const system = await turn({ storefront });
     for (const line of [
       "Returns: accepted within 30 days of delivery.",
-      "Shipping cost: a flat 4.99 CAD per order.",
-      "Delivery area: this store delivers to these 2 countries: Canada, United States.",
-      "Cards accepted at checkout: Visa, Mastercard.",
       "Sizing: items run small. Suggest ordering one size up.",
       "Contact: shoppers can email the store at hello@alpine.example.",
       // The store's own description, since the merchant wrote none.
@@ -756,10 +774,47 @@ describe("what the assistant is told from Settings", () => {
     ]) {
       expect(system).toContain(line);
     }
-    // Facts are notes, placed after the rules they cannot override.
-    expect(system.indexOf("Rules:")).toBeLessThan(system.indexOf("From the store's own Shopify settings"));
-    // Everything came from what was stored: the chat asked the Storefront API nothing.
+    // Notes come after the rules they cannot override.
+    expect(system.indexOf("Rules:")).toBeLessThan(system.indexOf("Notes from the store owner"));
+    // Fresh facts: nothing was asked of Shopify for this turn.
     expect(storefront.calls).toHaveLength(0);
+  });
+
+  it("is never told where the store delivers, what delivery costs or how to pay: it has to look", async () => {
+    await saveSettings(
+      SHOP_A,
+      {
+        // No description, so nothing the store wrote about itself is in the way.
+        aboutStore: "none",
+        shippingFee: "flat",
+        shippingAmount: "4.99",
+        shipsTo: "domestic",
+        // A typed note that has fallen behind the store's settings.
+        shippingInfo: "We also ship to Mexico. Shipping is 35 dollars.",
+      },
+      db,
+    );
+    await storeFacts(SHOP_A, { ...FACTS, syncedAt: new Date().toISOString() });
+
+    const system = await turn();
+    // Not from what was stored, and not from the merchant's own picks either.
+    for (const stale of [
+      "Canada",
+      "United States",
+      "Visa",
+      "Mastercard",
+      "Shop Pay",
+      "4.99",
+      "home country",
+      "Mexico",
+      "35 dollars",
+    ]) {
+      expect(system).not.toContain(stale);
+    }
+    expect(system).toMatch(
+      /Delivery and payment: for anything about delivery .*, and how shoppers can pay, use your shipping and payment tools every time/,
+    );
+    expect(system).toContain("never answer these from memory or from earlier in this chat");
   });
 
   it("keeps the contact address and the description out unless the merchant chose them", async () => {
@@ -772,36 +827,54 @@ describe("what the assistant is told from Settings", () => {
     expect(system).toContain("Contact: shoppers can reach the store through the contact page");
   });
 
-  it("says nothing new for a store that was never synced and has no picks", async () => {
+  it("adds no notes for a store that was never synced and has no picks", async () => {
     const system = await turn();
     expect(system).not.toContain("Notes from the store owner");
-    expect(system).not.toContain("Delivery area");
   });
 
   it("tells the merchant's own assistant none of it", async () => {
     await saveSettings(SHOP_A, { topics: { sizing: "small" } }, db);
     await storeFacts(SHOP_A, { ...FACTS, syncedAt: new Date().toISOString() });
     const system = await turn({ audience: "merchant" });
-    expect(system).not.toContain("Delivery area");
+    expect(system).not.toContain("Delivery and payment");
     expect(system).not.toContain("Sizing");
   });
 
-  it("answers from day-old facts at once and refreshes them behind the reply", async () => {
+  it("reads the store's facts again before using ones that have gone stale", async () => {
     const shop = "stale-chat.myshopify.com";
-    await storeFacts(shop, { syncedAt: "2026-01-01T00:00:00.000Z", shipsTo: ["GB"] });
+    await saveSettings(shop, { topics: { contact: "email" } }, db);
+    await storeFacts(shop, {
+      syncedAt: "2026-01-01T00:00:00.000Z",
+      contactEmail: "old@alpine.example",
+      description: "An old description.",
+    });
     const admin = fakeGraphql(adminAnswer());
     const storefront = fakeGraphql(storefrontAnswer());
 
+    // The very turn that found them stale answers with Shopify's current ones.
     const system = await turn({ shop, admin, storefront });
-    // This reply used what was stored.
-    expect(system).toContain("this store delivers to United Kingdom.");
+    expect(system).toContain("shoppers can email the store at hello@alpine.example.");
+    expect(system).toContain("Small-batch snowboards, built in Canada.");
+    expect(system).not.toContain("old@alpine.example");
+    expect((await getStoredFacts(shop, db)).contactEmail).toBe("hello@alpine.example");
 
-    // The next one has Shopify's current answer, once the refresh has landed.
-    await expect
-      .poll(async () => (await getStoredFacts(shop, db)).shipsTo, { timeout: 5000, interval: 20 })
-      .toEqual(["US", "CA"]);
-    const next = await turn({ shop, visitorId: "visitor-0002" });
-    expect(next).toContain("Canada, United States");
+    // And the next turn, a moment later, does not ask Shopify again.
+    const quiet = fakeGraphql(storefrontAnswer());
+    await turn({ shop, visitorId: "visitor-0002", storefront: quiet });
+    expect(quiet.calls).toHaveLength(0);
+  });
+
+  it("goes ahead with what it has when Shopify cannot be reached for fresher facts", async () => {
+    const shop = "stale-offline.myshopify.com";
+    await saveSettings(shop, { topics: { contact: "email" } }, db);
+    await storeFacts(shop, { syncedAt: "2026-01-01T00:00:00.000Z", contactEmail: "old@alpine.example" });
+
+    const system = await turn({
+      shop,
+      admin: fakeGraphql(new Error("offline")),
+      storefront: fakeGraphql(new Error("offline")),
+    });
+    expect(system).toContain("shoppers can email the store at old@alpine.example.");
   });
 });
 
@@ -814,6 +887,7 @@ describe("the settings pages on the server", () => {
         active: "policies",
         settings: DEFAULT_SETTINGS,
         facts: factsForPage(FACTS),
+        shipping: shippingForPage(NO_SHIPPING_RATES),
         errors: {},
         shop: SHOP_A,
         draft: {

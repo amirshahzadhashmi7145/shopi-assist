@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SECTIONS, type SectionKey } from "../app/assistant/setting-options";
 import type { AssistantSettings, SettingsErrors } from "../app/assistant/settings.server";
+import {
+  NO_SHIPPING_RATES,
+  shippingForPage,
+  type ShippingRates,
+} from "../app/assistant/shipping";
 import { factsForPage, type StoreFacts } from "../app/assistant/store-facts";
 import { SectionNav, SettingsFields } from "../app/components/settings/SettingsFields";
 import { PreviewWindow, TryAsking } from "../app/components/settings/StorefrontPreview";
@@ -72,6 +77,38 @@ const FACTS: StoreFacts = {
   giftCards: false,
 };
 
+/** The store's shipping settings as Shopify returns them: two zones with rates. */
+const LIVE_RATES: ShippingRates = {
+  state: "live",
+  otherProfiles: false,
+  truncated: false,
+  zones: [
+    {
+      name: "North America",
+      countries: ["CA", "US"],
+      restOfWorld: false,
+      rates: [
+        {
+          name: "Standard",
+          price: { amount: "10.0", currencyCode: "CAD" },
+          conditions: ["orders up to 99.99 CAD"],
+        },
+        {
+          name: "Free shipping",
+          price: { amount: "0.0", currencyCode: "CAD" },
+          conditions: ["orders of 100.00 CAD or more"],
+        },
+      ],
+    },
+    {
+      name: "Everywhere else",
+      countries: [],
+      restOfWorld: true,
+      rates: [{ name: "DHL Express", price: null, carrier: "DHL", conditions: [] }],
+    },
+  ],
+};
+
 const ALL = SECTIONS.map((section) => section.key);
 
 /**
@@ -89,12 +126,15 @@ const TYPED = "s-text-field, s-text-area, s-number-field";
 function Page({
   settings,
   facts,
+  shipping = NO_SHIPPING_RATES,
   show,
   active,
   errors = {},
 }: {
   settings: AssistantSettings;
   facts: StoreFacts;
+  /** The shipping rates as read from Shopify. Not readable unless a test says so. */
+  shipping?: ShippingRates;
   show: readonly SectionKey[];
   active?: SectionKey;
   errors?: SettingsErrors;
@@ -107,6 +147,7 @@ function Page({
         active={active}
         settings={settings}
         facts={factsForPage(facts)}
+        shipping={shippingForPage(shipping)}
         errors={errors}
         shop="alpine.myshopify.com"
         draft={draft}
@@ -412,6 +453,71 @@ describe("what Shopify already knows is shown, not asked", () => {
       "https://alpine.myshopify.com/admin/settings/legal",
     ]);
     expect(links[0].getAttribute("target")).toBe("_top");
+  });
+
+  it("shows the store's real shipping rates, live, and asks nothing about shipping cost or area", () => {
+    const page = open({ shipping: LIVE_RATES });
+    const text = page.host.textContent ?? "";
+    expect(text).toContain("Live from Shopify");
+    expect(text).toContain("Canada, United States");
+    expect(text).toContain("Standard: 10.00 CAD (orders up to 99.99 CAD)");
+    expect(text).toContain("Free shipping: free (orders of 100.00 CAD or more)");
+    expect(text).toContain("Rest of the world");
+    expect(text).toContain("DHL Express: calculated at checkout by DHL");
+    expect(text).toContain("Delivers to 2 named countries (Canada and United States) and the rest of the world.");
+
+    // Shopify has answered, so the merchant's own picks for these are not shown...
+    for (const name of ["shippingFee", "shippingAmount", "shipsTo"]) {
+      expect(page.isShown(name)).toBe(false);
+      // ...but stay in the form, so nothing saved earlier is lost.
+      expect(page.field(name).closest("form")).not.toBeNull();
+    }
+    // What Shopify cannot tell is still picked.
+    expect(page.isShown("processingTime")).toBe(true);
+    expect(page.isShown("deliveryTime")).toBe(true);
+  });
+
+  it("sets a typed shipping note aside while the store's settings are read live, and says so", () => {
+    const written = { ...DEFAULTS, shippingInfo: "We ship to Canada and Mexico too." };
+    const live = open({ settings: written, shipping: LIVE_RATES });
+    expect(live.isShown("shippingInfo")).toBe(false);
+    expect(live.host.textContent).toContain("Your own note on shipping is kept, but not used");
+    // Kept in the form, so saving the page does not wipe it.
+    expect(live.field("shippingInfo").closest("form")).not.toBeNull();
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const fallback = open({ settings: written });
+    expect(fallback.isShown("shippingInfo")).toBe(true);
+    expect(fallback.host.textContent).not.toContain("Your own note on shipping is kept, but not used");
+  });
+
+  it("shows the store's own processing time in place of the pick, where Shopify has one", () => {
+    const page = open({ shipping: { ...LIVE_RATES, processingDays: 1 } });
+    expect(page.host.textContent).toContain("Orders are handed to the carrier within 1 business day.");
+    expect(page.isShown("processingTime")).toBe(false);
+    expect(page.field("processingTime").closest("form")).not.toBeNull();
+    // Delivery time is not something Shopify tells apps: still a pick.
+    expect(page.isShown("deliveryTime")).toBe(true);
+  });
+
+  it("says a permission is waiting for approval, and uses the merchant's pick until it is given", () => {
+    const page = open({ shipping: { ...NO_SHIPPING_RATES, state: "no_access" } });
+    expect(page.host.textContent).toContain("Needs your approval");
+    expect(page.host.textContent).toContain("once you approve the app's updated permission");
+    expect(page.isShown("shippingFee")).toBe(true);
+    page.pick("shippingFee", "flat");
+    expect(page.isShown("shippingAmount")).toBe(true);
+  });
+
+  it("asks for a pick when the store has no shipping zones yet", () => {
+    const page = open({
+      facts: { ...FACTS, shipsTo: [] },
+      shipping: { ...NO_SHIPPING_RATES, state: "live" },
+    });
+    expect(page.host.textContent).toContain("No shipping zones or rates are set up in Shopify yet.");
+    expect(page.isShown("shippingFee")).toBe(true);
+    expect(page.isShown("shipsTo")).toBe(true);
   });
 
   it("takes cash on delivery as offered once the assistant takes those orders itself", () => {
