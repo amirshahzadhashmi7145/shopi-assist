@@ -1,19 +1,18 @@
 /**
- * Pay-on-delivery orders placed from the form in the chat widget.
+ * What the storefront widget asks of the order endpoint, apart from carrying
+ * out a confirmed change to an order (see order-actions.server.ts):
  *
- * This is the one place where an anonymous storefront visitor makes the app
- * create something real in the store, so it is deliberately not a model tool:
- * the shopper types their details into a form, the form posts here directly,
- * and nothing in this file is reachable by the LLM. Names, phone numbers and
- * addresses therefore never pass through the model or the stored transcript.
+ *   - the store's checkout for the items the shopper ticked, and
+ *   - what the address form asks for, and the checking of what it collects,
+ *     for a change of delivery address on the shopper's own order.
  *
- * Two steps:
- *   quote  works out delivery options, tax and the total, and creates nothing.
- *   place  repeats that calculation, checks the shopper saw the same total,
- *          then creates an unpaid order through a draft order.
+ * Nothing here creates an order. An order is placed and paid for on the
+ * store's own checkout page, whichever way the shopper pays, cash on delivery
+ * included: the chat takes no orders and no payment details.
  *
- * Prices always come from Shopify. The browser only says which variants, how
- * many and where to deliver.
+ * None of this is reachable by the LLM: the widget posts here directly, so
+ * names, phone numbers and addresses never pass through the model or the
+ * stored transcript.
  */
 import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
@@ -21,8 +20,6 @@ import { z } from "zod";
 import prisma from "../db.server";
 import {
   addressErrors,
-  DEFAULT_FORM_OPTIONS,
-  formLayout,
   formLayouts,
   onlyFormFields,
   type FormLayout,
@@ -30,92 +27,8 @@ import {
 } from "./address-rules";
 import { clientKey, rateLimiter as defaultRateLimiter, type RateLimiter } from "./rate-limit";
 import { getSettings, type AssistantSettings } from "./settings.server";
-import { isDevelopmentStore } from "./shopify-clients.server";
-import { appendExchange, findConversation, rememberOrder } from "./store.server";
-import { fingerprint } from "./tools/shopper";
-import {
-  CHECKOUT_CART_MUTATION,
-  DELIVERY_COUNTRIES_QUERY,
-  PAYMENT_SETTINGS_QUERY,
-  VARIANTS_FOR_ORDER_QUERY,
-} from "./tools/storefront-queries";
-import type { GraphqlFn, Money } from "./types";
-
-// ---------------------------------------------------------------------------
-// Admin API documents
-// ---------------------------------------------------------------------------
-
-/** Admin API. Prices a would-be order without creating anything. */
-export const DRAFT_ORDER_CALCULATE_MUTATION = `#graphql
-  mutation ShopiAssistDraftOrderCalculate($input: DraftOrderInput!) {
-    draftOrderCalculate(input: $input) {
-      calculatedDraftOrder {
-        taxesIncluded
-        lineItems {
-          title
-          variantTitle
-          quantity
-          requiresShipping
-          discountedTotalSet { presentmentMoney { amount currencyCode } }
-        }
-        availableShippingRates {
-          handle
-          title
-          price { amount currencyCode }
-        }
-        subtotalPriceSet { presentmentMoney { amount currencyCode } }
-        totalShippingPriceSet { presentmentMoney { amount currencyCode } }
-        totalTaxSet { presentmentMoney { amount currencyCode } }
-        totalPriceSet { presentmentMoney { amount currencyCode } }
-      }
-      userErrors { field message }
-    }
-  }
-`;
-
-/**
- * Admin API. The "due on fulfillment" payment terms. A draft order completed
- * with payment terms becomes an unpaid order; without them Shopify would mark
- * it as paid, which is wrong for an order that is paid on delivery.
- */
-export const PAY_ON_DELIVERY_TERMS_QUERY = `#graphql
-  query ShopiAssistPayOnDeliveryTerms {
-    paymentTermsTemplates(paymentTermsType: FULFILLMENT) {
-      id
-      paymentTermsType
-    }
-  }
-`;
-
-export const DRAFT_ORDER_CREATE_MUTATION = `#graphql
-  mutation ShopiAssistDraftOrderCreate($input: DraftOrderInput!) {
-    draftOrderCreate(input: $input) {
-      draftOrder { id }
-      userErrors { field message }
-    }
-  }
-`;
-
-export const DRAFT_ORDER_COMPLETE_MUTATION = `#graphql
-  mutation ShopiAssistDraftOrderComplete($id: ID!) {
-    draftOrderComplete(id: $id) {
-      draftOrder {
-        order { id name displayFinancialStatus }
-      }
-      userErrors { field message }
-    }
-  }
-`;
-
-/** Admin API. Removes a draft that could not be turned into an order. */
-export const DRAFT_ORDER_DELETE_MUTATION = `#graphql
-  mutation ShopiAssistDraftOrderDelete($input: DraftOrderDeleteInput!) {
-    draftOrderDelete(input: $input) {
-      deletedId
-      userErrors { field message }
-    }
-  }
-`;
+import { CHECKOUT_CART_MUTATION, DELIVERY_COUNTRIES_QUERY } from "./tools/storefront-queries";
+import type { GraphqlFn } from "./types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,8 +40,6 @@ export type OrderErrorCode =
   | "disabled"
   | "rate_limited"
   | "unavailable"
-  | "undeliverable"
-  | "quote_changed"
   | "order_failed";
 
 /** Which form field a message belongs to. */
@@ -145,18 +56,6 @@ export type OrderField =
   | "zip"
   | "countryCode";
 
-export interface OrderQuote {
-  lines: Array<{ title: string; quantity: number; total: Money }>;
-  subtotal: Money;
-  shipping: Money;
-  /** Null when prices already include tax, or there is none. */
-  tax: Money | null;
-  total: Money;
-  shippingRates: Array<{ handle: string; title: string; price: Money }>;
-  /** The delivery option the totals above include. */
-  shippingRateHandle: string;
-}
-
 /** An error with a message that is safe to show to the shopper. */
 export class OrderError extends Error {
   constructor(
@@ -165,7 +64,6 @@ export class OrderError extends Error {
     message: string,
     public readonly extra: {
       fields?: Partial<Record<OrderField, string>>;
-      quote?: OrderQuote;
       retryAfterSeconds?: number;
     } = {},
   ) {
@@ -174,63 +72,42 @@ export class OrderError extends Error {
   }
 }
 
-export type ChatOrderResult =
-  | { ok: true; step: "quote"; quote: OrderQuote }
-  | { ok: true; step: "place"; order: { name: string; total: Money } }
-  /** Where to pay for some of the cart's items on the store's own checkout. */
-  | { ok: true; step: "checkout"; checkoutUrl: string };
+/** Where to pay for the ticked items on the store's own checkout. */
+export interface CheckoutResult {
+  ok: true;
+  step: "checkout";
+  checkoutUrl: string;
+}
 
-export interface ChatOrderInput {
+export interface OrderRequestInput {
   /** Shop domain from the authenticated request. Never from the request body. */
   shop: string;
   /** The untrusted JSON the widget posted. */
   body: Record<string, unknown>;
   ip?: string;
-  admin: GraphqlFn;
   storefront: GraphqlFn;
 }
 
-/** A finished or in-flight "place" request, kept so a retry returns the same order. */
-interface Remembered {
-  expiresAt: number;
-  result: Promise<ChatOrderResult>;
-}
-
-export interface ChatOrderDeps {
+export interface OrderDeps {
   db: PrismaClient;
   rateLimiter: RateLimiter;
-  /** Keyed by shop and the widget's idempotency key. */
-  placed: Map<string, Remembered>;
-  /** Whether the shop exists only for testing. Asked of Shopify. */
-  isTestStore: (shop: string, admin: GraphqlFn) => Promise<boolean>;
   now: () => Date;
 }
 
-/**
- * How much looser the order limits are on a development store, where a team
- * places the same test order from one office and one phone number all day.
- */
-const TEST_STORE_LIMIT_FACTOR = 50;
+const withDefaults = (overrides: Partial<OrderDeps>): OrderDeps => ({
+  db: overrides.db ?? prisma,
+  rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
+  now: overrides.now ?? (() => new Date()),
+});
 
 // ---------------------------------------------------------------------------
-// Input
+// The address form: what it sends, and the checking of it
 // ---------------------------------------------------------------------------
-
-const MAX_LINES = 10;
-const MAX_QUANTITY = 10;
 
 const line = (max: number, tooLong: string) => z.string().trim().max(max, tooLong);
 
-const orderSchema = z.object({
-  items: z
-    .array(
-      z.object({
-        variantId: z.string().regex(/^\d{1,20}$/),
-        quantity: z.number().int().min(1).max(MAX_QUANTITY),
-      }),
-    )
-    .min(1)
-    .max(MAX_LINES),
+/** Who and where, as the address form collects them. */
+export const deliverySchema = z.object({
   contact: z.object({
     // Whether a first name is needed is the store's choice: see checkDelivery.
     firstName: line(40, "Keep the first name under 40 characters.").default(""),
@@ -263,37 +140,6 @@ const orderSchema = z.object({
       .regex(/^[A-Za-z]{2}$/, "Choose a country.")
       .transform((value) => value.toUpperCase()),
   }),
-  /**
-   * The delivery option the shopper picked. Missing means the cheapest.
-   * Shopify's handles are signed tokens of 300-odd characters that grow with
-   * the option's name, so the limit is generous. An unknown handle is ignored.
-   */
-  shippingRateHandle: z.string().max(2000).optional(),
-});
-
-const placeSchema = orderSchema.extend({
-  /** What the shopper was shown. The order is refused if it no longer holds. */
-  expectedTotal: z.object({
-    amount: z.string().regex(/^\d{1,12}(\.\d{1,4})?$/),
-    currencyCode: z.string().regex(/^[A-Z]{3}$/),
-  }),
-  /** Chosen by the widget once per order form, so a retry cannot order twice. */
-  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/),
-  /**
-   * The chat the order form was opened from. Optional, and checked against
-   * the shop before use: it only decides which conversation is told about the
-   * order, never who may order.
-   */
-  visitorId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional(),
-  conversationId: z.string().regex(/^[a-z0-9]{8,40}$/).optional(),
-});
-
-type OrderDetails = z.infer<typeof orderSchema>;
-
-/** Who and where, as the forms collect them. Shared with address changes. */
-export const deliverySchema = z.object({
-  contact: orderSchema.shape.contact,
-  address: orderSchema.shape.address,
 });
 export type DeliveryDetails = z.infer<typeof deliverySchema>;
 
@@ -324,16 +170,12 @@ export function parse<Schema extends z.ZodType>(schema: Schema, body: unknown): 
   if (Object.keys(fields).length) {
     throw new OrderError("invalid_order", 422, "Please check the highlighted details.", { fields });
   }
-  // Anything else is not something the shopper typed: the cart or the form
-  // state is out of step with what this endpoint expects.
-  throw new OrderError(
-    "invalid_request",
-    400,
-    "Something went wrong with this order. Please start it again.",
-  );
+  // Anything else is not something the shopper typed: the form's state is
+  // out of step with what this endpoint expects.
+  throw new OrderError("invalid_request", 400, "Something went wrong. Please start again.");
 }
 
-/** The store's choices for the order form, as the address rules take them. */
+/** The store's choices for the address form, as the address rules take them. */
 export function orderFormOptions(
   settings: Pick<AssistantSettings, "orderFirstName" | "orderCompany" | "orderAddress2">,
 ): FormOptions {
@@ -391,16 +233,9 @@ export function checkDelivery<Details extends DeliveryDetails>(
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
-const DAY_MS = 86_400_000;
-const REMEMBER_PLACED_MS = 30 * MINUTE_MS;
-
-function envNumber(name: string, fallback: number): number {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
 
 function enforce(
-  deps: ChatOrderDeps,
+  deps: OrderDeps,
   limits: Array<{ key: string; max: number; windowMs: number }>,
 ): void {
   for (const limit of limits) {
@@ -409,7 +244,7 @@ function enforce(
       throw new OrderError(
         "rate_limited",
         429,
-        "Too many orders from here for now. Please try again later or use the checkout.",
+        "Too many requests from here for now. Please try again in a little while.",
         { retryAfterSeconds: Math.ceil(result.retryAfterMs / 1000) },
       );
     }
@@ -417,32 +252,12 @@ function enforce(
 }
 
 // ---------------------------------------------------------------------------
-// Shopify calls
+// Shopify's shapes
 // ---------------------------------------------------------------------------
 
 export interface UserError {
   field?: string[] | null;
   message: string;
-}
-
-interface MoneySet {
-  presentmentMoney: Money;
-}
-
-interface CalculatedDraftOrder {
-  taxesIncluded: boolean;
-  lineItems: Array<{
-    title: string;
-    variantTitle: string | null;
-    quantity: number;
-    requiresShipping: boolean;
-    discountedTotalSet: MoneySet;
-  }>;
-  availableShippingRates: Array<{ handle: string; title: string; price: Money }>;
-  subtotalPriceSet: MoneySet;
-  totalShippingPriceSet: MoneySet;
-  totalTaxSet: MoneySet;
-  totalPriceSet: MoneySet;
 }
 
 /** The delivery address in the shape Shopify's Admin API takes. */
@@ -470,17 +285,6 @@ export function shippingAddressInput({ contact, address }: DeliveryDetails): Rec
   };
 }
 
-function draftOrderInput(order: OrderDetails): Record<string, unknown> {
-  return {
-    lineItems: order.items.map((item) => ({
-      variantId: `gid://shopify/ProductVariant/${item.variantId}`,
-      quantity: item.quantity,
-    })),
-    shippingAddress: shippingAddressInput(order),
-    ...(order.contact.email ? { email: order.contact.email } : {}),
-  };
-}
-
 /** Shopify's own wording for a rejected address, mapped back to the form. */
 export function fieldErrors(errors: UserError[]): Partial<Record<OrderField, string>> {
   const fields: Partial<Record<OrderField, string>> = {};
@@ -504,284 +308,11 @@ export function fieldErrors(errors: UserError[]): Partial<Record<OrderField, str
   return fields;
 }
 
-async function calculate(
-  admin: GraphqlFn,
-  input: Record<string, unknown>,
-): Promise<CalculatedDraftOrder> {
-  const data = await admin<{
-    draftOrderCalculate: {
-      calculatedDraftOrder: CalculatedDraftOrder | null;
-      userErrors: UserError[];
-    } | null;
-  }>(DRAFT_ORDER_CALCULATE_MUTATION, { input });
-
-  const payload = data.draftOrderCalculate;
-  if (payload?.userErrors.length) {
-    const fields = fieldErrors(payload.userErrors);
-    if (Object.keys(fields).length) {
-      throw new OrderError("invalid_order", 422, "Please check the highlighted details.", {
-        fields,
-      });
-    }
-  }
-  if (!payload?.calculatedDraftOrder || payload.userErrors.length) {
-    throw new OrderError(
-      "order_failed",
-      502,
-      "This order can't be worked out right now. Please use the checkout instead.",
-    );
-  }
-  return payload.calculatedDraftOrder;
-}
-
-/**
- * Checks the items against the public catalog, then prices the order.
- *
- * The Admin API would happily sell a draft or unpublished product, so every
- * variant is first resolved through the Storefront API, which only knows what
- * the store has published.
- */
-async function quoteOrder(input: ChatOrderInput, order: OrderDetails): Promise<OrderQuote> {
-  const quantities = new Map<string, number>();
-  for (const item of order.items) {
-    quantities.set(
-      item.variantId,
-      Math.min(MAX_QUANTITY, (quantities.get(item.variantId) ?? 0) + item.quantity),
-    );
-  }
-  order.items = [...quantities].map(([variantId, quantity]) => ({ variantId, quantity }));
-
-  const catalog = await input.storefront<{
-    nodes: Array<{ id?: string; availableForSale?: boolean } | null>;
-  }>(VARIANTS_FOR_ORDER_QUERY, {
-    ids: order.items.map((item) => `gid://shopify/ProductVariant/${item.variantId}`),
-    country: order.address.countryCode,
-  });
-  const allAvailable = order.items.every((_, index) => {
-    const variant = catalog.nodes?.[index];
-    return Boolean(variant?.id && variant.availableForSale);
-  });
-  if (!allAvailable) {
-    throw new OrderError(
-      "unavailable",
-      409,
-      "Something in your cart is no longer available. Please check your cart and try again.",
-    );
-  }
-
-  const draft = draftOrderInput(order);
-  const unshipped = await calculate(input.admin, draft);
-
-  if (!unshipped.lineItems.some((item) => item.requiresShipping)) {
-    throw new OrderError(
-      "undeliverable",
-      409,
-      "These items are not delivered, so they can't be paid for on delivery. Please use the checkout.",
-    );
-  }
-  const rates = unshipped.availableShippingRates;
-  if (!rates.length) {
-    // Seen on a real store: Shopify returns no delivery options, and no error,
-    // for an address without a state or postal code. Ask for what is missing
-    // before telling the shopper the address cannot be delivered to.
-    // Only for what this country's form has: these are optional there, or
-    // they would have been asked for already.
-    const onForm = new Set(
-      formLayout(order.address.countryCode, DEFAULT_FORM_OPTIONS)
-        .flat()
-        .map((entry) => entry.name),
-    );
-    const fields: Partial<Record<OrderField, string>> = {};
-    if (onForm.has("zip") && !order.address.zip) {
-      fields.zip = "Add your postal code so delivery can be worked out.";
-    }
-    if (onForm.has("province") && !order.address.province) {
-      fields.province = "Add your state or province so delivery can be worked out.";
-    }
-    if (Object.keys(fields).length) {
-      throw new OrderError(
-        "invalid_order",
-        422,
-        "We need a bit more of your address to work out delivery.",
-        { fields },
-      );
-    }
-    throw new OrderError(
-      "undeliverable",
-      409,
-      "We can't deliver to that address. Please check it, or use the checkout.",
-    );
-  }
-
-  const cheapest = rates.reduce((best, rate) =>
-    Number(rate.price.amount) < Number(best.price.amount) ? rate : best,
-  );
-  const chosen = rates.find((rate) => rate.handle === order.shippingRateHandle) ?? cheapest;
-  const priced = await calculate(input.admin, {
-    ...draft,
-    shippingLine: { shippingRateHandle: chosen.handle },
-  });
-
-  const tax = priced.totalTaxSet.presentmentMoney;
-  return {
-    lines: priced.lineItems.map((item) => ({
-      title:
-        item.variantTitle && item.variantTitle !== "Default Title"
-          ? `${item.title} (${item.variantTitle})`
-          : item.title,
-      quantity: item.quantity,
-      total: item.discountedTotalSet.presentmentMoney,
-    })),
-    subtotal: priced.subtotalPriceSet.presentmentMoney,
-    shipping: priced.totalShippingPriceSet.presentmentMoney,
-    tax: !priced.taxesIncluded && Number(tax.amount) > 0 ? tax : null,
-    total: priced.totalPriceSet.presentmentMoney,
-    shippingRates: rates,
-    shippingRateHandle: chosen.handle,
-  };
-}
-
-/**
- * Records the new order against the chat it was placed from, so the assistant
- * knows about it: it can say what was ordered and look up its status without
- * asking for an email the shopper may never have given. What is written holds
- * no name, phone number or address. The order stands whether or not this
- * works, so a failure here is logged and nothing more.
- */
-async function tellConversation(
-  deps: ChatOrderDeps,
-  shop: string,
-  order: z.infer<typeof placeSchema>,
-  placed: PlacedOrder,
-): Promise<void> {
-  if (!order.visitorId || !order.conversationId) return;
-  try {
-    // The conversation must be this shop's and this visitor's.
-    const conversation = await findConversation(
-      deps.db,
-      { shop, audience: "shopper", visitorId: order.visitorId },
-      order.conversationId,
-    );
-    if (!conversation) return;
-
-    const { quote, response } = placed;
-    await rememberOrder(deps.db, shop, conversation.id, {
-      id: placed.orderId,
-      name: response.order.name,
-      source: "placed",
-    });
-    const items = quote.lines.map((line) => `${line.quantity} x ${line.title}`).join(", ");
-    const delivery = quote.shippingRates.find((rate) => rate.handle === quote.shippingRateHandle);
-    await appendExchange(
-      deps.db,
-      shop,
-      conversation.id,
-      "(I placed an order using the order form in this chat.)",
-      `Order ${response.order.name} is placed, to be paid on delivery. Items: ${items}. Delivery: ${delivery?.title ?? "standard"}. Total: ${quote.total.amount} ${quote.total.currencyCode}.`,
-      { now: deps.now() },
-    );
-  } catch (error) {
-    console.error(
-      `[shopi-assist] could not tell the conversation about a placed order shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
-    );
-  }
-}
-
-const sameMoney = (a: Money, b: Money) =>
-  a.currencyCode === b.currencyCode && Number(a.amount) === Number(b.amount);
-
-/** A placed order, with what the conversation is told about it. */
-interface PlacedOrder {
-  response: Extract<ChatOrderResult, { step: "place" }>;
-  orderId: string;
-  quote: OrderQuote;
-}
-
-async function placeOrder(
-  input: ChatOrderInput,
-  order: z.infer<typeof placeSchema>,
-  testStore: boolean,
-): Promise<PlacedOrder> {
-  const quote = await quoteOrder(input, order);
-  if (!sameMoney(quote.total, order.expectedTotal)) {
-    throw new OrderError(
-      "quote_changed",
-      409,
-      "The total has changed. Please check the new total and confirm again.",
-      { quote },
-    );
-  }
-
-  const terms = await input.admin<{
-    paymentTermsTemplates: Array<{ id: string; paymentTermsType: string }>;
-  }>(PAY_ON_DELIVERY_TERMS_QUERY);
-  const template = terms.paymentTermsTemplates?.find(
-    (candidate) => candidate.paymentTermsType === "FULFILLMENT",
-  );
-  // Never complete an order without the terms: Shopify would record it as paid.
-  if (!template) throw new Error("no pay-on-delivery payment terms template");
-
-  const created = await input.admin<{
-    draftOrderCreate: { draftOrder: { id: string } | null; userErrors: UserError[] } | null;
-  }>(DRAFT_ORDER_CREATE_MUTATION, {
-    input: {
-      ...draftOrderInput(order),
-      shippingLine: { shippingRateHandle: quote.shippingRateHandle },
-      paymentTerms: { paymentTermsTemplateId: template.id },
-      note: "Placed in the Shopi Assist chat. To be paid on delivery. The shopper's details were not verified.",
-      tags: [
-        "shopi-assist",
-        "chat-order",
-        "pay-on-delivery",
-        ...(testStore ? ["shopi-assist-test"] : []),
-      ],
-    },
-  });
-  const draftId = created.draftOrderCreate?.draftOrder?.id;
-  if (!draftId || created.draftOrderCreate?.userErrors.length) {
-    throw new Error("draft order was not created");
-  }
-
-  try {
-    const completed = await input.admin<{
-      draftOrderComplete: {
-        draftOrder: {
-          order: { id: string; name: string; displayFinancialStatus: string | null } | null;
-        } | null;
-        userErrors: UserError[];
-      } | null;
-    }>(DRAFT_ORDER_COMPLETE_MUTATION, { id: draftId });
-
-    const placed = completed.draftOrderComplete?.draftOrder?.order;
-    if (!placed || completed.draftOrderComplete?.userErrors.length) {
-      throw new Error("draft order was not completed");
-    }
-    if (placed.displayFinancialStatus === "PAID") {
-      // Not expected with payment terms set. Worth a look by the developer.
-      console.warn(
-        `[shopi-assist] chat order for ${input.shop} was recorded as paid; check the payment terms setup`,
-      );
-    }
-    return {
-      response: { ok: true, step: "place", order: { name: placed.name, total: quote.total } },
-      orderId: placed.id,
-      quote,
-    };
-  } catch (error) {
-    // Do not leave a half-made draft behind in the merchant's admin.
-    await input
-      .admin(DRAFT_ORDER_DELETE_MUTATION, { input: { id: draftId } })
-      .catch(() => undefined);
-    throw error;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Checkout for part of the cart
 // ---------------------------------------------------------------------------
 
-// A cart, not an order: nothing is created in the store, so the limits are
-// those of a cart rather than of a pay-on-delivery order.
+// A cart, not an order: nothing is created in the store.
 const checkoutSchema = z.object({
   items: z
     .array(
@@ -809,10 +340,15 @@ const checkoutSchema = z.object({
  * the cart on the storefront, with whatever was not ticked, stays as it is.
  * Everything else (delivery, tax, how to pay) is the checkout's business.
  */
-async function checkoutLink(
-  input: ChatOrderInput,
-  deps: ChatOrderDeps,
-): Promise<Extract<ChatOrderResult, { step: "checkout" }>> {
+export async function openCheckout(
+  input: OrderRequestInput,
+  overrides: Partial<OrderDeps> = {},
+): Promise<CheckoutResult> {
+  const deps = withDefaults(overrides);
+  const settings = await getSettings(input.shop, deps.db);
+  if (!settings.enabled || !settings.allowCheckout) {
+    throw new OrderError("disabled", 403, "Checkout from the chat is not available for this store.");
+  }
   const parsed = checkoutSchema.safeParse(input.body);
   if (!parsed.success) {
     throw new OrderError("invalid_request", 400, "Something went wrong. Please try again.");
@@ -878,110 +414,8 @@ async function checkoutLink(
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
+// What the address form asks for
 // ---------------------------------------------------------------------------
-
-const placedOrders = new Map<string, Remembered>();
-
-export async function handleChatOrder(
-  input: ChatOrderInput,
-  overrides: Partial<ChatOrderDeps> = {},
-): Promise<ChatOrderResult> {
-  const deps: ChatOrderDeps = {
-    db: overrides.db ?? prisma,
-    rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
-    placed: overrides.placed ?? placedOrders,
-    isTestStore: overrides.isTestStore ?? isDevelopmentStore,
-    now: overrides.now ?? (() => new Date()),
-  };
-  const now = deps.now().getTime();
-
-  const settings = await getSettings(input.shop, deps.db);
-  const step = input.body.step;
-  // Paying at the store's checkout needs only the assistant's help with orders.
-  if (step === "checkout") {
-    if (!settings.enabled || !settings.allowCheckout) {
-      throw new OrderError("disabled", 403, "Ordering in the chat is not available for this store.");
-    }
-    return checkoutLink(input, deps);
-  }
-  if (!settings.enabled || !settings.allowChatOrders || !settings.allowCheckout) {
-    throw new OrderError("disabled", 403, "Ordering in the chat is not available for this store.");
-  }
-
-  if (step !== "quote" && step !== "place") {
-    throw new OrderError("invalid_request", 400, "Something went wrong. Please reload the page.");
-  }
-  const address = clientKey(input.ip);
-
-  try {
-    if (step === "quote") {
-      const order = checkDelivery(parse(orderSchema, input.body), orderFormOptions(settings));
-      enforce(deps, [
-        { key: `order:quote:ip:${input.shop}:${address}`, max: 30, windowMs: 10 * MINUTE_MS },
-        { key: `order:quote:shop:${input.shop}`, max: 600, windowMs: HOUR_MS },
-      ]);
-      return { ok: true, step: "quote", quote: await quoteOrder(input, order) };
-    }
-
-    const order = checkDelivery(parse(placeSchema, input.body), orderFormOptions(settings));
-
-    // A retry of a request that already went through gets the same answer
-    // and does not count against the limits again.
-    for (const [key, remembered] of deps.placed) {
-      if (remembered.expiresAt <= now) deps.placed.delete(key);
-    }
-    const rememberKey = `${input.shop}:${order.idempotencyKey}`;
-    const remembered = deps.placed.get(rememberKey);
-    if (remembered) return await remembered.result;
-
-    const testStore = await deps.isTestStore(input.shop, input.admin);
-    const perVisitor = testStore ? TEST_STORE_LIMIT_FACTOR : 1;
-    enforce(deps, [
-      {
-        key: `order:place:ip:${input.shop}:${address}`,
-        max: envNumber("CHAT_ORDERS_PER_IP_PER_HOUR", 10) * perVisitor,
-        windowMs: HOUR_MS,
-      },
-      {
-        key: `order:place:phone:${input.shop}:${fingerprint(order.contact.phone)}`,
-        max: envNumber("CHAT_ORDERS_PER_PHONE_PER_DAY", 3) * perVisitor,
-        windowMs: DAY_MS,
-      },
-      {
-        key: `order:place:shop-hour:${input.shop}`,
-        max: envNumber("CHAT_ORDERS_PER_SHOP_PER_HOUR", 60),
-        windowMs: HOUR_MS,
-      },
-      {
-        key: `order:place:shop-day:${input.shop}`,
-        max: envNumber("CHAT_ORDERS_PER_SHOP_PER_DAY", 300),
-        windowMs: DAY_MS,
-      },
-    ]);
-
-    const placing = placeOrder(input, order, testStore);
-    const result = placing.then((placed) => placed.response);
-    deps.placed.set(rememberKey, { expiresAt: now + REMEMBER_PLACED_MS, result });
-    // A failed attempt is forgotten, so the shopper can correct and resend.
-    result.catch(() => deps.placed.delete(rememberKey));
-    const placed = await placing;
-    console.info(`[shopi-assist] chat order placed shop=${input.shop}`);
-    await tellConversation(deps, input.shop, order, placed);
-    return placed.response;
-  } catch (error) {
-    if (error instanceof OrderError) throw error;
-    // Log the kind of failure only: Shopify's messages can echo the address.
-    console.error(
-      `[shopi-assist] chat order failed shop=${input.shop} step=${step} error=${error instanceof Error ? error.name : "unknown"}${accessHint(error)}`,
-    );
-    throw new OrderError(
-      "order_failed",
-      502,
-      "We couldn't place this order right now. Nothing was ordered. Please try again or use the checkout.",
-    );
-  }
-}
 
 export interface DeliveryCountry {
   code: string;
@@ -990,92 +424,27 @@ export interface DeliveryCountry {
   form: number;
 }
 
-/** How the order is paid for, as the form's payment step shows it. */
-export interface PaymentOptions {
-  /** What the store calls paying on delivery. */
-  name: string;
-  /** The store's instructions for it, or "". */
-  note: string;
-  /** The cards and wallets the store's checkout takes, by name. */
-  online: string[];
-}
-
-/** What the order form needs before it can be drawn. */
+/** What the address form needs before it can be drawn. */
 export interface DeliveryOptions {
   countries: DeliveryCountry[];
   /** Each distinct layout once; a country points at its own by position. */
   forms: FormLayout[];
-  payment: PaymentOptions;
-}
-
-/** Shopify's own name for the manual payment method, used until the store gives its own. */
-export const DEFAULT_PAYMENT_NAME = "Cash on Delivery (COD)";
-
-// Brand names for what Shopify reports in capitals.
-const PAYMENT_NAMES: Record<string, string> = {
-  AMERICAN_EXPRESS: "American Express",
-  DINERS_CLUB: "Diners Club",
-  DISCOVER: "Discover",
-  JCB: "JCB",
-  MASTERCARD: "Mastercard",
-  VISA: "Visa",
-  ANDROID_PAY: "Google Pay",
-  APPLE_PAY: "Apple Pay",
-  GOOGLE_PAY: "Google Pay",
-  SHOPIFY_PAY: "Shop Pay",
-};
-
-/** The cards and wallets the store's checkout takes. Empty when Shopify will not say. */
-async function onlinePaymentMethods(shop: string, storefront: GraphqlFn): Promise<string[]> {
-  try {
-    const data = await storefront<{
-      shop: {
-        paymentSettings: {
-          acceptedCardBrands?: string[] | null;
-          supportedDigitalWallets?: string[] | null;
-        } | null;
-      } | null;
-    }>(PAYMENT_SETTINGS_QUERY);
-    const settings = data.shop?.paymentSettings;
-    const names = [...(settings?.acceptedCardBrands ?? []), ...(settings?.supportedDigitalWallets ?? [])]
-      .filter((value): value is string => typeof value === "string" && /^[A-Z_]{2,40}$/.test(value))
-      .map(
-        (value) =>
-          PAYMENT_NAMES[value] ??
-          value
-            .toLowerCase()
-            .split("_")
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(" "),
-      );
-    return [...new Set(names)].slice(0, 12);
-  } catch (error) {
-    console.error(
-      `[shopi-assist] payment settings failed shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
-    );
-    return [];
-  }
 }
 
 /**
- * The countries the order form offers: the ones the store sells to. An empty
- * list is a valid answer; the widget then offers only the country the shopper
- * is browsing in.
+ * The countries the store sells to, each with the address form its addresses
+ * take. An empty list is a valid answer; the widget then offers only the
+ * country of the order whose address is being changed.
  */
 export async function listDeliveryCountries(
   input: { shop: string; language?: string | null; ip?: string; storefront: GraphqlFn },
-  overrides: Partial<ChatOrderDeps> = {},
+  overrides: Partial<OrderDeps> = {},
 ): Promise<DeliveryOptions> {
-  const deps: ChatOrderDeps = {
-    db: overrides.db ?? prisma,
-    rateLimiter: overrides.rateLimiter ?? defaultRateLimiter,
-    placed: overrides.placed ?? placedOrders,
-    isTestStore: overrides.isTestStore ?? isDevelopmentStore,
-    now: overrides.now ?? (() => new Date()),
-  };
+  const deps = withDefaults(overrides);
   const settings = await getSettings(input.shop, deps.db);
-  if (!settings.enabled || !settings.allowChatOrders || !settings.allowCheckout) {
-    throw new OrderError("disabled", 403, "Ordering in the chat is not available for this store.");
+  // The form is for changing an order's delivery address, and for nothing else.
+  if (!settings.enabled || !settings.allowAddressChange) {
+    throw new OrderError("disabled", 403, "Address changes in the chat are not available for this store.");
   }
   enforce(deps, [
     {
@@ -1086,11 +455,6 @@ export async function listDeliveryCountries(
   ]);
 
   const language = /^[A-Za-z]{2}$/.test(input.language ?? "") ? input.language!.toUpperCase() : null;
-  const payment: PaymentOptions = {
-    name: settings.orderPaymentName || DEFAULT_PAYMENT_NAME,
-    note: settings.orderPaymentNote,
-    online: await onlinePaymentMethods(input.shop, input.storefront),
-  };
   try {
     const data = await input.storefront<{
       localization: { availableCountries: Array<{ isoCode: string; name: string }> } | null;
@@ -1106,40 +470,20 @@ export async function listDeliveryCountries(
     return {
       countries: countries.map((country) => ({ ...country, form: index[country.code] })),
       forms,
-      payment,
     };
   } catch (error) {
     console.error(
       `[shopi-assist] delivery countries failed shop=${input.shop} error=${error instanceof Error ? error.name : "unknown"}`,
     );
-    return { countries: [], forms: [], payment };
+    return { countries: [], forms: [] };
   }
-}
-
-/**
- * Shopify refuses draft orders until the app has been given protected
- * customer data access, and the refusal looks like any other failure. This
- * names it in the log, since it is the first thing to go wrong on a new app.
- */
-function accessHint(error: unknown): string {
-  const message = error instanceof Error ? error.message : "";
-  if (/not approved to access|protected-customer-data/i.test(message)) {
-    return " reason=protected_customer_data (in the Dev Dashboard: app > Settings > Access requests > Protected customer data; select customer data plus name, address, phone and email)";
-  }
-  if (/access denied|ACCESS_DENIED/i.test(message)) {
-    return " reason=access_denied (check that the app's scopes were approved on this store)";
-  }
-  return "";
 }
 
 /** Turns any thrown value into a JSON error response for the widget. */
 export function orderErrorResponse(error: unknown): Response {
   if (error instanceof OrderError) {
     return Response.json(
-      {
-        error: { code: error.code, message: error.message, fields: error.extra.fields },
-        quote: error.extra.quote,
-      },
+      { error: { code: error.code, message: error.message, fields: error.extra.fields } },
       {
         status: error.status,
         headers: {
@@ -1152,7 +496,7 @@ export function orderErrorResponse(error: unknown): Response {
     );
   }
   console.error(
-    "[shopi-assist] unexpected chat order error:",
+    "[shopi-assist] unexpected order endpoint error:",
     error instanceof Error ? error.name : "unknown error",
   );
   return Response.json(

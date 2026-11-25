@@ -42,7 +42,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     progress: setupProgress(settings),
     analytics,
     retentionDays: settings.retentionDays,
-    chatOrders: settings.allowChatOrders,
     llmReady: llm.ready,
   };
 };
@@ -59,7 +58,6 @@ export default function Home() {
     chatEnabled,
     analytics,
     retentionDays,
-    chatOrders,
     llmReady,
     setupCompleted,
     progress,
@@ -125,7 +123,7 @@ export default function Home() {
         </s-banner>
       )}
 
-      <ChatAnalyticsSection analytics={analytics} retentionDays={retentionDays} chatOrders={chatOrders} />
+      <ChatAnalyticsSection analytics={analytics} retentionDays={retentionDays} />
 
       <s-section heading="Setup">
         <s-stack direction="block" gap="base">

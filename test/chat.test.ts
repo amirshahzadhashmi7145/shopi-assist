@@ -559,12 +559,14 @@ describe("handleChatTurn", () => {
     expect(changed.tools).not.toContain("add_to_cart");
     expect(changed.tools).not.toContain("start_checkout");
     expect(changed.tools).not.toContain("place_order");
-    expect(changed.system).not.toContain("pay on delivery");
-
-    // Pay-on-delivery orders are opt-in and ride on the checkout summary.
-    expect(byDefault.system).not.toContain("pay on delivery");
-    await saveSettings(SHOP_A, { allowAddToCart: true, allowCheckout: true, allowChatOrders: true }, db);
-    expect((await names()).system).toContain("'Order here, pay on delivery' button");
+    // No store's assistant takes an order in the chat: paying on delivery,
+    // like any way of paying, is picked on the checkout page.
+    for (const prompt of [byDefault.system, changed.system]) {
+      expect(prompt).not.toContain("Order here");
+      expect(prompt).not.toContain("order form");
+    }
+    expect(byDefault.system).toContain("cash on delivery included");
+    expect(byDefault.tools).not.toContain("place_chat_order");
     expect(changed.tools).toContain("request_return");
     expect(changed.system).toContain("You cannot add items to the cart");
     expect(changed.system).toContain("You cannot start a checkout");
@@ -1227,17 +1229,17 @@ describe("settings", () => {
   it("saving one part of Settings, or one tour step, leaves the other parts alone", async () => {
     await saveSettings(
       SHOP_A,
-      { orderPaymentName: "Pay the courier", assistantName: "Mia", topics: { sizing: "small" } },
+      { orderCompany: "required", assistantName: "Mia", topics: { sizing: "small" } },
       db,
     );
 
-    // The tour's policies step submits nothing about the assistant or shopping.
+    // The tour's policies step submits nothing about the assistant or orders.
     const step = settingsFromForm(new FormData(), fieldsOf(["policies"]));
-    expect(Object.keys(step)).not.toContain("orderPaymentName");
+    expect(Object.keys(step)).not.toContain("orderCompany");
     expect(Object.keys(step)).not.toContain("topics");
     await saveSettings(SHOP_A, step, db);
     expect(await getSettings(SHOP_A, db)).toMatchObject({
-      orderPaymentName: "Pay the courier",
+      orderCompany: "required",
       assistantName: "Mia",
       topics: { sizing: "small" },
     });

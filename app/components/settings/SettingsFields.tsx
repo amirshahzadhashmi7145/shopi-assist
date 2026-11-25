@@ -20,8 +20,6 @@ import {
   NOT_SET,
   ORDER_FORM_CHOICES,
   ORDER_FORM_LABELS,
-  PAYMENT_NAME_PRESETS,
-  PAYMENT_NOTE_PRESETS,
   POLICY_CHOICES,
   POLICY_LABELS,
   RETENTION_CHOICES,
@@ -188,9 +186,7 @@ function AssistantSection({ settings, errors, draft }: SectionProps) {
 // Shopping
 // ---------------------------------------------------------------------------
 
-function ShoppingSection({ settings, facts, errors, draft }: SectionProps) {
-  const start = initialDraft(settings).ui;
-  const { values, ui } = draft.state;
+function ShoppingSection({ settings, facts }: SectionProps) {
   const count = productCount(facts);
 
   return (
@@ -209,90 +205,9 @@ function ShoppingSection({ settings, facts, errors, draft }: SectionProps) {
         <Toggle
           name="allowCheckout"
           label="Checkout help"
-          details="Shows an order summary with a Go to checkout button. Payment always happens on your Shopify checkout."
+          details="Shows an order summary with a Go to checkout button. Every order is placed and paid for on your Shopify checkout, whichever way the shopper pays: card, wallet or cash on delivery."
           on={settings.allowCheckout}
         />
-        <Reveal open={values.allowCheckout}>
-          <s-stack direction="block" gap="base">
-            <Toggle
-              name="allowChatOrders"
-              label="Cash on delivery orders in the chat"
-              details="Adds an “Order here, pay on delivery” form. Orders arrive in Shopify unpaid, tagged shopi-assist: check them before you ship."
-              on={settings.allowChatOrders}
-            />
-            <Reveal open={values.allowChatOrders} nested>
-              <s-text color="subdued">
-                Countries, address formats, shipping rates, prices and tax come from your store.
-                These few are yours to set, because Shopify doesn&apos;t let apps read them.
-              </s-text>
-              <Columns>
-                <Pick
-                  name="orderFirstName"
-                  label="Full name"
-                  value={settings.orderFirstName}
-                  options={orderFormOptions("orderFirstName")}
-                  error={errors.orderFirstName}
-                />
-                <Pick
-                  name="orderCompany"
-                  label="Company name"
-                  value={settings.orderCompany}
-                  options={orderFormOptions("orderCompany")}
-                  error={errors.orderCompany}
-                />
-                <Pick
-                  name="orderAddress2"
-                  label="Address line 2"
-                  value={settings.orderAddress2}
-                  options={orderFormOptions("orderAddress2")}
-                  error={errors.orderAddress2}
-                />
-                <Pick
-                  name="ui.paymentNameMode"
-                  label="Payment method name"
-                  value={start.paymentNameMode}
-                  options={[
-                    ["", "Cash on Delivery (COD)"],
-                    ...PAYMENT_NAME_PRESETS.map((name, index) => [String(index), name] as const),
-                    [CUSTOM, "Custom name"],
-                  ]}
-                />
-              </Columns>
-              <Reveal open={ui.paymentNameMode === CUSTOM}>
-                <s-text-field
-                  name="ui.paymentNameText"
-                  label="Your payment method's name"
-                  details="As it is named under Settings > Payments > Manual payment methods in Shopify."
-                  maxLength={60}
-                  defaultValue={start.paymentNameText}
-                  {...errorProp(errors.orderPaymentName)}
-                />
-              </Reveal>
-              <Pick
-                name="ui.paymentNoteMode"
-                label="Note under the payment method"
-                value={start.paymentNoteMode}
-                options={[
-                  ["", "No note"],
-                  ...PAYMENT_NOTE_PRESETS.map((note, index) => [String(index), note] as const),
-                  [CUSTOM, "Custom note"],
-                ]}
-              />
-              <Reveal open={ui.paymentNoteMode === CUSTOM}>
-                <s-text-area
-                  name="ui.paymentNoteText"
-                  label="Your note"
-                  rows={2}
-                  maxLength={300}
-                  defaultValue={start.paymentNoteText}
-                  {...errorProp(errors.orderPaymentNote)}
-                />
-              </Reveal>
-            </Reveal>
-            <input type="hidden" name="orderPaymentName" value={draft.draft.orderPaymentName} />
-            <input type="hidden" name="orderPaymentNote" value={draft.draft.orderPaymentNote} />
-          </s-stack>
-        </Reveal>
       </s-stack>
     </s-section>
   );
@@ -302,7 +217,7 @@ function ShoppingSection({ settings, facts, errors, draft }: SectionProps) {
 // Orders
 // ---------------------------------------------------------------------------
 
-function OrdersSection({ settings, draft }: SectionProps) {
+function OrdersSection({ settings, errors, draft }: SectionProps) {
   const { values } = draft.state;
   const readsOrders =
     values.orderLookupEnabled ||
@@ -346,6 +261,35 @@ function OrdersSection({ settings, draft }: SectionProps) {
           details="Before shipping, within the same country. The shopper fills in a form and the order is tagged for you."
           on={settings.allowAddressChange}
         />
+        <Reveal open={values.allowAddressChange} nested>
+          <s-text color="subdued">
+            The address form follows each country&apos;s own layout. These three are yours to
+            set, because Shopify doesn&apos;t let apps read them from your checkout settings.
+          </s-text>
+          <Columns>
+            <Pick
+              name="orderFirstName"
+              label="Full name"
+              value={settings.orderFirstName}
+              options={orderFormOptions("orderFirstName")}
+              error={errors.orderFirstName}
+            />
+            <Pick
+              name="orderCompany"
+              label="Company name"
+              value={settings.orderCompany}
+              options={orderFormOptions("orderCompany")}
+              error={errors.orderCompany}
+            />
+            <Pick
+              name="orderAddress2"
+              label="Address line 2"
+              value={settings.orderAddress2}
+              options={orderFormOptions("orderAddress2")}
+              error={errors.orderAddress2}
+            />
+          </Columns>
+        </Reveal>
         <Toggle
           name="allowOrderEdit"
           label="Edits to unpaid orders"
@@ -508,7 +452,6 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
   const { values, ui } = draft.state;
   const noReturns = values.returnWindow === "none";
   const takesAmount = SHIPPING_FEES_WITH_AMOUNT.includes(values.shippingFee);
-  const chatOrders = values.allowChatOrders && values.allowCheckout;
 
   // Where the store delivers: its own delivery settings when they could be
   // read. Without them Shopify still lists the countries with a shipping
@@ -749,25 +692,14 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
             }
             state={paymentState}
           />
-          <Reveal open={!chatOrders}>
-            <Pick
-              name="codAvailable"
-              label="Cash on delivery"
-              details="Whether shoppers can choose to pay when the order arrives."
-              value={settings.codAvailable}
-              options={policyOptions("codAvailable")}
-              error={errors.codAvailable}
-            />
-          </Reveal>
-          <Reveal open={chatOrders}>
-            <s-stack direction="block" gap="small-500">
-              <s-text type="strong">Cash on delivery</s-text>
-              <s-text color="subdued">
-                Offered. The assistant takes pay-on-delivery orders in the chat, as switched on
-                under Shopping.
-              </s-text>
-            </s-stack>
-          </Reveal>
+          <Pick
+            name="codAvailable"
+            label="Cash on delivery"
+            details="Whether shoppers can choose to pay when the order arrives. They pick it on your checkout page, like any other way of paying; Shopify doesn't tell apps whether you offer it."
+            value={settings.codAvailable}
+            options={policyOptions("codAvailable")}
+            error={errors.codAvailable}
+          />
         </s-stack>
       </s-section>
     </>

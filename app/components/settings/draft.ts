@@ -12,8 +12,6 @@
 import {
   CUSTOM_PREFIX,
   GREETING_PRESETS,
-  PAYMENT_NAME_PRESETS,
-  PAYMENT_NOTE_PRESETS,
   RETURN_CONDITIONS,
   TOPICS,
   readTopicAnswer,
@@ -28,12 +26,6 @@ export interface DraftUi {
   /** Which welcome message: a preset's position as text, or "custom". */
   greetingMode: string;
   greetingText: string;
-  /** "" for Shopify's own name, a preset's position, or "custom". */
-  paymentNameMode: string;
-  paymentNameText: string;
-  /** "" for no note, a preset's position, or "custom". */
-  paymentNoteMode: string;
-  paymentNoteText: string;
   /** Per topic: "" for not set, a listed answer's value, or "custom". */
   topicPick: Record<string, string>;
   topicText: Record<string, string>;
@@ -73,8 +65,6 @@ function fromMode(mode: string, text: string, presets: readonly string[]): strin
 
 export function initialDraft(settings: AssistantSettings): DraftState {
   const greeting = toMode(settings.greeting, GREETING_PRESETS);
-  const paymentName = toMode(settings.orderPaymentName, PAYMENT_NAME_PRESETS);
-  const paymentNote = toMode(settings.orderPaymentNote, PAYMENT_NOTE_PRESETS);
 
   const topicPick: Record<string, string> = {};
   const topicText: Record<string, string> = {};
@@ -90,10 +80,6 @@ export function initialDraft(settings: AssistantSettings): DraftState {
       // A store always has a welcome message, so there is no "none" here.
       greetingMode: greeting.mode || "0",
       greetingText: greeting.text,
-      paymentNameMode: paymentName.mode,
-      paymentNameText: paymentName.text,
-      paymentNoteMode: paymentNote.mode,
-      paymentNoteText: paymentNote.text,
       topicPick,
       topicText,
       // Shown from the start only where the merchant already wrote something.
@@ -107,8 +93,8 @@ export function initialDraft(settings: AssistantSettings): DraftState {
   };
 }
 
-const UI_TEXT = ["greetingText", "paymentNameText", "paymentNoteText"] as const;
-const UI_MODE = ["greetingMode", "paymentNameMode", "paymentNoteMode"] as const;
+const UI_TEXT = ["greetingText"] as const;
+const UI_MODE = ["greetingMode"] as const;
 
 /** The state after one control reported a change. Unknown controls change nothing. */
 export function applyInput(state: DraftState, control: ControlInput): DraftState {
@@ -186,8 +172,6 @@ export function resolveDraft(state: DraftState): AssistantSettings {
       values.returnConditions.includes(condition),
     ),
     greeting: fromMode(ui.greetingMode, ui.greetingText, GREETING_PRESETS),
-    orderPaymentName: fromMode(ui.paymentNameMode, ui.paymentNameText, PAYMENT_NAME_PRESETS),
-    orderPaymentNote: fromMode(ui.paymentNoteMode, ui.paymentNoteText, PAYMENT_NOTE_PRESETS),
     topics: topicAnswers(ui),
   };
 }

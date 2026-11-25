@@ -121,8 +121,8 @@ const MAX_KNOWN_ORDERS = 10;
 
 /**
  * Ties an order to a conversation, so later questions about it need no proof
- * again. Only the server calls this, and only after it placed the order or
- * checked the shopper's order number and email against Shopify.
+ * again. Only the server calls this, and only after it checked the shopper's
+ * order number and their email or phone against Shopify.
  */
 export async function rememberOrder(
   db: PrismaClient,
@@ -146,7 +146,8 @@ export async function rememberOrder(
       orderName: order.name,
       source: order.source,
     },
-    // An order placed here stays "placed" even if it is looked up later.
+    // An order already on record keeps how it got there: one the chat placed
+    // itself, back when it took orders, stays "placed" when it is looked up.
     update: {},
   });
 }
@@ -281,8 +282,6 @@ export interface ChatAnalytics {
   signedIn: number;
   /** How the chats of the last 30 days were rated. */
   ratings: { up: number; down: number };
-  /** Pay-on-delivery orders placed through the chat in the last 30 days. */
-  ordersPlaced: number;
   /**
    * The chats of the last 30 days by how much the shopper wrote: one
    * message, two to four, or five and more.
@@ -309,7 +308,7 @@ export async function chatAnalytics(
   const since7 = new Date(today - 6 * DAY_MS);
   const chats = { shop, audience: "shopper", isPreview: false } as const;
 
-  const [last30, signedIn, rated, shopperMessages, ordersPlaced, week, written] = await Promise.all([
+  const [last30, signedIn, rated, shopperMessages, week, written] = await Promise.all([
     db.conversation.count({ where: { ...chats, createdAt: { gte: since30 } } }),
     db.conversation.count({
       where: { ...chats, createdAt: { gte: since30 }, customerId: { not: null } },
@@ -321,9 +320,6 @@ export async function chatAnalytics(
     }),
     db.message.count({
       where: { role: "user", createdAt: { gte: since30 }, conversation: chats },
-    }),
-    db.conversationOrder.count({
-      where: { shop, source: "placed", createdAt: { gte: since30 }, conversation: chats },
     }),
     db.conversation.findMany({
       where: { ...chats, createdAt: { gte: since7 } },
@@ -356,7 +352,6 @@ export async function chatAnalytics(
     shopperMessages,
     signedIn,
     ratings: { up: ratedAs("up"), down: ratedAs("down") },
-    ordersPlaced,
     lengths,
     perDay,
   };

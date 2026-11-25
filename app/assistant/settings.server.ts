@@ -81,18 +81,15 @@ export const settingsSchema = z.object({
   allowAddToCart: z.boolean(),
   allowCheckout: z.boolean(),
   allowReturns: z.boolean(),
-  allowChatOrders: z.boolean(),
   allowOrderCancel: z.boolean(),
   allowAddressChange: z.boolean(),
   allowOrderEdit: z.boolean(),
   recogniseCustomers: z.boolean(),
   chatRatings: z.boolean(),
-  // The order form's fields.
+  // What the form for a change of delivery address asks for.
   orderFirstName: choice(ORDER_FORM_CHOICES.orderFirstName),
   orderCompany: choice(ORDER_FORM_CHOICES.orderCompany),
   orderAddress2: choice(ORDER_FORM_CHOICES.orderAddress2),
-  orderPaymentName: text(60, "the payment method's name"),
-  orderPaymentNote: text(300, "the payment instructions"),
   // Policy picks.
   returnWindow: choice(POLICY_CHOICES.returnWindow),
   returnConditions: z
@@ -135,7 +132,6 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   allowAddToCart: true,
   allowCheckout: true,
   allowReturns: false,
-  allowChatOrders: false,
   allowOrderCancel: false,
   allowAddressChange: false,
   allowOrderEdit: false,
@@ -144,8 +140,6 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   orderFirstName: "optional",
   orderCompany: "hidden",
   orderAddress2: "optional",
-  orderPaymentName: "",
-  orderPaymentNote: "",
   returnWindow: "",
   returnConditions: [],
   returnShipping: "",
@@ -209,7 +203,6 @@ export async function getSettings(
     allowAddToCart: row.allowAddToCart,
     allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
-    allowChatOrders: row.allowChatOrders,
     allowOrderCancel: row.allowOrderCancel,
     allowAddressChange: row.allowAddressChange,
     allowOrderEdit: row.allowOrderEdit,
@@ -218,8 +211,6 @@ export async function getSettings(
     orderFirstName: pickOr(ORDER_FORM_CHOICES.orderFirstName, row.orderFirstName),
     orderCompany: pickOr(ORDER_FORM_CHOICES.orderCompany, row.orderCompany),
     orderAddress2: pickOr(ORDER_FORM_CHOICES.orderAddress2, row.orderAddress2),
-    orderPaymentName: row.orderPaymentName ?? "",
-    orderPaymentNote: row.orderPaymentNote ?? "",
     returnWindow: pick(POLICY_CHOICES.returnWindow, row.returnWindow),
     returnConditions: pickMany(RETURN_CONDITIONS, row.returnConditions),
     returnShipping: pick(POLICY_CHOICES.returnShipping, row.returnShipping),
@@ -295,7 +286,6 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "allowAddToCart",
   "allowCheckout",
   "allowReturns",
-  "allowChatOrders",
   "allowOrderCancel",
   "allowAddressChange",
   "allowOrderEdit",
@@ -475,14 +465,12 @@ export function describeQuickPolicies(settings: AssistantSettings): string {
     lines.push("Exchanges: not offered.");
   }
 
-  // With pay-on-delivery orders in the chat the assistant is told about them
-  // in its own rules, so this pick would only repeat or contradict that.
-  if (!(settings.allowChatOrders && settings.allowCheckout)) {
-    if (settings.codAvailable === "yes") {
-      lines.push("Cash on delivery: available. The shopper chooses it at checkout.");
-    } else if (settings.codAvailable === "no") {
-      lines.push("Cash on delivery: not available.");
-    }
+  // Paying on delivery is picked on the store's checkout page, like any other
+  // way of paying: the chat takes no orders itself.
+  if (settings.codAvailable === "yes") {
+    lines.push("Cash on delivery: available. The shopper chooses it at checkout.");
+  } else if (settings.codAvailable === "no") {
+    lines.push("Cash on delivery: not available.");
   }
 
   return lines.join("\n");

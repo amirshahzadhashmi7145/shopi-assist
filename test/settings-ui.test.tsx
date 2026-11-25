@@ -39,7 +39,6 @@ const DEFAULTS: AssistantSettings = {
   allowAddToCart: true,
   allowCheckout: true,
   allowReturns: false,
-  allowChatOrders: false,
   allowOrderCancel: false,
   allowAddressChange: false,
   allowOrderEdit: false,
@@ -48,8 +47,6 @@ const DEFAULTS: AssistantSettings = {
   orderFirstName: "optional",
   orderCompany: "hidden",
   orderAddress2: "optional",
-  orderPaymentName: "",
-  orderPaymentNote: "",
   returnWindow: "",
   returnConditions: [],
   returnShipping: "",
@@ -225,7 +222,7 @@ describe("Settings without typing", () => {
     expect(page.typedOnShow()).toEqual(["assistantName"]);
     expect(given(page.field("assistantName")).defaultValue).toBe("Ava");
     // Features are switches, policies and answers are lists.
-    expect(page.host.querySelectorAll("s-switch[name]").length).toBe(12);
+    expect(page.host.querySelectorAll("s-switch[name]").length).toBe(11);
     expect(page.host.querySelectorAll("s-select").length).toBeGreaterThan(15);
     expect(page.dirty()).toBe(false);
   });
@@ -276,23 +273,38 @@ describe("a feature's own options appear only once it is on", () => {
     expect(page.dirty()).toBe(false);
   });
 
-  it("cash on delivery needs checkout help, and shows its order form only when on", () => {
+  it("has no switch for taking orders in the chat: every order goes through the checkout", () => {
     const page = open();
-    expect(page.isShown("allowChatOrders")).toBe(true);
-    expect(page.isShown("orderFirstName")).toBe(false);
+    expect(page.find('[name="allowChatOrders"]')).toBeNull();
+    expect(page.find('[name="orderPaymentName"]')).toBeNull();
+    expect(page.find('[name="ui.paymentNameMode"]')).toBeNull();
+    const shopping = page.find('[data-section="shopping"]')!;
+    expect(shopping.textContent).not.toMatch(/orders in the chat|pay on delivery/i);
+    // Checkout help says where every order is paid for, cash on delivery included.
+    expect(page.field("allowCheckout").getAttribute("details")).toContain("cash on delivery");
+    expect([...shopping.querySelectorAll("[name]")].map((control) => control.getAttribute("name"))).toEqual([
+      "allowAddToCart",
+      "allowCheckout",
+    ]);
+  });
 
-    page.toggle("allowChatOrders", true);
-    expect(page.isShown("orderFirstName")).toBe(true);
-    expect(page.isShown("ui.paymentNameMode")).toBe(true);
-    // Its text boxes wait for "Custom".
+  it("asks what the address form needs only once address changes are on", () => {
+    const page = open();
+    const picks = ["orderFirstName", "orderCompany", "orderAddress2"];
+    for (const name of picks) expect(page.isShown(name)).toBe(false);
+
+    page.toggle("allowAddressChange", true);
+    for (const name of picks) expect(page.isShown(name)).toBe(true);
+    // Three picks from lists: still nothing to type.
     expect(page.typedOnShow()).toEqual(["assistantName"]);
 
-    // Without checkout help there is nothing to order with: the whole group goes.
-    page.toggle("allowCheckout", false);
-    expect(page.isShown("allowChatOrders")).toBe(false);
-    expect(page.isShown("orderFirstName")).toBe(false);
-    // Hidden, not removed: what was picked is still saved with the form.
-    expect(page.field("orderFirstName").closest("form")).not.toBeNull();
+    page.toggle("allowAddressChange", false);
+    for (const name of picks) {
+      expect(page.isShown(name)).toBe(false);
+      // Hidden, not removed: what was picked is still saved with the form.
+      expect(page.field(name).closest("form")).not.toBeNull();
+      expect(page.field(name).closest('[data-section="orders"]')).not.toBeNull();
+    }
   });
 
   it("warns about protected customer data only while something reads orders", () => {
@@ -635,12 +647,14 @@ describe("what Shopify already knows is shown, not asked", () => {
     );
   });
 
-  it("takes cash on delivery as offered once the assistant takes those orders itself", () => {
+  it("always asks whether cash on delivery is offered, since Shopify does not say and the checkout handles it", () => {
     const page = open();
     expect(page.isShown("codAvailable")).toBe(true);
-    page.toggle("allowChatOrders", true);
-    expect(page.isShown("codAvailable")).toBe(false);
-    expect(page.host.textContent).toContain("Offered. The assistant takes pay-on-delivery orders in the chat");
+    expect(page.field("codAvailable").getAttribute("details")).toContain("They pick it on your checkout page");
+    // Nothing else on the page switches it off or answers it for the merchant.
+    page.toggle("allowCheckout", false);
+    expect(page.isShown("codAvailable")).toBe(true);
+    expect(page.host.textContent).not.toContain("pay-on-delivery orders in the chat");
   });
 });
 

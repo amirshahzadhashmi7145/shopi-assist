@@ -368,15 +368,14 @@ const getShippingInfo = defineTool({
 });
 
 const COD_ANSWERS = {
-  chat: "offered: the shopper can place the order in this chat and pay when it arrives",
-  yes: "offered at checkout",
+  yes: "offered: the shopper picks it as the way to pay on the store's checkout page",
   no: "not offered",
 } as const;
 
 const getPaymentMethods = defineTool({
   name: "get_payment_methods",
   description:
-    "How shoppers can pay at this store, read from the store's checkout settings at this moment: card brands, wallets, and whether cash on delivery is offered. Use it every time a shopper asks how they can pay.",
+    "How shoppers can pay at this store, read from the store's checkout settings at this moment: card brands, wallets, and whether cash on delivery is offered. Every way of paying, cash on delivery included, is chosen on the store's checkout page. Use it every time a shopper asks how they can pay, or wants to pay on delivery.",
   audiences: ["shopper"],
   schema: z.object({}),
   isAvailable: (context) => Boolean(context.storefront),
@@ -400,7 +399,9 @@ const getPaymentMethods = defineTool({
       output: {
         cards,
         wallets,
-        cashOnDelivery: cod ? COD_ANSWERS[cod] : "not known: the store has not said",
+        cashOnDelivery: cod
+          ? COD_ANSWERS[cod]
+          : "not known: the store has not said. The checkout page shows whether it can be chosen",
         note:
           cards.length || wallets.length
             ? "Read from the store's checkout settings just now. The checkout may offer more, depending on the shopper's country."

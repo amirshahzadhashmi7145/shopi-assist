@@ -16,8 +16,11 @@ embedded = true
 #   write_returns                          shopper return requests (opt-in); the merchant approves each one
 #   write_orders                           shopper-confirmed changes to their own unshipped order (opt-in): cancel, new address
 #   write_order_edits                      shopper-confirmed item changes to their own unshipped, unpaid order (opt-in)
-#   write_draft_orders                     pay-on-delivery orders from the chat form (opt-in): price, create, complete
-#   write_payment_terms                    marks those orders "due on fulfillment", so they are unpaid, not paid
+#   write_draft_orders                     development only: `npm run seed:test-orders` makes dummy unpaid orders on
+#   write_payment_terms                    a dev store with these two. The chat itself places no orders (every order,
+#                                          cash on delivery included, goes through the store's checkout). Remove both
+#                                          before submitting the app, together with that script or once it makes its
+#                                          orders another way.
 #   read_shipping                          order processing time, and the zones and rates of a store that keeps its
 #                                          shipping in profiles: read live when a shopper asks about delivery and
 #                                          when the merchant opens Settings

@@ -39,12 +39,12 @@ export interface ToolContext {
     allowAddressChange?: boolean;
     allowOrderEdit?: boolean;
     /**
-     * Whether shoppers can pay when the order arrives: "chat" when the
-     * assistant takes those orders itself, else what the merchant picked.
-     * Shopify does not tell apps this, so it is the one payment fact that is
-     * a setting.
+     * Whether shoppers can pay when the order arrives, as the merchant
+     * picked. It is chosen on the store's checkout page like any other way of
+     * paying. Shopify does not tell apps whether a store offers it, so it is
+     * the one payment fact that is a setting.
      */
-    cashOnDelivery?: "chat" | "yes" | "no" | "";
+    cashOnDelivery?: "yes" | "no" | "";
   };
   /**
    * Reads the store's shipping zones and rates from Shopify, now. The rates
@@ -93,8 +93,8 @@ export interface ToolContext {
    */
   cart?: CartLine[];
   /**
-   * Orders already tied to this conversation by the server: placed through
-   * its order form, or proved to be the shopper's earlier in the chat.
+   * Orders already tied to this conversation by the server: proved to be
+   * the shopper's earlier in the chat, or theirs because they are signed in.
    */
   knownOrders?: KnownOrder[];
   /**

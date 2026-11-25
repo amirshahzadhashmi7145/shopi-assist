@@ -78,19 +78,12 @@ model ShopSettings {
   recogniseCustomers  Boolean @default(false)
   // Shoppers can give the chat a thumbs-up or thumbs-down.
   chatRatings         Boolean @default(true)
-  // Opt-in: lets shoppers place a pay-on-delivery order from a form in the
-  // chat. The app creates a real, unpaid order in the store.
-  allowChatOrders     Boolean @default(false)
-  // What that order form asks for. Shopify has the same three options under
-  // Settings > Checkout but does not let apps read them, so they are set here.
+  // What the form for a change of delivery address asks for. Shopify has the
+  // same three options under Settings > Checkout but does not let apps read
+  // them, so they are set here.
   orderFirstName      String  @default("optional") // "optional" | "required"
   orderCompany        String  @default("hidden")   // "hidden" | "optional" | "required"
   orderAddress2       String  @default("optional") // "hidden" | "optional" | "required"
-  // What the store calls paying on delivery, and anything it tells the buyer
-  // about it. Shopify keeps both with its manual payment methods, which apps
-  // cannot read. Empty means Shopify's own name, "Cash on Delivery (COD)".
-  orderPaymentName    String  @default("")
-  orderPaymentNote    String  @default("")
 
   // Where "About the business" comes from: the store's own description in
   // Shopify ("shopify"), the merchant's words in businessDescription
@@ -176,7 +169,8 @@ model ConversationOrder {
   orderId        String
   // "#1005"
   orderName      String
-  // "placed" (through the chat's order form) or "verified" (number + email).
+  // "verified" (number plus email or phone). "placed" is on rows from when
+  // the chat took pay-on-delivery orders itself; none are written any more.
   source         String
   createdAt      DateTime     @default(now())
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)

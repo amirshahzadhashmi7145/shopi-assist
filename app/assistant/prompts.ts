@@ -15,8 +15,6 @@ export interface PromptInput {
     checkout: boolean;
     returns: boolean;
     placeOrder?: boolean;
-    /** The order summary offers a pay-on-delivery order form. */
-    chatOrders?: boolean;
     /** Changes to an existing order, each confirmed by the shopper with a button. */
     cancelOrder?: boolean;
     changeAddress?: boolean;
@@ -165,9 +163,10 @@ function shopperPrompt(input: PromptInput): string {
     returns: false,
     placeOrder: true,
   };
-  const noPaymentRule = abilities.chatOrders
-    ? "This store also takes pay-on-delivery orders in the chat: the order summary has an 'Order here, pay on delivery' button that opens a short form for name, phone and delivery address. Point shoppers to that button when they want to order without the checkout page or to pay on delivery. You never take payment and never ask for or accept an address, phone number or card details in the chat messages; if a shopper types them, ask them to use the form or the checkout page instead. You cannot see whether an order went through, so never say an order has been placed; the form itself confirms it with an order number."
-    : "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. An order exists only once they finish there, so never say an order has been placed.";
+  // Every order is finished on the store's checkout page, however it is paid
+  // for. The chat takes no orders itself, pay-on-delivery ones included.
+  const noPaymentRule =
+    "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. That holds for every way of paying, cash on delivery included: a shopper who wants to pay when the order arrives gets the same summary and checkout button as anyone else, and picks that way of paying on the checkout page. Whether the store offers it is for your payment tool or the store owner's notes to say, never for you to promise: unless one of them says it is offered, say that they can choose it at checkout if the store offers it. An order exists only once they finish at the checkout, so never say an order has been placed.";
   const checkoutRule = abilities.placeOrder
     ? `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with the buttons to complete it, so do not add the same items to the cart separately. The summary has what they just asked for ticked as the order; anything that was already in their cart is listed under it, unticked, and they can tick it to add it. They can change quantities or remove lines there too, without leaving the chat, so do not describe older cart items as part of the order. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
     : abilities.checkout

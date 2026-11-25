@@ -9,7 +9,7 @@ npm run seed:test-orders                # two unpaid orders
 npm run seed:test-orders -- --count 3
 ```
 
-- Creates pay-on-delivery orders for made-up customers and prints each order number with its email.
+- Creates unpaid orders for made-up customers and prints each order number with its email. (The chat itself places no orders: this script is the only thing that makes them.)
 - Refuses to run on a store that is not a development store.
 - Needs a United States shipping zone and protected customer data access (Dev Dashboard, your app, Settings, Access requests).
 - Clean up: in Shopify admin, filter orders by the tag `shopi-assist-test`.
@@ -26,7 +26,7 @@ The emails end in example.com, so nothing reaches a real inbox.
 
 ## Test mode in the chat
 
-On a development store the order form shows a **Fill test details** button, and the limits on orders per visitor and per phone number are 50 times looser. Shopify tells the app whether a store is a development store; real stores never see the button.
+On a development store the address form (for a change of delivery address) shows a **Fill test details** button. Shopify tells the app whether a store is a development store; real stores never see the button.
 
 ## Things to say to the bot
 
@@ -42,17 +42,15 @@ On a development store the order form shows a **Fill test details** button, and 
 | Remove an item | "Remove the [product name]", or press Remove on a summary line | Summary updates |
 | Empty the cart | "Clear the cart" | "Your cart is empty now." |
 | Checkout | "Checkout" | Summary of the cart |
-| Pay on delivery | Press "Order here, pay on delivery", then "Fill test details" | Order number, order is unpaid in admin |
-| Missing address parts | Clear State and Postal code, press Review order | Both boxes ask to be filled in |
+| Pay on delivery | "I want to pay cash on delivery" | The same order summary and Go to checkout button; the bot says to choose cash on delivery on the checkout page (if you picked "Offered" under Policies), and never asks for an address or takes the order itself |
 | Order status | "Where is my order #1002? My email is test.buyer@example.com" | Payment and delivery status |
-| Order placed in the chat | Place a pay-on-delivery order, then "give me my order details" and "where is it?" | Its items and total, then its status, with no email asked |
 | Follow-up on a looked-up order | After an order status answer, "where is it?" | Answers again without asking for the email |
 | Order status, number only | Tick "Let shoppers check status with the order number alone", then "status of order 1002" | Date, payment and delivery status, and an offer of tracking with email or phone |
 | Order status, no email | "Order 1002, my phone is +1 202 555 0143" | Full status |
-| State list in the order form | Open the order form, change the country | The state box becomes a list for countries with states |
 | Cancel an order | Tick "Cancel orders". "Cancel order 1002, my phone is +1 202 555 0143, I changed my mind" | A card; pressing Cancel order cancels it in admin |
 | Cancel a shipped order | Mark a dummy order fulfilled in admin, then ask to cancel it | "Already being prepared or has shipped", no card |
-| New address | Tick "Change the delivery address". "Change the address for order 1003" with proof | A card, then a form; the order shows the new address and the tag `address-changed-in-chat` |
+| New address | Tick "Change the delivery address". "Change the address for order 1003" with proof | A card, then a form laid out for the order's country, with the state as a list; "Fill test details" fills it; the order shows the new address and the tag `address-changed-in-chat` |
+| Missing address parts | In that form, clear State and Postal code, press Save address | Both boxes ask to be filled in |
 | Change items | Tick "Change the items in an order". "Add another one to order 1003" with proof | A card listing the order after the change; pressing Confirm change updates it |
 | Signed-in customer | Tick "Recognise signed-in customers", sign in on the storefront, "where is my order?" | Answers without asking for a number or email |
 | Wrong email | Same order number, another email | "No order matches" |

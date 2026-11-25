@@ -159,14 +159,11 @@ function Ring({
 export function ChatAnalyticsSection({
   analytics,
   retentionDays,
-  chatOrders,
 }: {
   analytics: ChatAnalytics;
   retentionDays: number;
-  chatOrders: boolean;
 }) {
-  const { conversations, shopperMessages, signedIn, ratings, ordersPlaced, lengths, perDay } =
-    analytics;
+  const { conversations, shopperMessages, signedIn, ratings, lengths, perDay } = analytics;
   const rated = ratings.up + ratings.down;
   const notRated = Math.max(0, conversations.last30 - rated);
   const guests = Math.max(0, conversations.last30 - signedIn);
@@ -194,13 +191,6 @@ export function ChatAnalyticsSection({
                 : undefined
             }
           />
-          {chatOrders || ordersPlaced > 0 ? (
-            <Stat
-              label="Orders placed in chat, 30 days"
-              value={String(ordersPlaced)}
-              note="Pay on delivery"
-            />
-          ) : null}
         </s-grid>
 
         <s-grid gridTemplateColumns="repeat(auto-fit, minmax(210px, 1fr))" gap="base">

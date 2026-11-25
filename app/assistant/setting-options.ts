@@ -382,12 +382,13 @@ export const retentionLabel = (days: number) =>
   days === 365 ? "1 year" : days === 1 ? "1 day" : `${days} days`;
 
 // ---------------------------------------------------------------------------
-// Pay-on-delivery orders
+// The address form
 // ---------------------------------------------------------------------------
 
 /**
- * What the pay-on-delivery order form asks for, as in Shopify's own checkout
- * settings. The first value of each is Shopify's default for a new store.
+ * What the form for a change of delivery address asks for, as in Shopify's
+ * own checkout settings, which apps cannot read. The first value of each is
+ * Shopify's default for a new store.
  */
 export const ORDER_FORM_CHOICES = {
   orderFirstName: ["optional", "required"],
@@ -407,15 +408,6 @@ export const ORDER_FORM_LABELS: {
   orderCompany: { hidden: "Don't include", optional: "Optional", required: "Required" },
   orderAddress2: { optional: "Optional", hidden: "Don't include", required: "Required" },
 };
-
-/** What the order form can call paying on delivery. Empty is Shopify's own name. */
-export const PAYMENT_NAME_PRESETS: readonly string[] = ["Pay on delivery", "Cash on delivery"];
-
-/** Ready-made notes shown under the payment method. */
-export const PAYMENT_NOTE_PRESETS: readonly string[] = [
-  "Please have the exact amount ready.",
-  "Our courier will contact you before delivery.",
-];
 
 // ---------------------------------------------------------------------------
 // The five parts of Settings
@@ -440,22 +432,16 @@ export const isSectionKey = (value: unknown): value is SectionKey =>
  */
 export const SECTION_FIELDS = {
   assistant: ["enabled", "assistantName", "greeting", "chatRatings", "retentionDays"],
-  shopping: [
-    "allowAddToCart",
-    "allowCheckout",
-    "allowChatOrders",
-    "orderFirstName",
-    "orderCompany",
-    "orderAddress2",
-    "orderPaymentName",
-    "orderPaymentNote",
-  ],
+  shopping: ["allowAddToCart", "allowCheckout"],
   orders: [
     "orderLookupEnabled",
     "orderLookupByNumber",
     "recogniseCustomers",
     "allowOrderCancel",
     "allowAddressChange",
+    "orderFirstName",
+    "orderCompany",
+    "orderAddress2",
     "allowOrderEdit",
     "allowReturns",
   ],

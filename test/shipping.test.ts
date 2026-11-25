@@ -1402,7 +1402,7 @@ describe("the shipping tool", () => {
 describe("the payment tool", () => {
   const tool = shopperTools.find((entry) => entry.name === "get_payment_methods")!;
   const settings = toolContext().settings;
-  const run = async (storefront: ToolContext["storefront"], cashOnDelivery?: "chat" | "yes" | "no" | "") =>
+  const run = async (storefront: ToolContext["storefront"], cashOnDelivery?: "yes" | "no" | "") =>
     (await tool.run({}, toolContext({ storefront, settings: { ...settings, cashOnDelivery } })))
       .output as Record<string, unknown>;
   const checkout = (cards: string[], wallets: string[]) =>
@@ -1413,7 +1413,8 @@ describe("the payment tool", () => {
     expect(await run(storefront, "yes")).toMatchObject({
       cards: ["Visa", "American Express"],
       wallets: ["Shop Pay", "Apple Pay"],
-      cashOnDelivery: "offered at checkout",
+      // Chosen on the checkout page, like the cards and wallets: never in the chat.
+      cashOnDelivery: "offered: the shopper picks it as the way to pay on the store's checkout page",
     });
     expect(storefront.calls.map((call) => call.query)).toEqual([PAYMENT_SETTINGS_QUERY]);
     expect(toolsFor(shopperTools, toolContext()).map((entry) => entry.name)).not.toContain(
@@ -1423,10 +1424,15 @@ describe("the payment tool", () => {
 
   it("says what is known about cash on delivery, and no more", async () => {
     const storefront = checkout(["VISA"], []);
-    expect((await run(storefront, "chat")).cashOnDelivery).toMatch(/place the order in this chat/);
+    expect((await run(storefront, "yes")).cashOnDelivery).toMatch(/on the store's checkout page/);
     expect((await run(storefront, "no")).cashOnDelivery).toBe("not offered");
-    expect((await run(storefront, "")).cashOnDelivery).toBe("not known: the store has not said");
-    expect((await run(storefront)).cashOnDelivery).toBe("not known: the store has not said");
+    const unknown = "not known: the store has not said. The checkout page shows whether it can be chosen";
+    expect((await run(storefront, "")).cashOnDelivery).toBe(unknown);
+    expect((await run(storefront)).cashOnDelivery).toBe(unknown);
+    // Whatever the answer, nothing suggests the order can be placed in the chat.
+    for (const pick of ["yes", "no", ""] as const) {
+      expect(JSON.stringify(await run(storefront, pick))).not.toMatch(/in this chat|order here/i);
+    }
   });
 
   it("guesses no payment method when Shopify lists none", async () => {

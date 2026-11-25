@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // As in the chat route's test, the route's collaborators are replaced so the
 // test can see exactly what the route passes along.
 const appProxy = vi.fn();
-const handleChatOrder = vi.fn();
+const openCheckout = vi.fn();
 const handleOrderAction = vi.fn();
 const listDeliveryCountries = vi.fn();
 
@@ -15,7 +15,7 @@ vi.mock("../app/assistant/orders.server", async (importOriginal) => {
   const original = await importOriginal<typeof import("../app/assistant/orders.server")>();
   return {
     ...original,
-    handleChatOrder: (...args: unknown[]) => handleChatOrder(...args),
+    openCheckout: (...args: unknown[]) => openCheckout(...args),
     listDeliveryCountries: (...args: unknown[]) => listDeliveryCountries(...args),
   };
 });
@@ -51,10 +51,10 @@ const get = (query = "") =>
 
 beforeEach(() => {
   appProxy.mockReset().mockResolvedValue(installed);
-  handleChatOrder.mockReset().mockResolvedValue({
+  openCheckout.mockReset().mockResolvedValue({
     ok: true,
-    step: "place",
-    order: { name: "#1001", total: { amount: "44.6", currencyCode: "USD" } },
+    step: "checkout",
+    checkoutUrl: "https://real-shop.example/cart/c/abc?key=1",
   });
   listDeliveryCountries.mockReset().mockResolvedValue({
     countries: [{ code: "CA", name: "Canada", form: 0 }],
@@ -63,39 +63,64 @@ beforeEach(() => {
 });
 
 describe("POST /proxy/order", () => {
+  const checkoutBody = { step: "checkout", items: [{ variantId: "101", quantity: 1 }] };
+
   it("authenticates first and takes the shop from the signed request, never the body", async () => {
-    const response = await run(post({ step: "place", shop: "victim-shop.myshopify.com" }));
+    const response = await run(post({ ...checkoutBody, shop: "victim-shop.myshopify.com" }));
 
     expect(appProxy).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(await response.json()).toMatchObject({ ok: true, order: { name: "#1001" } });
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      step: "checkout",
+      checkoutUrl: "https://real-shop.example/cart/c/abc?key=1",
+    });
 
-    const input = handleChatOrder.mock.calls[0][0];
+    const input = openCheckout.mock.calls[0][0];
     expect(input.shop).toBe(SHOP);
     expect(input.ip).toBe("203.0.113.7");
-    expect(input.body).toEqual({ step: "place", shop: "victim-shop.myshopify.com" });
-    expect(typeof input.admin).toBe("function");
+    expect(input.body).toEqual({ ...checkoutBody, shop: "victim-shop.myshopify.com" });
     expect(typeof input.storefront).toBe("function");
+    // A checkout is a cart on the storefront: it is given no Admin API access.
+    expect(input).not.toHaveProperty("admin");
+  });
+
+  it("places no order: that is the checkout page's job, however the shopper pays", async () => {
+    // What a widget from before this change, still open in a browser, would send.
+    for (const step of ["quote", "place", "refund", undefined]) {
+      const response = await run(post({ step, items: [{ variantId: "101", quantity: 1 }] }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        ok: false,
+        error: {
+          code: "disabled",
+          status: 403,
+          message: "Orders are placed on the store's checkout page. Please use the checkout.",
+        },
+      });
+    }
+    expect(openCheckout).not.toHaveBeenCalled();
+    expect(handleOrderAction).not.toHaveBeenCalled();
   });
 
   it("propagates Shopify's rejection of an unsigned request", async () => {
     appProxy.mockRejectedValue(new Response(undefined, { status: 400 }));
 
-    const thrown = await run(post({ step: "place" })).catch((error: unknown) => error);
+    const thrown = await run(post(checkoutBody)).catch((error: unknown) => error);
 
     expect((thrown as Response).status).toBe(400);
-    expect(handleChatOrder).not.toHaveBeenCalled();
+    expect(openCheckout).not.toHaveBeenCalled();
   });
 
   it("refuses requests another website could make a browser send", async () => {
-    const form = await run(post("step=place", { "Content-Type": "text/plain" }));
+    const form = await run(post("step=checkout", { "Content-Type": "text/plain" }));
     expect(form.status).toBe(415);
 
-    const crossSite = await run(post({ step: "place" }, { "Sec-Fetch-Site": "cross-site" }));
+    const crossSite = await run(post(checkoutBody, { "Sec-Fetch-Site": "cross-site" }));
     expect(crossSite.status).toBe(403);
 
-    expect(handleChatOrder).not.toHaveBeenCalled();
+    expect(openCheckout).not.toHaveBeenCalled();
   });
 
   it("refuses other methods, oversized bodies and shops without the app", async () => {
@@ -104,51 +129,41 @@ describe("POST /proxy/order", () => {
     );
     expect(put.status).toBe(405);
 
-    const huge = await run(post({ step: "place", note: "x".repeat(20_000) }));
+    const huge = await run(post({ ...checkoutBody, note: "x".repeat(20_000) }));
     expect(huge.status).toBe(413);
 
     appProxy.mockResolvedValue({ session: undefined, admin: undefined, storefront: undefined });
-    const notInstalled = await run(post({ step: "place" }));
+    const notInstalled = await run(post(checkoutBody));
     expect(notInstalled.status).toBe(404);
 
-    expect(handleChatOrder).not.toHaveBeenCalled();
+    expect(openCheckout).not.toHaveBeenCalled();
   });
 
-  it("returns field errors and a changed quote in a form the widget can show", async () => {
-    handleChatOrder.mockRejectedValueOnce(
-      new OrderError("invalid_order", 422, "Please check the highlighted details.", {
-        fields: { phone: "Enter a phone number with 7 to 15 digits." },
-      }),
+  it("returns errors in a form the widget can show", async () => {
+    openCheckout.mockRejectedValueOnce(
+      new OrderError("unavailable", 409, "These items are sold out, so they can't be bought right now."),
     );
     // Sent as a 200 so that Shopify's proxy lets the body through.
-    const invalid = await run(post({ step: "quote" }));
-    expect(invalid.status).toBe(200);
-    expect(await invalid.json()).toEqual({
+    const soldOut = await run(post(checkoutBody));
+    expect(soldOut.status).toBe(200);
+    expect(await soldOut.json()).toEqual({
       ok: false,
       error: {
-        code: "invalid_order",
-        message: "Please check the highlighted details.",
-        fields: { phone: "Enter a phone number with 7 to 15 digits." },
-        status: 422,
+        code: "unavailable",
+        message: "These items are sold out, so they can't be bought right now.",
+        status: 409,
       },
     });
 
-    handleChatOrder.mockRejectedValueOnce(
-      new OrderError("rate_limited", 429, "Too many orders.", { retryAfterSeconds: 90 }),
+    openCheckout.mockRejectedValueOnce(
+      new OrderError("rate_limited", 429, "Too many requests.", { retryAfterSeconds: 90 }),
     );
-    const limited = await run(post({ step: "place" }));
+    const limited = await run(post(checkoutBody));
     expect(limited.status).toBe(200);
     expect((await limited.json()).error).toMatchObject({ code: "rate_limited", status: 429 });
 
-    const quote = { total: { amount: "54.6", currencyCode: "USD" } };
-    handleChatOrder.mockRejectedValueOnce(
-      new OrderError("quote_changed", 409, "The total has changed.", { quote: quote as never }),
-    );
-    const changed = await (await run(post({ step: "place" }))).json();
-    expect(changed).toMatchObject({ ok: false, error: { code: "quote_changed" }, quote });
-
-    handleChatOrder.mockRejectedValueOnce(new Error("12 Analytical Way"));
-    const crashed = await (await run(post({ step: "place" }))).json();
+    openCheckout.mockRejectedValueOnce(new Error("12 Analytical Way"));
+    const crashed = await (await run(post(checkoutBody))).json();
     expect(crashed.error.status).toBe(500);
     expect(JSON.stringify(crashed)).not.toContain("Analytical");
   });
@@ -169,11 +184,30 @@ describe("POST /proxy/order with a confirmed order change", () => {
     }
 
     expect(handleOrderAction).toHaveBeenCalledTimes(4);
-    expect(handleChatOrder).not.toHaveBeenCalled();
+    expect(openCheckout).not.toHaveBeenCalled();
     const input = handleOrderAction.mock.calls[0][0];
     expect(input.shop).toBe(SHOP);
     expect(input.body.token).toBe("signed-grant");
     expect(typeof input.admin).toBe("function");
+  });
+
+  it("returns the address form's field errors in a form the widget can show", async () => {
+    handleOrderAction.mockReset().mockRejectedValue(
+      new OrderError("invalid_order", 422, "Please check the highlighted details.", {
+        fields: { phone: "Enter a phone number with 7 to 15 digits." },
+      }),
+    );
+    const invalid = await run(post({ step: "address", token: "signed-grant" }));
+    expect(invalid.status).toBe(200);
+    expect(await invalid.json()).toEqual({
+      ok: false,
+      error: {
+        code: "invalid_order",
+        message: "Please check the highlighted details.",
+        fields: { phone: "Enter a phone number with 7 to 15 digits." },
+        status: 422,
+      },
+    });
   });
 
   it("sends an expired grant's message through as readable JSON", async () => {
@@ -190,7 +224,7 @@ describe("POST /proxy/order with a confirmed order change", () => {
 });
 
 describe("GET /proxy/order", () => {
-  it("returns the delivery countries for the signed shop", async () => {
+  it("returns what the address form asks for, for the signed shop", async () => {
     const response = await get("&language=fr");
 
     expect(response.status).toBe(200);
@@ -202,9 +236,9 @@ describe("GET /proxy/order", () => {
     expect(listDeliveryCountries.mock.calls[0][0]).toMatchObject({ shop: SHOP, language: "fr" });
   });
 
-  it("says when ordering in the chat is switched off", async () => {
+  it("says when address changes in the chat are switched off", async () => {
     listDeliveryCountries.mockRejectedValue(
-      new OrderError("disabled", 403, "Ordering in the chat is not available for this store."),
+      new OrderError("disabled", 403, "Address changes in the chat are not available for this store."),
     );
     const response = await get();
     expect(response.status).toBe(200);

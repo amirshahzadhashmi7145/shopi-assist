@@ -9,7 +9,6 @@ import {
   CUSTOM_PREFIX,
   GREETING_PRESETS,
   MAX_CUSTOM_ANSWER,
-  PAYMENT_NAME_PRESETS,
   POLICY_CHOICES,
   POLICY_LABELS,
   SECTIONS,
@@ -334,12 +333,16 @@ describe("store policies as picks", () => {
       "Exchanges: not offered.",
     ]);
 
-    // Pay-on-delivery orders in the chat already say cash on delivery exists.
-    const chatOrders = { ...DEFAULT_SETTINGS, allowChatOrders: true, codAvailable: "no" as const };
-    expect(describeQuickPolicies(chatOrders)).toBe("");
-    expect(describeQuickPolicies({ ...chatOrders, allowCheckout: false })).toBe(
-      "Cash on delivery: not available.",
-    );
+    // Cash on delivery is said as the merchant picked it, whatever else is
+    // switched on: it is one more way of paying at the checkout.
+    for (const allowCheckout of [true, false]) {
+      expect(describeQuickPolicies({ ...DEFAULT_SETTINGS, allowCheckout, codAvailable: "no" })).toBe(
+        "Cash on delivery: not available.",
+      );
+      expect(describeQuickPolicies({ ...DEFAULT_SETTINGS, allowCheckout, codAvailable: "yes" })).toBe(
+        "Cash on delivery: available. The shopper chooses it at checkout.",
+      );
+    }
 
     // Nothing about delivery is among the policies. Where the store ships, how
     // soon orders leave and how long they take are Shopify's to say, through
@@ -948,8 +951,6 @@ describe("the merchant's unsaved picks", () => {
   const RICH: AssistantSettings = {
     ...DEFAULT_SETTINGS,
     greeting: "Hey there, welcome to Alpine!",
-    orderPaymentName: PAYMENT_NAME_PRESETS[1],
-    orderPaymentNote: "Pay the courier in cash.",
     returnPolicy: "Waxed boards are exchange only.",
     topics: { sizing: "chart", hours: `${CUSTOM_PREFIX}Weekdays 10 to 4` },
   };
@@ -959,12 +960,10 @@ describe("the merchant's unsaved picks", () => {
       expect(resolveDraft(initialDraft(settings))).toEqual(settings);
     }
     // A preset is shown as that preset, the merchant's own words as "custom".
-    expect(initialDraft(DEFAULT_SETTINGS).ui).toMatchObject({ greetingMode: "0", paymentNameMode: "" });
+    expect(initialDraft(DEFAULT_SETTINGS).ui).toMatchObject({ greetingMode: "0", greetingText: "" });
     expect(initialDraft(RICH).ui).toMatchObject({
       greetingMode: "custom",
       greetingText: "Hey there, welcome to Alpine!",
-      paymentNameMode: "1",
-      paymentNoteMode: "custom",
       topicPick: expect.objectContaining({ sizing: "chart", hours: "custom", warranty: "" }),
       topicText: expect.objectContaining({ hours: "Weekdays 10 to 4" }),
     });
@@ -1017,7 +1016,7 @@ describe("the merchant's unsaved picks", () => {
     expect(state).toBe(before);
   });
 
-  it("work out the welcome message, the payment wording and the answers from their controls", () => {
+  it("work out the welcome message and the answers from their controls", () => {
     let state = initialDraft(DEFAULT_SETTINGS);
     const apply = (input: ControlInput) => {
       state = applyInput(state, input);
@@ -1031,13 +1030,12 @@ describe("the merchant's unsaved picks", () => {
     apply(control("ui.greetingText", "s-text-area", { value: "  Hello from Alpine!  " }));
     expect(resolveDraft(state).greeting).toBe("Hello from Alpine!");
 
-    apply(control("ui.paymentNameMode", "s-select", { value: "0" }));
-    expect(resolveDraft(state).orderPaymentName).toBe(PAYMENT_NAME_PRESETS[0]);
+    // A control of a setting that no longer exists changes nothing.
+    const before = resolveDraft(state);
     apply(control("ui.paymentNameMode", "s-select", { value: "custom" }));
     apply(control("ui.paymentNameText", "s-text-field", { value: "Pay the courier" }));
-    expect(resolveDraft(state).orderPaymentName).toBe("Pay the courier");
-    apply(control("ui.paymentNameMode", "s-select", { value: "" }));
-    expect(resolveDraft(state).orderPaymentName).toBe("");
+    expect(resolveDraft(state)).toEqual(before);
+    expect(resolveDraft(state)).not.toHaveProperty("orderPaymentName");
 
     apply(control("ui.topic.sizing", "s-select", { value: "small" }));
     apply(control("ui.topic.hours", "s-select", { value: "custom" }));

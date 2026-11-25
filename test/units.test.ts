@@ -316,20 +316,30 @@ describe("system prompts", () => {
     expect(none).not.toMatch(/start the order/);
   });
 
-  it("points shoppers to the order form, and never collects their details itself", () => {
+  it("sends every order to the checkout page, cash on delivery included", () => {
     const abilities = { addToCart: true, checkout: true, returns: false, placeOrder: true };
+    const prompt = buildSystemPrompt({ ...input, audience: "shopper", abilities });
 
-    const withForm = buildSystemPrompt({
+    // No order form in the chat to point to, and no details taken in it.
+    expect(prompt).not.toMatch(/Order here|order form|pay on delivery' button/);
+    expect(prompt).toMatch(/never ask for an address, phone number or card details in chat/);
+    // Paying on delivery is one more way of paying at the checkout.
+    expect(prompt).toMatch(
+      /cash on delivery included: a shopper who wants to pay when the order arrives gets the same summary and checkout button as anyone else, and picks that way of paying on the checkout page/,
+    );
+    // Whether the store offers it is not the assistant's to promise.
+    expect(prompt).toMatch(
+      /Whether the store offers it is for your payment tool or the store owner's notes to say, never for you to promise: unless one of them says it is offered, say that they can choose it at checkout if the store offers it/,
+    );
+    expect(prompt).toMatch(/never say an order has been placed/);
+
+    // The same holds where the assistant can only show the checkout summary.
+    const checkoutOnly = buildSystemPrompt({
       ...input,
       audience: "shopper",
-      abilities: { ...abilities, chatOrders: true },
+      abilities: { ...abilities, addToCart: false, placeOrder: false },
     });
-    expect(withForm).toMatch(/'Order here, pay on delivery' button/);
-    expect(withForm).toMatch(/never ask for or accept an address, phone number or card details/);
-    expect(withForm).toMatch(/never say an order has been placed/);
-
-    const without = buildSystemPrompt({ ...input, audience: "shopper", abilities });
-    expect(without).not.toMatch(/pay on delivery/);
+    expect(checkoutOnly).toMatch(/cash on delivery included/);
   });
 
   it("shows the assistant the shopper's cart as data, and says when it cannot see it", () => {

@@ -235,7 +235,8 @@ try {
     `(got ${notInstalled.status})`,
   );
 
-  const orderBody = { step: "quote", items: [{ variantId: "1", quantity: 1 }] };
+  // What the widget used to send to place a pay-on-delivery order in the chat.
+  const orderBody = { step: "place", items: [{ variantId: "1", quantity: 1 }] };
   const unsignedOrder = await post(new URLSearchParams({ shop: SHOP }).toString(), orderBody, "order");
   check("unsigned order request -> 400", unsignedOrder.status === 400, `(got ${unsignedOrder.status})`);
 
@@ -244,9 +245,23 @@ try {
 
   const orderOff = await post(signedQuery(proxyParams(SHOP)), orderBody, "order");
   check(
-    "signed order request while chat orders are off -> refused as disabled, readable through the proxy",
-    orderOff.status === 200 && orderOff.json?.ok === false && orderOff.json?.error?.code === "disabled" && orderOff.json?.error?.status === 403,
+    "signed request to place an order in the chat -> refused: orders are placed at the checkout",
+    orderOff.status === 200 &&
+      orderOff.json?.ok === false &&
+      orderOff.json?.error?.code === "disabled" &&
+      orderOff.json?.error?.status === 403 &&
+      /checkout/.test(orderOff.json?.error?.message ?? ""),
     `(got ${orderOff.status} ${JSON.stringify(orderOff.json)})`,
+  );
+  const placed = await db.conversationOrder.count({ where: { shop: SHOP } });
+  check("no order was recorded for it", placed === 0, `(got ${placed})`);
+
+  const addressForm = await fetch(`${BASE}/proxy/order?${signedQuery(proxyParams(SHOP))}`);
+  const addressFormJson = await addressForm.json().catch(() => null);
+  check(
+    "address form asked for while address changes are off -> refused as disabled",
+    addressFormJson?.ok === false && addressFormJson?.error?.code === "disabled",
+    `(got ${addressForm.status} ${JSON.stringify(addressFormJson)})`,
   );
 
   console.log("\nRequests that must work");

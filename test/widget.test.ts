@@ -101,7 +101,7 @@ let fetchMock: FetchMock;
 let configMock: FetchMock;
 /** GET /cart.js: the storefront cart. Unreadable unless a test sets one up. */
 let cartMock: FetchMock;
-/** The app's order endpoint: GET for countries, POST to quote or place. */
+/** The app's order endpoint: GET for the address form, POST for a checkout or a change to an order. */
 let orderMock: FetchMock;
 
 /** A storefront cart as /cart.js returns it; prices are in cents. */
@@ -797,7 +797,7 @@ describe("chat widget", () => {
       "1 \u00d7Camp Blanket - Large$89.50",
     ]);
     expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$125.50");
-    expect(order.textContent).toContain("Shipping and taxes are added at checkout.");
+    expect(order.textContent).toContain("Shipping, taxes and payment are at checkout.");
 
     const links = Array.from(order.querySelectorAll("a"));
     expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
@@ -1213,39 +1213,6 @@ describe("chat widget", () => {
     );
   });
 
-  it("shows the app's message when an order step is refused, even as a 200", async () => {
-    configMock.mockImplementation(() => appConfig({ chatOrders: true }));
-    liveCart({ 101: ["Trail Mug", 1800] }, () => reply("Here.", { actions: [{ type: "checkout" }] }), {
-      101: 1,
-    });
-    // How errors arrive through Shopify's proxy: HTTP 200, ok false.
-    orderMock.mockImplementation((_url: string, init?: RequestInit) =>
-      init?.method === "POST"
-        ? jsonResponse({
-            ok: false,
-            error: { code: "order_failed", status: 502, message: "We couldn't place this order right now." },
-          })
-        : jsonResponse({ ok: true, countries: [{ code: "US", name: "United States" }] }),
-    );
-    const widget = mountWidget();
-    await flush();
-    widget.launcher.click();
-    widget.send("checkout");
-    await flush();
-    widget.$<HTMLButtonElement>(".sa-order-here").click();
-    await flush();
-    widget
-      .$<HTMLFormElement>(".sa-order-form")
-      .dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
-    await flush();
-
-    expect(widget.$(".sa-order-status-error").textContent).toBe(
-      "We couldn't place this order right now.",
-    );
-    // One country to deliver to: the choice is hidden.
-    expect(widget.$('.sa-order-form [name="countryCode"]').parentElement!.hidden).toBe(true);
-  });
-
   it("says so when there is nothing in the cart to check out", async () => {
     fetchMock.mockImplementation(() => reply("Sure.", { actions: [{ type: "checkout" }] }));
     cartMock.mockImplementation(() => jsonResponse(cartJson()));
@@ -1288,335 +1255,121 @@ describe("chat widget", () => {
     expect(widget.$(".sa-order-item").textContent).toBe("Tasse");
   });
 
-  describe("pay-on-delivery order form", () => {
+  describe("the way to the checkout", () => {
     const usd = (amount: string) => ({ amount, currencyCode: "USD" });
-    const RATES = [
-      { handle: "standard", title: "Standard", price: usd("5.0") },
-      { handle: "express", title: "Express", price: usd("15.0") },
-    ];
-    const quote = (handle = "standard") => ({
-      lines: [{ title: "Trail Mug", quantity: 2, total: usd("36.0") }],
-      subtotal: usd("36.0"),
-      shipping: handle === "express" ? usd("15.0") : usd("5.0"),
-      tax: usd("3.6"),
-      total: handle === "express" ? usd("54.6") : usd("44.6"),
-      shippingRates: RATES,
-      shippingRateHandle: handle,
-    });
     const orderPosts = () =>
       orderMock.mock.calls
         .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
         .map((call) => JSON.parse((call[1] as RequestInit).body as string));
 
-    /** A form layout as the app sends it: fields in rows, named for the country. */
-    const formFor = (province: string | null, zip: string, extra: string[] = []) => [
-      [
-        { name: "firstName", label: "First name (optional)", required: false },
-        { name: "lastName", label: "Last name", required: true },
-      ],
-      ...extra.map((name) => [{ name, label: "Company", required: true }]),
-      [{ name: "address1", label: "Address", required: true }],
-      [{ name: "address2", label: "Apartment, suite, etc (optional)", required: false }],
-      [
-        { name: "city", label: "City", required: true },
-        ...(province ? [{ name: "province", label: province, required: true }] : []),
-        { name: "zip", label: zip, required: true },
-      ],
-      [{ name: "phone", label: "Phone", required: true }],
-    ];
-
-    /** A store that takes chat orders, with two mugs in the cart and the summary on screen. */
-    async function openForm(
-      respond: (body: Record<string, unknown>) => Promise<Response>,
-      config: Record<string, unknown> = {},
-      /** Runs once the widget is on the page, before the order form is opened. */
-      setup: () => void = () => {},
-    ) {
-      configMock.mockImplementation(() => appConfig({ chatOrders: true, ...config }));
-      const cart = liveCart(
-        { 101: ["Trail Mug", 1800] },
-        () => reply("Here's your cart.", { actions: [{ type: "checkout" }] }),
-        { 101: 2 },
-      );
-      orderMock.mockImplementation((_url: string, init?: RequestInit) =>
-        init?.method === "POST"
-          ? respond(JSON.parse(init.body as string))
-          : jsonResponse({
-              ok: true,
-              countries: [
-                { code: "CA", name: "Canada", form: 0 },
-                { code: "US", name: "United States", form: 1 },
-              ],
-              forms: [formFor("Province", "Postal code"), formFor("State", "ZIP code")],
-              payment: {
-                name: "COD (cash or card at the door)",
-                note: "Have the exact amount ready.",
-                online: ["Visa", "Mastercard", "Shop Pay"],
-              },
-            }),
-      );
-      const widget = mountWidget();
-      setup();
-      await flush();
-      widget.launcher.click();
-      widget.send("checkout");
-      await flush();
-      widget.$<HTMLButtonElement>(".sa-order-here").click();
-      await flush();
-
-      const field = (name: string) =>
-        widget.$<HTMLInputElement | HTMLSelectElement>(`.sa-order-form [name="${name}"]`);
-      const fill = (values: Record<string, string>) => {
-        for (const [name, value] of Object.entries(values)) field(name).value = value;
-      };
-      const submit = async () => {
-        widget
-          .$<HTMLFormElement>(".sa-order-form")
-          .dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
-        await flush();
-      };
-      return { widget, cart, field, fill, submit };
-    }
-
-    const DETAILS = {
-      firstName: " Ada ",
-      lastName: "Lovelace",
-      phone: "+1 613 555 0111",
-      email: "ada@example.com",
-      address1: "12 Analytical Way",
-      city: "Ottawa",
-      province: "ON",
-      zip: "K1A 0B1",
-      countryCode: "CA",
-    };
-
-    it("is offered only when the merchant takes orders in the chat", async () => {
+    it("never offers to take the order in the chat, whatever the app says", async () => {
+      // What a server from before this change would still send.
+      configMock.mockImplementation(() => appConfig({ chatOrders: true }));
       liveCart({ 101: ["Trail Mug", 1800] }, () => reply("Here.", { actions: [{ type: "checkout" }] }), {
         101: 1,
       });
       const widget = mountWidget();
       await flush();
       widget.launcher.click();
-      widget.send("checkout");
+      widget.send("I want to pay cash on delivery");
       await flush();
 
-      expect(widget.root.querySelector(".sa-order")).not.toBeNull();
+      const order = widget.$(".sa-order");
+      // No order form and no button for one: paying, cash on delivery
+      // included, is the checkout page's business.
       expect(widget.root.querySelector(".sa-order-here")).toBeNull();
+      expect(widget.root.querySelector(".sa-order-form")).toBeNull();
+      expect(Array.from(order.querySelectorAll("button, a")).map((control) => control.textContent)).not.toContain(
+        "Order here, pay on delivery",
+      );
+      expect(order.textContent).toContain("Shipping, taxes and payment are at checkout.");
+      const checkout = widget.$<HTMLAnchorElement>(".sa-order-checkout");
+      expect([checkout.textContent, checkout.getAttribute("href")]).toEqual(["Go to checkout", "/checkout"]);
+      // The checkout opens in place of the page, not beside the chat.
+      expect(checkout.target).toBe("");
     });
 
-    it("sends only the ticked lines to the store's checkout, wherever orders are taken", async () => {
+    it("sends only the ticked lines to the store's checkout", async () => {
       const opened = vi.spyOn(window, "open");
       try {
-        for (const chatOrders of [false, true]) {
-          document.body.textContent = "";
-          window.localStorage.clear();
-          configMock.mockImplementation(() => appConfig({ chatOrders, buyNow: true }));
-          const lines = [
-            { ...cartLine(101, 2, "Trail Mug", 1800), key: "101:k", properties: { Engraving: "Ada" } },
-            {
-              ...cartLine(103, 1, "Camp Blanket", 8950),
-              key: "103:k",
-              selling_plan_allocation: { selling_plan: { id: 77 } },
-            },
-          ];
-          cartMock.mockImplementation(() =>
-            jsonResponse({ ...cartJson(...lines), discount_codes: [{ code: "WELCOME", applicable: true }] }),
-          );
-          fetchMock.mockImplementation(() => reply("Here.", { actions: [{ type: "checkout" }] }));
-          orderMock.mockReset().mockImplementation((_url: string, init?: RequestInit) =>
-            init?.method === "POST"
-              ? jsonResponse({ ok: true, step: "checkout", checkoutUrl: "https://shop.example/cart/c/abc?key=1" })
-              : jsonResponse({ ok: true, countries: [] }),
-          );
-          const tab = { opener: {} as unknown, close: vi.fn(), location: { replace: vi.fn() } };
-          opened.mockReset().mockImplementation(() => tab as unknown as Window);
+        configMock.mockImplementation(() => appConfig({ buyNow: true }));
+        const lines = [
+          { ...cartLine(101, 2, "Trail Mug", 1800), key: "101:k", properties: { Engraving: "Ada" } },
+          {
+            ...cartLine(103, 1, "Camp Blanket", 8950),
+            key: "103:k",
+            selling_plan_allocation: { selling_plan: { id: 77 } },
+          },
+        ];
+        cartMock.mockImplementation(() =>
+          jsonResponse({ ...cartJson(...lines), discount_codes: [{ code: "WELCOME", applicable: true }] }),
+        );
+        fetchMock.mockImplementation(() => reply("Here.", { actions: [{ type: "checkout" }] }));
+        orderMock.mockReset().mockImplementation((_url: string, init?: RequestInit) =>
+          init?.method === "POST"
+            ? jsonResponse({ ok: true, step: "checkout", checkoutUrl: "https://shop.example/cart/c/abc?key=1" })
+            : jsonResponse({ ok: true, countries: [] }),
+        );
+        opened.mockReset().mockImplementation(() => null);
 
-          const widget = mountWidget();
-          await flush();
-          widget.launcher.click();
-          widget.send("checkout");
-          await flush();
+        const widget = mountWidget();
+        await flush();
+        widget.launcher.click();
+        widget.send("checkout");
+        await flush();
 
-          const control = () => widget.$(chatOrders ? ".sa-order-online" : ".sa-order-checkout");
-          // The whole cart is ticked: a plain link to the checkout, and both lines can be unticked.
-          expect(control().getAttribute("href")).toBe("/checkout");
-          const ticks = widget.all(".sa-order-pick") as HTMLInputElement[];
-          expect(ticks.map((tick) => tick.checked)).toEqual([true, true]);
+        const control = () => widget.$(".sa-order-checkout");
+        // The whole cart is ticked: a plain link to the checkout, and both lines can be unticked.
+        expect(control().getAttribute("href")).toBe("/checkout");
+        const ticks = widget.all(".sa-order-pick") as HTMLInputElement[];
+        expect(ticks.map((tick) => tick.checked)).toEqual([true, true]);
 
-          ticks[1].checked = false;
-          ticks[1].dispatchEvent(new Event("change", { bubbles: true }));
-          expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
-          expect(control().tagName).toBe("BUTTON");
-          expect(control().textContent).toBe(chatOrders ? "Pay online at checkout instead" : "Go to checkout");
+        ticks[1].checked = false;
+        ticks[1].dispatchEvent(new Event("change", { bubbles: true }));
+        expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$36.00");
+        expect(control().tagName).toBe("BUTTON");
+        expect(control().textContent).toBe("Go to checkout");
 
-          control().click();
-          await flush();
-          expect(orderPosts()).toEqual([
-            {
-              step: "checkout",
-              items: [{ variantId: "101", quantity: 2, properties: { Engraving: "Ada" } }],
-              country: "US",
-              discountCodes: ["WELCOME"],
-            },
-          ]);
-          if (chatOrders) {
-            // A new tab, opened with the press and then sent to the checkout.
-            expect(opened.mock.calls).toEqual([["", "_blank"]]);
-            expect(tab.opener).toBeNull();
-            expect(tab.location.replace).toHaveBeenCalledWith("https://shop.example/cart/c/abc?key=1");
-          } else {
-            expect(opened.mock.calls).toEqual([["https://shop.example/cart/c/abc?key=1", "_self"]]);
-          }
-          // The cart on the storefront is not touched.
-          expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("/cart/"))).toBe(false);
+        control().click();
+        await flush();
+        // A subscription or a personalisation goes to the checkout with its line.
+        expect(orderPosts()).toEqual([
+          {
+            step: "checkout",
+            items: [{ variantId: "101", quantity: 2, properties: { Engraving: "Ada" } }],
+            country: "US",
+            discountCodes: ["WELCOME"],
+          },
+        ]);
+        expect(opened.mock.calls).toEqual([["https://shop.example/cart/c/abc?key=1", "_self"]]);
+        // The cart on the storefront is not touched.
+        expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("/cart/"))).toBe(false);
 
-          // Refused, or an address that is not a checkout: say so and go nowhere.
-          opened.mockClear();
-          tab.close.mockClear();
-          orderMock.mockImplementation(() =>
-            jsonResponse({ ok: false, error: { code: "unavailable", message: "These items are sold out." } }),
-          );
-          control().click();
-          await flush();
-          expect(widget.all(".sa-notice").at(-1)!.textContent).toBe("These items are sold out.");
-          if (chatOrders) expect(tab.close).toHaveBeenCalled();
-          else expect(opened).not.toHaveBeenCalled();
-          orderMock.mockImplementation(() =>
-            jsonResponse({ ok: true, step: "checkout", checkoutUrl: "javascript:alert(1)" }),
-          );
-          control().click();
-          await flush();
-          expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
-            "The checkout couldn't be opened. Please try again.",
-          );
-          expect(opened.mock.calls.every((call) => call[0] === "")).toBe(true);
-        }
+        // Refused, or an address that is not a checkout: say so and go nowhere.
+        opened.mockClear();
+        orderMock.mockImplementation(() =>
+          jsonResponse({ ok: false, error: { code: "unavailable", message: "These items are sold out." } }),
+        );
+        control().click();
+        await flush();
+        expect(widget.all(".sa-notice").at(-1)!.textContent).toBe("These items are sold out.");
+        expect(opened).not.toHaveBeenCalled();
+        orderMock.mockImplementation(() =>
+          jsonResponse({ ok: true, step: "checkout", checkoutUrl: "javascript:alert(1)" }),
+        );
+        control().click();
+        await flush();
+        expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
+          "The checkout couldn't be opened. Please try again.",
+        );
+        expect(opened).not.toHaveBeenCalled();
       } finally {
         opened.mockRestore();
       }
     });
 
-    it("takes the details, shows the total and places the order", async () => {
-      const { widget, field, fill, submit } = await openForm((body) =>
-        body.step === "quote"
-          ? jsonResponse({ ok: true, step: "quote", quote: quote(body.shippingRateHandle as string) })
-          : jsonResponse({ ok: true, step: "place", order: { name: "#1001", total: usd("54.6") } }),
-      );
-
-      // The form asks for what a delivery needs, with the browsing country chosen.
-      expect(widget.all(".sa-order-form label").map((label) => label.textContent)).toEqual([
-        "Email (optional, for order updates)",
-        "Country/region",
-        "First name (optional)",
-        "Last name",
-        "Address",
-        "Apartment, suite, etc (optional)",
-        "City",
-        "State",
-        "ZIP code",
-        "Phone",
-      ]);
-      // Laid out under the checkout's own headings, names and state/ZIP side by side.
-      expect(widget.all(".sa-order-form .sa-order-title").map((title) => title.textContent)).toEqual([
-        "Contact",
-        "Delivery",
-      ]);
-      expect(widget.all(".sa-field-half label").map((label) => label.textContent)).toEqual([
-        "First name (optional)",
-        "Last name",
-        "State",
-        "ZIP code",
-      ]);
-      expect(widget.$('.sa-order-form button[type="submit"]').textContent).toBe("Continue to shipping");
-      expect(field("countryCode").value).toBe("US");
-      expect(field("phone").getAttribute("autocomplete")).toBe("tel");
-
-      fill(DETAILS);
-      await submit();
-
-      expect(orderPosts()[0]).toEqual({
-        step: "quote",
-        items: [{ variantId: "101", quantity: 2 }],
-        contact: {
-          firstName: "Ada",
-          lastName: "Lovelace",
-          phone: "+1 613 555 0111",
-          email: "ada@example.com",
-        },
-        address: {
-          company: "",
-          address1: "12 Analytical Way",
-          address2: "",
-          city: "Ottawa",
-          province: "ON",
-          zip: "K1A 0B1",
-          countryCode: "CA",
-        },
-      });
-
-      // Review: lines, delivery options and what will be paid on delivery.
-      expect(widget.all(".sa-order-form .sa-order-title").map((title) => title.textContent)).toEqual([
-        "Shipping method",
-        "Payment",
-        "Order summary",
-      ]);
-      expect(widget.all(".sa-order-recap-row").map((row) => row.textContent)).toEqual([
-        "Contactada@example.com · +1 613 555 0111Change",
-        "Ship toAda Lovelace, 12 Analytical Way, Ottawa, ON, K1A 0B1, CanadaChange",
-      ]);
-      expect(widget.$(".sa-order-totals").textContent).toBe(
-        "Subtotal$36.00Shipping$5.00Tax$3.60Total$44.60",
-      );
-      // What the store calls it and tells buyers, then what its checkout takes.
-      expect(widget.all(".sa-order-pay").map((option) => option.textContent)).toEqual([
-        "COD (cash or card at the door)You pay $44.60 when your order arrives.Have the exact amount ready.",
-        "Pay online at checkoutVisa, Mastercard, Shop Pay",
-      ]);
-      const online = widget.$<HTMLAnchorElement>("a.sa-order-pay-online");
-      expect([online.getAttribute("href"), online.target]).toEqual(["/checkout", "_blank"]);
-      expect(widget.$('.sa-order-form button[type="submit"]').textContent).toBe("Complete order");
-
-      // Picking faster delivery asks for a new total.
-      const express = widget.all(".sa-order-rate input")[1] as HTMLInputElement;
-      express.checked = true;
-      express.dispatchEvent(new Event("change", { bubbles: true }));
-      await flush();
-      expect(orderPosts()[1]).toMatchObject({ step: "quote", shippingRateHandle: "express" });
-      expect(widget.$(".sa-order-totals").textContent).toContain("Total$54.60");
-
-      await submit();
-
-      const placed = orderPosts()[2];
-      expect(placed).toMatchObject({
-        step: "place",
-        items: [{ variantId: "101", quantity: 2 }],
-        shippingRateHandle: "express",
-        expectedTotal: usd("54.6"),
-      });
-      expect(placed.idempotencyKey).toMatch(/^[a-f0-9]{32}$/);
-      // The chat the order came from, so the assistant can be told about it.
-      expect(placed.conversationId).toBe("conv12345678");
-      expect(placed.visitorId).toMatch(/^[a-f0-9]{32}$/);
-      // A quote places nothing, so it does not need to say.
-      expect(orderPosts()[0]).not.toHaveProperty("conversationId");
-
-      // Confirmed with the order number; the form and the old summary are gone.
-      expect(widget.all(".sa-notice").at(-1)!.textContent).toBe(
-        "Order #1001 is placed. You pay $54.60 on delivery.",
-      );
-      expect(widget.root.querySelector(".sa-order")).toBeNull();
-      expect(fetchMock.mock.calls.some((call) => call[0] === "/cart/clear.js")).toBe(true);
-
-      // Nothing the shopper typed is kept in the browser's storage.
-      const stored = JSON.stringify({ ...window.localStorage }) + JSON.stringify({ ...window.sessionStorage });
-      // The phone number is looked for whole: its area code alone also turns
-      // up in the saved chat's timestamp from time to time.
-      expect(stored).not.toMatch(/Lovelace|Analytical|613\D{0,3}555\D{0,3}0111/);
-      expect(stored).toContain("Order #1001 is placed");
-    });
-
-    it("orders what was just picked and leaves the rest of the cart unticked", async () => {
-      configMock.mockImplementation(() => appConfig({ chatOrders: true, buyNow: true }));
+    it("ticks what was just picked and leaves the rest of the cart unticked", async () => {
+      configMock.mockImplementation(() => appConfig({ buyNow: true }));
       const catalog: Record<number, [string, number]> = {
         101: ["Trail Mug", 1800],
         102: ["Camp Kettle", 4500],
@@ -1658,14 +1411,6 @@ describe("chat widget", () => {
         }
         return jsonResponse(cartNow());
       });
-      orderMock.mockImplementation((_url: string, init?: RequestInit) => {
-        if (init?.method !== "POST") {
-          return jsonResponse({ ok: true, countries: [{ code: "CA", name: "Canada" }] });
-        }
-        return JSON.parse(init.body as string).step === "quote"
-          ? jsonResponse({ ok: true, step: "quote", quote: quote() })
-          : jsonResponse({ ok: true, step: "place", order: { name: "#1003", total: usd("44.6") } });
-      });
 
       const widget = mountWidget();
       await flush();
@@ -1701,8 +1446,8 @@ describe("chat widget", () => {
       // Only what is ticked is counted, and has a quantity to change.
       expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
       expect(widget.all(".sa-order-waiting .sa-stepper")).toHaveLength(0);
-      // Paying online takes only the ticked lines too: a button, not a plain link.
-      expect(widget.$(".sa-order-online").tagName).toBe("BUTTON");
+      // The checkout takes only the ticked lines too: a button, not a plain link.
+      expect(widget.$(".sa-order-checkout").tagName).toBe("BUTTON");
 
       const tick = (title: string, on: boolean) => {
         const box = ticks().find((entry) => entry.getAttribute("aria-label")!.endsWith(title))!;
@@ -1714,7 +1459,7 @@ describe("chat widget", () => {
       expect(widget.all(".sa-order-waiting")).toHaveLength(0);
       expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$152.50");
       // Everything ticked is the whole cart: the plain link to the checkout.
-      expect(widget.$(".sa-order-online").getAttribute("href")).toBe("/checkout");
+      expect(widget.$(".sa-order-checkout").getAttribute("href")).toBe("/checkout");
       tick("Camp Blanket", false);
       expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$63.00");
 
@@ -1727,67 +1472,147 @@ describe("chat widget", () => {
         false,
         true,
       ]);
+      // Nothing in the summary takes the order here.
+      expect(widget.root.querySelector(".sa-order-here")).toBeNull();
+    });
+  });
 
-      widget.$<HTMLButtonElement>(".sa-order-here").click();
+  describe("the address form", () => {
+    const orderPosts = () =>
+      orderMock.mock.calls
+        .filter((call) => (call[1] as RequestInit | undefined)?.method === "POST")
+        .map((call) => JSON.parse((call[1] as RequestInit).body as string));
+
+    /** A form layout as the app sends it: fields in rows, named for the country. */
+    const formFor = (province: string | null, zip: string, extra: string[] = []) => [
+      [
+        { name: "firstName", label: "First name (optional)", required: false },
+        { name: "lastName", label: "Last name", required: true },
+      ],
+      ...extra.map((name) => [{ name, label: "Company", required: true }]),
+      [{ name: "address1", label: "Address", required: true }],
+      [{ name: "address2", label: "Apartment, suite, etc (optional)", required: false }],
+      [
+        { name: "city", label: "City", required: true },
+        ...(province ? [{ name: "province", label: province, required: true }] : []),
+        { name: "zip", label: zip, required: true },
+      ],
+      [{ name: "phone", label: "Phone", required: true }],
+    ];
+    const TWO_COUNTRIES = {
+      ok: true,
+      countries: [
+        { code: "CA", name: "Canada", form: 0 },
+        { code: "US", name: "United States", form: 1 },
+      ],
+      forms: [formFor("Province", "Postal code"), formFor("State", "ZIP code")],
+    };
+
+    /**
+     * The form for a new delivery address, opened from the card the assistant
+     * shows for an order going to `country`. Null: the card names no country,
+     * so every country the store sells to is offered.
+     */
+    async function openForm(
+      respond: (body: Record<string, unknown>) => Promise<Response>,
+      options: {
+        country?: string | null;
+        config?: Record<string, unknown>;
+        /** What the app answers when asked what the form needs. */
+        asks?: unknown;
+        /** Runs once the widget is on the page, before the form is opened. */
+        setup?: () => void;
+      } = {},
+    ) {
+      const country = options.country === undefined ? "US" : options.country;
+      configMock.mockImplementation(() => appConfig(options.config ?? {}));
+      fetchMock.mockImplementation(() =>
+        reply("Press the button to enter it.", {
+          actions: [
+            {
+              type: "order_action",
+              kind: "address",
+              order: "#1005",
+              token: "signed-grant-for-1005",
+              title: "Change the delivery address for order #1005",
+              lines: [],
+              confirmLabel: "Enter new address",
+              ...(country ? { countryCode: country } : {}),
+            },
+          ],
+        }),
+      );
+      orderMock.mockImplementation((_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? respond(JSON.parse(init.body as string))
+          : jsonResponse(options.asks ?? TWO_COUNTRIES),
+      );
+      const widget = mountWidget();
+      options.setup?.();
       await flush();
-      for (const [name, value] of Object.entries(DETAILS)) {
-        widget.$<HTMLInputElement>(`.sa-order-form [name="${name}"]`).value = value;
-      }
+      widget.launcher.click();
+      widget.send("change the address on order 1005");
+      await flush();
+      const open = async () => {
+        widget.$<HTMLButtonElement>(".sa-action button").click();
+        await flush();
+      };
+      await open();
+
+      const field = (name: string) =>
+        widget.$<HTMLInputElement | HTMLSelectElement>(`.sa-order-form [name="${name}"]`);
+      const fill = (values: Record<string, string>) => {
+        for (const [name, value] of Object.entries(values)) field(name).value = value;
+      };
       const submit = async () => {
         widget
           .$<HTMLFormElement>(".sa-order-form")
           .dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
         await flush();
       };
-      await submit();
-      // The blanket is not part of the order.
-      expect(orderPosts()[0].items).toEqual([
-        { variantId: "101", quantity: 1 },
-        { variantId: "102", quantity: 1 },
-      ]);
-
-      await submit();
-      expect(widget.all(".sa-notice").at(-1)!.textContent).toContain("Order #1003 is placed.");
-      // What was ordered leaves the cart; the blanket stays in it.
-      expect(cartCalls.slice(2)).toEqual([
-        ["/cart/change.js", { id: "101:k", quantity: 0 }],
-        ["/cart/change.js", { id: "102:k", quantity: 0 }],
-      ]);
-      expect([...held.keys()]).toEqual([103]);
-    });
-
-    it("draws the form the app sends for the delivery country and the store", async () => {
-      const { widget, field, submit } = await openForm(
-        (body) => jsonResponse({ ok: true, step: "quote", quote: quote(body.shippingRateHandle as string) }),
-        {},
-        () =>
-          orderMock.mockImplementation((_url: string, init?: RequestInit) =>
-            init?.method === "POST"
-              ? jsonResponse({ ok: true, step: "quote", quote: quote() })
-              : jsonResponse({
-                  ok: true,
-                  countries: [
-                    { code: "AE", name: "United Arab Emirates", form: 0 },
-                    { code: "GB", name: "United Kingdom", form: 1 },
-                    { code: "ZZ", name: "Elsewhere", form: 9 },
-                  ],
-                  forms: [
-                    // No postal code in the Emirates; an emirate to pick.
-                    formFor("Emirate", "unused").map((row) => row.filter((entry) => entry.name !== "zip")),
-                    // No county in the United Kingdom, and this store asks for a company.
-                    formFor(null, "Postcode", ["company"]),
-                  ],
-                }),
-          ),
-      );
       const labels = () => widget.all(".sa-order-form label").map((label) => label.textContent);
-      const pick = (code: string) => {
-        field("countryCode").value = code;
-        field("countryCode").dispatchEvent(new Event("change", { bubbles: true }));
+      return { widget, field, fill, submit, labels, open };
+    }
+
+    const saved = () =>
+      jsonResponse({
+        ok: true,
+        step: "address",
+        order: { name: "#1005" },
+        message: "The delivery address for order #1005 is updated.",
+      });
+
+    const DETAILS = {
+      firstName: " Ada ",
+      lastName: "Lovelace",
+      phone: "+1 202 555 0143",
+      address1: "350 Fifth Avenue",
+      city: "New York",
+      province: "NY",
+      zip: "10118",
+    };
+
+    it("draws the form the app sends for the order's country and the store", async () => {
+      const asks = {
+        ok: true,
+        countries: [
+          { code: "AE", name: "United Arab Emirates", form: 0 },
+          { code: "GB", name: "United Kingdom", form: 1 },
+          { code: "ZZ", name: "Elsewhere", form: 9 },
+        ],
+        forms: [
+          // No postal code in the Emirates; an emirate to pick.
+          formFor("Emirate", "unused").map((row) => row.filter((entry) => entry.name !== "zip")),
+          // No county in the United Kingdom, and this store asks for a company.
+          formFor(null, "Postcode", ["company"]),
+        ],
       };
 
-      expect(field("countryCode").value).toBe("AE");
-      expect(labels().slice(2)).toEqual([
+      const emirates = await openForm(saved, { country: "AE", asks });
+      // The country is the order's, with no choice of another.
+      expect(emirates.field("countryCode").value).toBe("AE");
+      expect(emirates.field("countryCode").parentElement!.hidden).toBe(true);
+      expect(emirates.labels().slice(1)).toEqual([
         "First name (optional)",
         "Last name",
         "Address",
@@ -1796,12 +1621,12 @@ describe("chat widget", () => {
         "Emirate",
         "Phone",
       ]);
-      expect(widget.root.querySelector('.sa-order-form [name="zip"]')).toBeNull();
-      field("lastName").value = "Lovelace";
-      field("province").value = "Dubai";
+      expect(emirates.widget.root.querySelector('.sa-order-form [name="zip"]')).toBeNull();
 
-      pick("GB");
-      expect(labels().slice(2)).toEqual([
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      const { widget, field, labels, submit } = await openForm(saved, { country: "GB", asks });
+      expect(labels().slice(1)).toEqual([
         "First name (optional)",
         "Last name",
         "Company",
@@ -1811,8 +1636,6 @@ describe("chat widget", () => {
         "Postcode",
         "Phone",
       ]);
-      // What was typed stays; what this country's form does not have goes.
-      expect(field("lastName").value).toBe("Lovelace");
       expect(widget.root.querySelector('.sa-order-form [name="province"]')).toBeNull();
       expect(field("company").required).toBe(true);
       expect(field("company").getAttribute("autocomplete")).toBe("organization");
@@ -1824,29 +1647,35 @@ describe("chat widget", () => {
         "Postcode",
       ]);
 
+      field("lastName").value = "Lovelace";
       field("company").value = "Analytical Engines";
       field("address1").value = "1 High Street";
       field("city").value = "London";
       field("zip").value = "SE22 8DL";
       field("phone").value = "+44 20 7946 0143";
       await submit();
-      expect(orderPosts()[0].address).toEqual({
-        company: "Analytical Engines",
-        address1: "1 High Street",
-        address2: "",
-        city: "London",
-        province: "",
-        zip: "SE22 8DL",
-        countryCode: "GB",
-      });
-      expect(widget.$(".sa-order-recap").textContent).toContain(
-        "Lovelace, Analytical Engines, 1 High Street, London, SE22 8DL, United Kingdom",
-      );
+      expect(orderPosts()).toEqual([
+        {
+          step: "address",
+          token: "signed-grant-for-1005",
+          contact: { firstName: "", lastName: "Lovelace", phone: "+44 20 7946 0143", email: "" },
+          address: {
+            company: "Analytical Engines",
+            address1: "1 High Street",
+            address2: "",
+            city: "London",
+            province: "",
+            zip: "SE22 8DL",
+            countryCode: "GB",
+          },
+        },
+      ]);
 
       // A country the app sent no form for gets every field; the app checks them.
-      widget.all(".sa-order-change")[0].click();
-      pick("ZZ");
-      expect(labels().slice(2)).toEqual([
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      const elsewhere = await openForm(saved, { country: "ZZ", asks });
+      expect(elsewhere.labels().slice(1)).toEqual([
         "First name (optional)",
         "Last name",
         "Address",
@@ -1855,6 +1684,17 @@ describe("chat widget", () => {
         "State / province",
         "Postal code",
         "Phone",
+      ]);
+    });
+
+    it("asks for no email and no payment details: only who and where", async () => {
+      const { widget, labels } = await openForm(saved);
+      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("New delivery address");
+      expect(widget.root.querySelector('.sa-order-form [name="email"]')).toBeNull();
+      expect(labels().join(" ")).not.toMatch(/email|card|payment/i);
+      expect(widget.all(".sa-order-form button").map((button) => button.textContent)).toEqual([
+        "Save address",
+        "Cancel",
       ]);
     });
 
@@ -1874,105 +1714,67 @@ describe("chat widget", () => {
       fill({ ...DETAILS, phone: "12" });
       await submit();
 
-      expect(widget.$(".sa-order-form .sa-order-title").textContent).toBe("Contact");
       expect(field("phone").getAttribute("aria-invalid")).toBe("true");
       expect(widget.$(".sa-field-error").textContent).toBe("Enter a phone number with 7 to 15 digits.");
       expect(field("phone").getAttribute("aria-describedby")).toBe(widget.$(".sa-field-error").id);
-      expect(widget.$(".sa-order-status-error").textContent).toBe(
+      expect(widget.$(".sa-order-form .sa-order-status-error").textContent).toBe(
         "Please check the highlighted details.",
       );
       expect(field("lastName").value).toBe("Lovelace");
-      expect(field("countryCode").value).toBe("CA");
+      expect(field("countryCode").value).toBe("US");
       expect(widget.root.activeElement).toBe(field("phone"));
+      // Nothing was saved, so the card that opened the form is still there.
+      expect(widget.root.querySelector(".sa-action")).not.toBeNull();
     });
 
-    it("asks the shopper to confirm again when the total has changed", async () => {
-      let places = 0;
-      const { widget, fill, submit } = await openForm((body) => {
-        if (body.step === "quote") return jsonResponse({ ok: true, step: "quote", quote: quote() });
-        places += 1;
-        return places === 1
-          ? jsonResponse(
-              {
-                error: { code: "quote_changed", message: "The total has changed. Please check the new total and confirm again." },
-                quote: quote("express"),
-              },
-              409,
-            )
-          : jsonResponse({ ok: true, step: "place", order: { name: "#1002", total: usd("54.6") } });
-      });
-      fill(DETAILS);
-      await submit();
-      await submit();
-
-      // Nothing was confirmed: the new total is on screen with the reason.
-      expect(widget.$(".sa-order-totals").textContent).toContain("Total$54.60");
-      expect(widget.$(".sa-order-status-error").textContent).toMatch(/total has changed/);
-      expect(widget.all(".sa-notice")).toHaveLength(0);
-
-      await submit();
-      const [first, second] = orderPosts().filter((body) => body.step === "place");
-      expect(first.expectedTotal).toEqual(usd("44.6"));
-      expect(second.expectedTotal).toEqual(usd("54.6"));
-      // A different total is a different order as far as retries go.
-      expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
-      expect(widget.all(".sa-notice").at(-1)!.textContent).toContain("Order #1002 is placed");
-    });
-
-    it("keeps the order on screen when the store cannot be reached", async () => {
-      const { widget, fill, submit } = await openForm((body) =>
-        body.step === "quote"
-          ? jsonResponse({ ok: true, step: "quote", quote: quote() })
-          : Promise.reject(new TypeError("Failed to fetch")),
+    it("shows the app's message when the change is refused, even as a 200", async () => {
+      // How errors arrive through Shopify's proxy: HTTP 200, ok false.
+      const { widget, fill, submit } = await openForm(() =>
+        jsonResponse({
+          ok: false,
+          error: { code: "unavailable", status: 409, message: "Order #1005 has shipped, so its address can no longer be changed here." },
+        }),
       );
       fill(DETAILS);
       await submit();
+      expect(widget.$(".sa-order-form .sa-order-status-error").textContent).toBe(
+        "Order #1005 has shipped, so its address can no longer be changed here.",
+      );
+    });
+
+    it("keeps the form on screen when the store cannot be reached", async () => {
+      const { widget, field, fill, submit } = await openForm(() => Promise.reject(new TypeError("Failed to fetch")));
+      fill(DETAILS);
       await submit();
 
-      expect(widget.$(".sa-order-status-error").textContent).toMatch(/couldn't reach the store/);
+      expect(widget.$(".sa-order-form .sa-order-status-error").textContent).toMatch(/couldn't reach the store/);
       expect(widget.$<HTMLButtonElement>(".sa-order-form button[type=submit]").disabled).toBe(false);
-      expect(fetchMock.mock.calls.some((call) => call[0] === "/cart/clear.js")).toBe(false);
-    });
-
-    it("sends subscriptions and customised items to the checkout instead", async () => {
-      const { widget, fill, submit } = await openForm(() => jsonResponse({ ok: true }));
-      cartMock.mockImplementation(() =>
-        jsonResponse(
-          cartJson({ ...cartLine(101, 1, "Trail Mug", 1800), properties: { Engraving: "Ada" } } as never),
-        ),
-      );
-      fill(DETAILS);
-      await submit();
-
-      expect(widget.$(".sa-order-status-error").textContent).toBe(
-        "This order can't be placed here. Please use the checkout instead.",
-      );
-      expect(orderPosts()).toHaveLength(0);
+      expect(field("address1").value).toBe("350 Fifth Avenue");
     });
 
     it("offers to fill in test details on a development store only", async () => {
-      const real = await openForm(() => jsonResponse({ ok: true }));
+      const real = await openForm(saved);
       expect(real.widget.root.querySelector(".sa-order-test")).toBeNull();
 
       window.sessionStorage.clear();
       window.localStorage.clear();
-      const { widget, field } = await openForm(() => jsonResponse({ ok: true }), { testMode: true });
+      const { widget, field } = await openForm(saved, { config: { testMode: true } });
       const fill = widget.$<HTMLButtonElement>(".sa-order-test");
       expect(fill.textContent).toBe("Fill test details");
 
       fill.click();
       expect(field("firstName").value).toBe("Test");
       expect(field("lastName").value).toBe("Buyer");
-      expect(field("email").value).toBe("test.buyer@example.com");
       expect(field("address1").value).toBe("742 Evergreen Terrace");
       expect(field("province").value).toBe("IL");
       expect(field("zip").value).toBe("62704");
-
-      // The details follow the country chosen.
-      field("countryCode").value = "CA";
-      fill.click();
-      expect(field("city").value).toBe("Ottawa");
-      expect(field("zip").value).toBe("K2P 2L8");
+      // The details follow the order's country.
+      window.sessionStorage.clear();
+      window.localStorage.clear();
+      const canada = await openForm(saved, { config: { testMode: true }, country: "CA" });
+      canada.widget.$<HTMLButtonElement>(".sa-order-test").click();
+      expect(canada.field("city").value).toBe("Ottawa");
+      expect(canada.field("zip").value).toBe("K2P 2L8");
     });
 
     describe("states and provinces", () => {
@@ -2002,17 +1804,13 @@ describe("chat widget", () => {
       };
 
       it("offers the country's states as a list, as the checkout does", async () => {
-        const { widget, field, fill, submit } = await openForm(
-          (body) => jsonResponse({ ok: true, step: "quote", quote: quote(body.shippingRateHandle as string) }),
-          {},
-          addRegions,
-        );
+        const { widget, field, fill, submit } = await openForm(saved, { setup: addRegions });
 
         const states = field("province") as HTMLSelectElement;
         expect(states.tagName).toBe("SELECT");
         expect(states.required).toBe(true);
         expect(Array.from(states.options).map((option) => option.textContent)).toEqual([
-          "Select\u2026",
+          "Select…",
           "Illinois",
           "New York",
           "Texas",
@@ -2020,44 +1818,44 @@ describe("chat widget", () => {
         // Whatever the page's list holds is shown as text, never as markup.
         expect(widget.root.querySelector(".sa-order-form img")).toBeNull();
 
-        fill({ ...DETAILS, countryCode: "US", province: "Illinois" });
+        fill({ ...DETAILS, province: "Illinois" });
         await submit();
         expect(orderPosts()[0].address).toMatchObject({ countryCode: "US", province: "Illinois" });
       });
 
       it("swaps the list when the country changes and keeps what was typed", async () => {
-        const { field } = await openForm(() => jsonResponse({ ok: true }), {}, addRegions);
+        // A card that names no country leaves the choice of one open.
+        const { field } = await openForm(saved, { country: null, setup: addRegions });
+        expect(field("countryCode").parentElement!.hidden).toBe(false);
+        expect(field("countryCode").value).toBe("CA");
         field("lastName").value = "Lovelace";
-        (field("province") as HTMLSelectElement).value = "Illinois";
+        (field("province") as HTMLSelectElement).value = "Ontario";
 
         const country = field("countryCode");
-        country.value = "CA";
+        country.value = "US";
         country.dispatchEvent(new Event("change", { bubbles: true }));
 
         const states = field("province") as HTMLSelectElement;
         expect(Array.from(states.options).map((option) => option.textContent)).toEqual([
-          "Select\u2026",
-          "Ontario",
-          "Québec",
+          "Select…",
+          "Illinois",
+          "New York",
+          "Texas",
         ]);
-        // The old country's state does not carry over.
+        // The old country's province does not carry over.
         expect(states.value).toBe("");
         expect(field("lastName").value).toBe("Lovelace");
-        expect(field("countryCode").value).toBe("CA");
+        expect(field("countryCode").value).toBe("US");
       });
 
       it("asks for the state as text when the country has no list", async () => {
         // No list on the page at all.
-        const none = await openForm(() => jsonResponse({ ok: true }));
+        const none = await openForm(saved);
         expect(none.field("province").tagName).toBe("INPUT");
       });
 
       it("picks the test address's state from the list", async () => {
-        const { widget, field } = await openForm(
-          () => jsonResponse({ ok: true }),
-          { testMode: true },
-          addRegions,
-        );
+        const { widget, field } = await openForm(saved, { config: { testMode: true }, setup: addRegions });
         widget.$<HTMLButtonElement>(".sa-order-test").click();
 
         expect((field("province") as HTMLSelectElement).value).toBe("Illinois");
@@ -2066,21 +1864,38 @@ describe("chat widget", () => {
     });
 
     it("closes from Cancel and opens only one form at a time", async () => {
-      const { widget } = await openForm(() => jsonResponse({ ok: true }));
+      const { widget, open } = await openForm(saved);
 
-      widget.$<HTMLButtonElement>(".sa-order-here").click();
-      await flush();
+      // Pressing the card's button again does not open a second form.
+      await open();
       expect(widget.all(".sa-order-form")).toHaveLength(1);
 
       const cancel = widget.all(".sa-order-form button").find((button) => button.textContent === "Cancel")!;
       cancel.click();
       expect(widget.root.querySelector(".sa-order-form")).toBeNull();
-      // The summary is still there, with paying online as the quiet second way.
-      expect(widget.$(".sa-order-here").textContent).toBe("Order here, pay on delivery");
-      const online = widget.$<HTMLAnchorElement>(".sa-order-online");
-      expect(online.getAttribute("href")).toBe("/checkout");
-      expect(online.target).toBe("_blank");
-      expect(widget.root.querySelector(".sa-order-checkout")).toBeNull();
+      // The card is still there, to open the form again from.
+      expect(widget.root.querySelector(".sa-action")).not.toBeNull();
+      await open();
+      expect(widget.all(".sa-order-form")).toHaveLength(1);
+    });
+
+    it("falls back to every field when the app cannot say what the form needs", async () => {
+      // Address changes switched off since the card was shown, or the app unreachable.
+      const { labels, field } = await openForm(saved, {
+        asks: { ok: false, error: { code: "disabled", status: 403, message: "Not available." } },
+      });
+      // The order's own country, with the full set of fields; the app checks what is sent.
+      expect(field("countryCode").value).toBe("US");
+      expect(labels().slice(1)).toEqual([
+        "First name (optional)",
+        "Last name",
+        "Address",
+        "Apartment, suite, etc. (optional)",
+        "City",
+        "State / province",
+        "Postal code",
+        "Phone",
+      ]);
     });
   });
 

@@ -371,7 +371,6 @@ export async function handleChatTurn(
       facts = await getStoredFacts(input.shop, deps.db);
     }
   }
-  const chatOrders = settings.allowChatOrders && settings.allowCheckout;
   // The merchant's own picks about delivery: what the shipping tool falls
   // back on for anything Shopify does not answer.
   const shippingPicks = describeShippingPicks(settings, facts);
@@ -404,7 +403,7 @@ export async function handleChatTurn(
       allowOrderCancel: settings.allowOrderCancel,
       allowAddressChange: settings.allowAddressChange,
       allowOrderEdit: settings.allowOrderEdit,
-      cashOnDelivery: chatOrders ? "chat" : settings.codAvailable,
+      cashOnDelivery: settings.codAvailable,
     },
     // Shipping rates are asked of Shopify in the turn the assistant needs them.
     shippingRates:
@@ -461,8 +460,6 @@ export async function handleChatTurn(
       addToCart: tools.some((tool) => tool.name === "add_to_cart"),
       checkout: tools.some((tool) => tool.name === "start_checkout"),
       placeOrder: tools.some((tool) => tool.name === "place_order"),
-      chatOrders:
-        settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
       returns: tools.some((tool) => tool.name === "request_return"),
       cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
       changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),

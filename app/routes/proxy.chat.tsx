@@ -33,7 +33,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return errorJson("not_installed", "Chat is not available for this store.", 404);
   }
   const settings = await getSettings(session.shop);
-  const chatOrders = settings.allowChatOrders && settings.allowCheckout;
   return Response.json(
     {
       ok: true,
@@ -41,15 +40,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ready: getLlmStatus().ready,
       title: settings.assistantName,
       greeting: settings.greeting,
-      // Whether the order summary offers "Order here, pay on delivery".
-      chatOrders,
       // Whether shoppers can give the chat a thumbs-up or thumbs-down.
       ratings: settings.chatRatings,
       // Whether product cards offer "Buy now", which starts an order.
       buyNow: settings.allowCheckout && settings.allowAddToCart,
-      // On a development store the order form offers to fill in test details.
+      // On a development store the address form offers to fill in test details.
       testMode:
-        chatOrders && admin
+        settings.allowAddressChange && admin
           ? await isDevelopmentStore(session.shop, toGraphqlFn(admin, "Admin"))
           : false,
     },
