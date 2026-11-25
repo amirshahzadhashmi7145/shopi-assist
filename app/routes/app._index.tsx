@@ -19,7 +19,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!setup.started) throw redirect("/app/setup");
 
   const [settings, analytics] = await Promise.all([getSettings(shop), chatAnalytics(db, shop)]);
+  // Which model answers, and how it is connected, is the app operator's
+  // business: the merchant is told only whether the assistant can answer.
   const llm = getLlmStatus();
+  if (!llm.ready) console.warn(`[shopi-assist] assistant not ready: ${llm.problem}`);
 
   return {
     shop,
@@ -32,7 +35,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     analytics,
     retentionDays: settings.retentionDays,
     chatOrders: settings.allowChatOrders,
-    llm: { ready: llm.ready, model: llm.model, provider: llm.provider, problem: llm.problem },
+    llmReady: llm.ready,
   };
 };
 
@@ -50,7 +53,7 @@ export default function Home() {
     analytics,
     retentionDays,
     chatOrders,
-    llm,
+    llmReady,
     setupCompleted,
     progress,
   } = useLoaderData<typeof loader>();
@@ -62,7 +65,7 @@ export default function Home() {
   const storefrontUrl = `https://${shop}`;
 
   const widgetLive = embedStatus === "active";
-  const allSet = widgetLive && llm.ready && chatEnabled;
+  const allSet = widgetLive && llmReady && chatEnabled;
 
   return (
     <s-page heading="Shopi Assist">
@@ -107,10 +110,11 @@ export default function Home() {
         </s-banner>
       )}
 
-      {!llm.ready && (
-        <s-banner tone="warning" heading="The assistant can't answer yet">
-          {llm.problem} Add it to the app server&apos;s environment and restart the app.
-          Until then, shoppers who open the chat see a short &quot;not set up yet&quot; message.
+      {!llmReady && (
+        <s-banner tone="warning" heading="The assistant can't answer right now">
+          This is a problem on our side, not in your store, and nothing needs changing in
+          your settings. Until it is fixed, shoppers who open the chat see a short message
+          saying it is not available.
         </s-banner>
       )}
 
@@ -153,27 +157,7 @@ export default function Home() {
 
           <s-stack direction="block" gap="small-200">
             <s-stack direction="inline" gap="small" alignItems="center">
-              <s-heading>2. Connect the AI model</s-heading>
-              {llm.ready ? (
-                <s-badge tone="success">Connected</s-badge>
-              ) : (
-                <s-badge tone="critical">Not connected</s-badge>
-              )}
-            </s-stack>
-            <s-paragraph>
-              {llm.ready
-                ? llm.provider === "mock"
-                  ? "Running in mock mode: replies are canned test responses, not real AI answers."
-                  : `Using ${llm.model}.`
-                : "The model's API key is set on the app server, not on this page, so it is never exposed to browsers."}
-            </s-paragraph>
-          </s-stack>
-
-          <s-divider />
-
-          <s-stack direction="block" gap="small-200">
-            <s-stack direction="inline" gap="small" alignItems="center">
-              <s-heading>3. Tune how it answers</s-heading>
+              <s-heading>2. Tune how it answers</s-heading>
               {chatEnabled ? (
                 <s-badge tone="success">Chat enabled</s-badge>
               ) : (

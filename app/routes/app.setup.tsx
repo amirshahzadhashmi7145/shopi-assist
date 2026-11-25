@@ -78,7 +78,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     progress: setupProgress(settings),
     completed: state.completed,
     llmReady: llm.ready,
-    llmProblem: llm.problem ?? null,
   };
 };
 
@@ -111,7 +110,7 @@ const PREVIEW_SUGGESTIONS = [
 ];
 
 export default function Setup() {
-  const { step, shop, apiKey, settings, progress, completed, llmReady, llmProblem } =
+  const { step, shop, apiKey, settings, progress, completed, llmReady } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -236,8 +235,8 @@ export default function Setup() {
               <s-stack direction="block" gap="small-200">
                 <s-heading>Try it as a shopper</s-heading>
                 {!llmReady && (
-                  <s-banner tone="warning" heading="The assistant can't answer yet">
-                    {llmProblem} Add it to the app server&apos;s environment and restart the app.
+                  <s-banner tone="warning" heading="The assistant can't answer right now">
+                    This is a problem on our side, not in your store. Please try again in a little while.
                   </s-banner>
                 )}
                 <AssistantChat

@@ -15,7 +15,7 @@ import { authenticate } from "../shopify.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   const llm = getLlmStatus();
-  return { llmReady: llm.ready, llmProblem: llm.problem ?? null };
+  return { llmReady: llm.ready };
 };
 
 export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActionData> => {
@@ -65,13 +65,13 @@ const SUGGESTIONS = [
 ];
 
 export default function StoreAssistant() {
-  const { llmReady, llmProblem } = useLoaderData<typeof loader>();
+  const { llmReady } = useLoaderData<typeof loader>();
 
   return (
     <s-page heading="Store assistant">
       {!llmReady && (
-        <s-banner tone="warning" heading="The assistant can't answer yet">
-          {llmProblem} Add it to the app server&apos;s environment and restart the app.
+        <s-banner tone="warning" heading="The assistant can't answer right now">
+          This is a problem on our side, not in your store. Please try again in a little while.
         </s-banner>
       )}
 
