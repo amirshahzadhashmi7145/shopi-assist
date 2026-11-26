@@ -20,6 +20,8 @@
  *
  * The app is built by this script, not beforehand, because the build has to
  * know the address the app is served at, and here that is a made-up one.
+ * (`npm run smoke` generates the database client first, as `npm run build`
+ * does, so neither this script nor the build runs against a stale one.)
  * `build/` is left holding that build: run `npm run build` again before
  * using it for anything else.
  *

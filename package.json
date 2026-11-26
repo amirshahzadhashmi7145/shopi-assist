@@ -22,7 +22,7 @@
     "typecheck": "prisma generate && react-router typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node scripts/smoke-test.mjs",
+    "smoke": "prisma generate && node scripts/smoke-test.mjs",
     "widget:preview": "node scripts/widget-preview.mjs",
     "widget:stamp": "node scripts/stamp-widget.mjs",
     "seed:test-orders": "node scripts/seed-test-orders.mjs",

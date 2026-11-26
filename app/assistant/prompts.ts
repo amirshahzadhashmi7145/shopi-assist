@@ -163,14 +163,19 @@ function shopperPrompt(input: PromptInput): string {
     returns: false,
     placeOrder: true,
   };
-  // The chat only starts an order. Everything after the one button, Go to
-  // checkout, is the checkout page's business: who, where, how it is
-  // delivered and how it is paid for. So the assistant does not go into any
-  // of that while ordering, whatever way of paying the shopper has in mind.
-  const noPaymentRule =
-    "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. The chat only starts the order: the summary has one button, Go to checkout, and everything else happens on that page: the email, the delivery address, the delivery option and the way of paying. So when a shopper orders, never ask how they want to pay, and do not look up or discuss payment methods for it. If they name one (card, cash on delivery, anything else), do not repeat it back as the way the order will be paid: say only that they choose how to pay on the checkout page, and go on with the order. An order exists only once they finish at the checkout, so never say an order has been placed.";
+  // The chat only starts an order. Everything after the Go to checkout
+  // button is the checkout page's business: who, where, how it is delivered
+  // and how it is paid for. So the assistant does not go into any of that
+  // while ordering, whatever way of paying the shopper has in mind. A shopper
+  // who asks which ways of paying the store takes is asking a question, and
+  // gets an answer where there is a tool for it: that is not part of ordering.
+  const noPaymentRule = `You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. The chat only starts the order: the way on from the summary is its Go to checkout button, and everything else happens on that page: the email, the delivery address, the delivery option and the way of paying. So when a shopper orders, never ask how they want to pay, and do not look up or discuss payment methods for it. If they name one (card, cash on delivery, anything else), do not repeat it back as the way the order will be paid: say only that they choose how to pay on the checkout page, and go on with the order.${
+    abilities.payment
+      ? " This comes before the rule on payment below: your payment tool is only for a shopper who asks which ways of paying the store takes."
+      : ""
+  } An order exists only once they finish at the checkout, so never say an order has been placed.`;
   const checkoutRule = abilities.placeOrder
-    ? `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with one button, Go to checkout, so do not add the same items to the cart separately. The summary has what they just asked for ticked as the order; anything that was already in their cart is listed under it, unticked, and they can tick it to add it. They can change quantities or remove lines there too, without leaving the chat, so do not describe older cart items as part of the order. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
+    ? `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with a Go to checkout button, so do not add the same items to the cart separately. The summary has what they just asked for ticked as the order; anything that was already in their cart is listed under it, unticked, and they can tick it to add it. They can change quantities or remove lines there too, without leaving the chat, so do not describe older cart items as part of the order. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
     : abilities.checkout
       ? `- When the shopper is ready to buy, show them the checkout summary and its button. ${noPaymentRule}`
       : "- You cannot start a checkout. Tell shoppers to open their cart and check out there.";

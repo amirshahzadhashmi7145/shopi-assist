@@ -323,10 +323,13 @@ describe("system prompts", () => {
     // No order form in the chat to point to, and no details taken in it.
     expect(prompt).not.toMatch(/Order here|order form|pay on delivery' button/);
     expect(prompt).toMatch(/never ask for an address, phone number or card details in chat/);
-    // One button, and everything after it is the checkout page's business.
+    // One way on, and everything after it is the checkout page's business.
     expect(prompt).toContain(
-      "The chat only starts the order: the summary has one button, Go to checkout, and everything else happens on that page: the email, the delivery address, the delivery option and the way of paying.",
+      "The chat only starts the order: the way on from the summary is its Go to checkout button, and everything else happens on that page: the email, the delivery address, the delivery option and the way of paying.",
     );
+    // It does not say the summary has no other control: lines can still be changed or removed there.
+    expect(prompt).not.toContain("has one button");
+    expect(prompt).toContain("They can change quantities or remove lines there too");
     // The way of paying is not gone into while ordering, whichever it is.
     expect(prompt).toContain(
       "So when a shopper orders, never ask how they want to pay, and do not look up or discuss payment methods for it. If they name one (card, cash on delivery, anything else), do not repeat it back as the way the order will be paid: say only that they choose how to pay on the checkout page, and go on with the order.",
@@ -334,7 +337,19 @@ describe("system prompts", () => {
     // Nothing makes the order wait on whether the store offers a way of paying.
     expect(prompt).not.toMatch(/if the store offers it|Whether the store offers it/);
     expect(prompt).toMatch(/never say an order has been placed/);
-    expect(prompt).toMatch(/shows an order summary with one button, Go to checkout/);
+    expect(prompt).toMatch(/shows an order summary with a Go to checkout button/);
+    // No payment tool here, so none is mentioned.
+    expect(prompt).not.toContain("your payment tool");
+    // With one, a shopper's question about ways of paying is still answered:
+    // which rule wins while ordering is said, not left to chance.
+    const withTool = buildSystemPrompt({
+      ...input,
+      audience: "shopper",
+      abilities: { ...abilities, payment: true },
+    });
+    expect(withTool).toContain(
+      "This comes before the rule on payment below: your payment tool is only for a shopper who asks which ways of paying the store takes.",
+    );
 
     // The same holds where the assistant can only show the checkout summary.
     const checkoutOnly = buildSystemPrompt({

@@ -1427,7 +1427,7 @@ describe("the payment tool", () => {
       const answer = await run(storefront);
       expect(answer).not.toHaveProperty("cashOnDelivery");
       expect(answer.note).toContain(
-        "say that the checkout page shows every way of paying the store offers, and do not say that it is or is not offered",
+        "say that the checkout page shows every way of paying the store offers, and do not say that it is or is not offered. Never say a particular way is among them, or is not.",
       );
       // Nothing suggests an order can be placed or paid for in the chat.
       expect(JSON.stringify(answer)).not.toMatch(/in this chat|order here/i);

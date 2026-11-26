@@ -394,7 +394,7 @@ const getPaymentMethods = defineTool({
     // itself, so nothing here says whether it is offered, and neither may the
     // assistant.
     const elsewhere =
-      " Any other way of paying, such as cash on delivery or a bank transfer, is not something Shopify tells apps about: if the shopper asks about one, say that the checkout page shows every way of paying the store offers, and do not say that it is or is not offered.";
+      " Any other way of paying, such as cash on delivery or a bank transfer, is not something Shopify tells apps about, so you do not know whether this store offers it. If the shopper asks about one or has mentioned one, say that the checkout page shows every way of paying the store offers, and do not say that it is or is not offered. Never say a particular way is among them, or is not.";
     return {
       output: {
         cards,

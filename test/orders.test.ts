@@ -322,7 +322,7 @@ describe("checkout for the ticked items", () => {
     expect(store.calls).toHaveLength(0);
   });
 
-  it("is limited per visitor", async () => {
+  it("is limited per visitor address", async () => {
     const store = cartApi(() => created());
     for (let attempt = 0; attempt < 30; attempt += 1) await checkout(store);
     const limited = await failure(checkout(store));

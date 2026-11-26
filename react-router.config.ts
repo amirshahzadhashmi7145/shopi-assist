@@ -20,7 +20,9 @@
  *     address each time it starts, and which a host can set for a build;
  *   - `application_url` in `shopify.app.toml` (and any `shopify.app.*.toml`),
  *     which is where a deployed app's address is written down for Shopify
- *     anyway, so a production build knows it with nothing extra to set.
+ *     anyway. Until it holds the real address (a new app has Shopify's
+ *     placeholder there, which does not count), a production build has to be
+ *     given `SHOPIFY_APP_URL`: the Dockerfile takes it as a build argument.
  *
  * It is read when the dev server starts and when the app is built, and is
  * fixed in the build from then on.

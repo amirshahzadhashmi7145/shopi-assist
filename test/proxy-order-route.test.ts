@@ -56,6 +56,8 @@ beforeEach(() => {
     step: "checkout",
     checkoutUrl: "https://real-shop.example/cart/c/abc?key=1",
   });
+  // Reset here too, so no test depends on which ran before it.
+  handleOrderAction.mockReset();
   listDeliveryCountries.mockReset().mockResolvedValue({
     countries: [{ code: "CA", name: "Canada", form: 0 }],
     forms: [[[{ name: "lastName", label: "Last name", required: true }]]],

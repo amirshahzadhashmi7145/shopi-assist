@@ -42,7 +42,9 @@ On a development store the address form (for a change of delivery address) shows
 | Remove an item | "Remove the [product name]", or press Remove on a summary line | Summary updates |
 | Empty the cart | "Clear the cart" | "Your cart is empty now." |
 | Checkout | "Checkout" | Summary of the cart |
-| Pay on delivery, or by card | "I want to buy [product], cash on delivery" | The same order summary with one button, Go to checkout; the bot says payment is chosen on the checkout page, and never asks for an address, an email or how you want to pay |
+| Pay on delivery | "I want to buy [product], cash on delivery" | The same order summary with its Go to checkout button; the bot says payment is chosen on the checkout page, and never asks for an address, an email or how you want to pay |
+| Pay by card | "I want to buy [product] and pay by card" | The same |
+| Which ways to pay | "Do you offer cash on delivery?", "How can I pay?" | The cards and wallets Shopify reports, if any, and that the checkout page shows every way of paying the store offers |
 | Order status | "Where is my order #1002? My email is test.buyer@example.com" | Payment and delivery status |
 | Follow-up on a looked-up order | After an order status answer, "where is it?" | Answers again without asking for the email |
 | Order status, number only | Tick "Let shoppers check status with the order number alone", then "status of order 1002" | Date, payment and delivery status, and an offer of tracking with email or phone |
