@@ -218,7 +218,12 @@ function ShoppingSection({ settings, facts }: SectionProps) {
 // ---------------------------------------------------------------------------
 
 function OrdersSection({ settings, errors, draft }: SectionProps) {
-  const { values } = draft.state;
+  const { values, ui } = draft.state;
+  // The address form's options stay out of the way until asked for, unless
+  // one of them was changed or has something wrong with it.
+  const formOptions =
+    ui.open.addressForm ||
+    Boolean(errors.orderFirstName || errors.orderCompany || errors.orderAddress2);
   const readsOrders =
     values.orderLookupEnabled ||
     values.allowOrderCancel ||
@@ -229,6 +234,10 @@ function OrdersSection({ settings, errors, draft }: SectionProps) {
   return (
     <s-section heading="Order management">
       <s-stack direction="block" gap="base">
+        <s-paragraph color="subdued">
+          Everything here is for orders that are already placed. New orders always go through
+          your checkout page.
+        </s-paragraph>
         <Toggle
           name="orderLookupEnabled"
           label="Order status"
@@ -258,13 +267,21 @@ function OrdersSection({ settings, errors, draft }: SectionProps) {
         <Toggle
           name="allowAddressChange"
           label="Delivery address changes"
-          details="Before shipping, within the same country. The shopper fills in a form and the order is tagged for you."
+          details="Before an order ships, the shopper can correct its delivery address in a short form in the chat (same country only). The order is tagged for you."
           on={settings.allowAddressChange}
         />
-        <Reveal open={values.allowAddressChange} nested>
+        {/* Nothing to set up for most stores, so the options wait behind a button. */}
+        <Reveal open={values.allowAddressChange && !formOptions}>
+          <s-stack direction="inline">
+            <s-button variant="tertiary" icon="settings" onClick={() => draft.open("addressForm")}>
+              Address form options
+            </s-button>
+          </s-stack>
+        </Reveal>
+        <Reveal open={values.allowAddressChange && formOptions} nested>
           <s-text color="subdued">
-            The address form follows each country&apos;s own layout. These three are yours to
-            set, because Shopify doesn&apos;t let apps read them from your checkout settings.
+            The form already follows each country&apos;s address layout. Change these only if
+            you changed the same options in your Shopify checkout settings.
           </s-text>
           <Columns>
             <Pick

@@ -12,6 +12,7 @@
 import {
   CUSTOM_PREFIX,
   GREETING_PRESETS,
+  ORDER_FORM_CHOICES,
   RETURN_CONDITIONS,
   TOPICS,
   readTopicAnswer,
@@ -19,8 +20,11 @@ import {
 } from "../../assistant/setting-options";
 import type { AssistantSettings } from "../../assistant/settings.server";
 
-/** Text boxes that stay away until the merchant asks for them. */
-export type OpenKey = "returnPolicy" | "shippingInfo" | "faq" | "instructions";
+/**
+ * Parts that stay away until the merchant asks for them: the text boxes for
+ * their own words, and the address form's options, which few stores change.
+ */
+export type OpenKey = "returnPolicy" | "shippingInfo" | "faq" | "instructions" | "addressForm";
 
 export interface DraftUi {
   /** Which welcome message: a preset's position as text, or "custom". */
@@ -88,6 +92,12 @@ export function initialDraft(settings: AssistantSettings): DraftState {
         shippingInfo: settings.shippingInfo.length > 0,
         faq: settings.faq.length > 0,
         instructions: settings.instructions.length > 0,
+        // The address form's options: on show only once one of them is no
+        // longer what Shopify's own checkout starts with.
+        addressForm:
+          settings.orderFirstName !== ORDER_FORM_CHOICES.orderFirstName[0] ||
+          settings.orderCompany !== ORDER_FORM_CHOICES.orderCompany[0] ||
+          settings.orderAddress2 !== ORDER_FORM_CHOICES.orderAddress2[0],
       },
     },
   };

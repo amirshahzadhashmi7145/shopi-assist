@@ -288,13 +288,35 @@ describe("a feature's own options appear only once it is on", () => {
     ]);
   });
 
-  it("asks what the address form needs only once address changes are on", () => {
+  it("says the order settings are for orders already placed, not for checkout", () => {
+    const page = open();
+    const orders = page.find('[data-section="orders"]')!;
+    expect(orders.textContent).toContain(
+      "Everything here is for orders that are already placed. New orders always go through your checkout page.",
+    );
+    expect(page.field("allowAddressChange").getAttribute("details")).toBe(
+      "Before an order ships, the shopper can correct its delivery address in a short form in the chat (same country only). The order is tagged for you.",
+    );
+  });
+
+  it("keeps the address form's options behind a button, since most stores change none of them", () => {
     const page = open();
     const picks = ["orderFirstName", "orderCompany", "orderAddress2"];
+    const optionsButton = () =>
+      [...page.host.querySelectorAll("s-button")].find((button) => button.textContent === "Address form options");
     for (const name of picks) expect(page.isShown(name)).toBe(false);
+    // The button belongs to address changes: nothing to offer while they are off.
+    expect(page.shown(optionsButton()!)).toBe(false);
 
+    // Switching address changes on adds one button, and nothing to pick or type.
     page.toggle("allowAddressChange", true);
+    expect(page.shown(optionsButton()!)).toBe(true);
+    for (const name of picks) expect(page.isShown(name)).toBe(false);
+    expect(page.typedOnShow()).toEqual(["assistantName"]);
+
+    page.press("Address form options");
     for (const name of picks) expect(page.isShown(name)).toBe(true);
+    expect(page.shown(optionsButton()!)).toBe(false);
     // Three picks from lists: still nothing to type.
     expect(page.typedOnShow()).toEqual(["assistantName"]);
 
@@ -305,6 +327,12 @@ describe("a feature's own options appear only once it is on", () => {
       expect(page.field(name).closest("form")).not.toBeNull();
       expect(page.field(name).closest('[data-section="orders"]')).not.toBeNull();
     }
+
+    // A store that changed one of them sees them straight away, with no button to press.
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const changed = open({ settings: { ...DEFAULTS, allowAddressChange: true, orderCompany: "required" } });
+    for (const name of picks) expect(changed.isShown(name)).toBe(true);
   });
 
   it("warns about protected customer data only while something reads orders", () => {

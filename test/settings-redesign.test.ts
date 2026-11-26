@@ -973,8 +973,19 @@ describe("the merchant's unsaved picks", () => {
       shippingInfo: false,
       faq: false,
       instructions: false,
+      addressForm: false,
     });
     expect(openBox(initialDraft(DEFAULT_SETTINGS), "faq").ui.open.faq).toBe(true);
+    // The address form's options are on show from the start only where one of
+    // them is no longer what Shopify's checkout starts with.
+    for (const changed of [
+      { orderFirstName: "required" as const },
+      { orderCompany: "optional" as const },
+      { orderAddress2: "hidden" as const },
+    ]) {
+      expect(initialDraft({ ...DEFAULT_SETTINGS, ...changed }).ui.open.addressForm).toBe(true);
+    }
+    expect(openBox(initialDraft(DEFAULT_SETTINGS), "addressForm").ui.open.addressForm).toBe(true);
   });
 
   it("follow each kind of control", () => {
