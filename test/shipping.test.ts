@@ -1401,42 +1401,43 @@ describe("the shipping tool", () => {
 
 describe("the payment tool", () => {
   const tool = shopperTools.find((entry) => entry.name === "get_payment_methods")!;
-  const settings = toolContext().settings;
-  const run = async (storefront: ToolContext["storefront"], cashOnDelivery?: "yes" | "no" | "") =>
-    (await tool.run({}, toolContext({ storefront, settings: { ...settings, cashOnDelivery } })))
-      .output as Record<string, unknown>;
+  const run = async (storefront: ToolContext["storefront"]) =>
+    (await tool.run({}, toolContext({ storefront }))).output as Record<string, unknown>;
   const checkout = (cards: string[], wallets: string[]) =>
     fakeGraphql({ shop: { paymentSettings: { acceptedCardBrands: cards, supportedDigitalWallets: wallets } } });
 
   it("reads the checkout's cards and wallets from Shopify when asked", async () => {
     const storefront = checkout(["VISA", "AMERICAN_EXPRESS"], ["SHOPIFY_PAY", "APPLE_PAY"]);
-    expect(await run(storefront, "yes")).toMatchObject({
+    const answer = await run(storefront);
+    expect(answer).toMatchObject({
       cards: ["Visa", "American Express"],
       wallets: ["Shop Pay", "Apple Pay"],
-      // Chosen on the checkout page, like the cards and wallets: never in the chat.
-      cashOnDelivery: "offered: the shopper picks it as the way to pay on the store's checkout page",
     });
+    // Nothing but what Shopify said, and how to read it.
+    expect(Object.keys(answer).sort()).toEqual(["cards", "note", "wallets"]);
     expect(storefront.calls.map((call) => call.query)).toEqual([PAYMENT_SETTINGS_QUERY]);
     expect(toolsFor(shopperTools, toolContext()).map((entry) => entry.name)).not.toContain(
       "get_payment_methods",
     );
   });
 
-  it("says what is known about cash on delivery, and no more", async () => {
-    const storefront = checkout(["VISA"], []);
-    expect((await run(storefront, "yes")).cashOnDelivery).toMatch(/on the store's checkout page/);
-    expect((await run(storefront, "no")).cashOnDelivery).toBe("not offered");
-    const unknown = "not known: the store has not said. The checkout page shows whether it can be chosen";
-    expect((await run(storefront, "")).cashOnDelivery).toBe(unknown);
-    expect((await run(storefront)).cashOnDelivery).toBe(unknown);
-    // Whatever the answer, nothing suggests the order can be placed in the chat.
-    for (const pick of ["yes", "no", ""] as const) {
-      expect(JSON.stringify(await run(storefront, pick))).not.toMatch(/in this chat|order here/i);
+  it("leaves cash on delivery, and any way of paying Shopify does not report, to the checkout page", async () => {
+    // No setting says whether the store offers it: the checkout shows it if it does.
+    for (const storefront of [checkout(["VISA"], []), fakeGraphql({ shop: { paymentSettings: null } })]) {
+      const answer = await run(storefront);
+      expect(answer).not.toHaveProperty("cashOnDelivery");
+      expect(answer.note).toContain(
+        "say that the checkout page shows every way of paying the store offers, and do not say that it is or is not offered",
+      );
+      // Nothing suggests an order can be placed or paid for in the chat.
+      expect(JSON.stringify(answer)).not.toMatch(/in this chat|order here/i);
     }
+    expect(tool.description).not.toMatch(/cash on delivery/i);
+    expect(tool.description).toContain("It is not needed to start an order");
   });
 
   it("guesses no payment method when Shopify lists none", async () => {
-    const answer = await run(fakeGraphql({ shop: { paymentSettings: null } }), "");
+    const answer = await run(fakeGraphql({ shop: { paymentSettings: null } }));
     expect(answer).toMatchObject({ cards: [], wallets: [] });
     expect(answer.note).toContain("do not guess any");
   });

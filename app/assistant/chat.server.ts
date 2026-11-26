@@ -403,7 +403,6 @@ export async function handleChatTurn(
       allowOrderCancel: settings.allowOrderCancel,
       allowAddressChange: settings.allowAddressChange,
       allowOrderEdit: settings.allowOrderEdit,
-      cashOnDelivery: settings.codAvailable,
     },
     // Shipping rates are asked of Shopify in the turn the assistant needs them.
     shippingRates:

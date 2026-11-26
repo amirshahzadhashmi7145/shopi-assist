@@ -182,7 +182,6 @@ describe("store policies as picks", () => {
         refundMethod: "credit",
         shippingFee: "free_over",
         shippingAmount: " 75 ",
-        codAvailable: "no",
       },
       db,
     );
@@ -194,7 +193,6 @@ describe("store policies as picks", () => {
       refundMethod: "credit",
       shippingFee: "free_over",
       shippingAmount: "75",
-      codAvailable: "no",
     });
     // Stored as plain text, and only for this shop.
     expect((await db.shopSettings.findUnique({ where: { shop: SHOP_A } }))!.returnConditions).toBe(
@@ -210,7 +208,6 @@ describe("store policies as picks", () => {
         exchanges: "maybe",
         refundMethod: "cash",
         shippingFee: "pigeon",
-        codAvailable: "sometimes",
         returnConditions: ["unused", "sniffed"],
       },
       db,
@@ -218,7 +215,6 @@ describe("store policies as picks", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(Object.keys(result.errors).sort()).toEqual([
-        "codAvailable",
         "exchanges",
         "refundMethod",
         "returnConditions",
@@ -281,7 +277,6 @@ describe("store policies as picks", () => {
       refundMethod: "either",
       shippingFee: "free_over",
       shippingAmount: "75",
-      codAvailable: "yes",
     };
     expect(describeQuickPolicies(settings).split("\n")).toEqual([
       "Returns: accepted within 30 days of delivery.",
@@ -289,8 +284,9 @@ describe("store policies as picks", () => {
       "Return shipping: paid by the customer.",
       "Refunds: the customer chooses between the original payment method and store credit, once the store approves the return.",
       "Exchanges: the store exchanges items. The shopper contacts the store to arrange one.",
-      "Cash on delivery: available. The shopper chooses it at checkout.",
     ]);
+    // Nothing about paying on delivery: the checkout page shows what the store offers.
+    expect(describeQuickPolicies(settings)).not.toMatch(/cash on delivery/i);
     // What delivery costs is asked of Shopify when a shopper asks. The pick is
     // kept apart, for when Shopify cannot say.
     expect(describeShippingPicks(settings, FACTS)).toEqual({
@@ -333,16 +329,6 @@ describe("store policies as picks", () => {
       "Exchanges: not offered.",
     ]);
 
-    // Cash on delivery is said as the merchant picked it, whatever else is
-    // switched on: it is one more way of paying at the checkout.
-    for (const allowCheckout of [true, false]) {
-      expect(describeQuickPolicies({ ...DEFAULT_SETTINGS, allowCheckout, codAvailable: "no" })).toBe(
-        "Cash on delivery: not available.",
-      );
-      expect(describeQuickPolicies({ ...DEFAULT_SETTINGS, allowCheckout, codAvailable: "yes" })).toBe(
-        "Cash on delivery: available. The shopper chooses it at checkout.",
-      );
-    }
 
     // Nothing about delivery is among the policies. Where the store ships, how
     // soon orders leave and how long they take are Shopify's to say, through
@@ -410,7 +396,7 @@ describe("store policies as picks", () => {
   it("counts the new picks as progress in setup", () => {
     expect(setupProgress(DEFAULT_SETTINGS)).toEqual({ policies: false, details: false });
     expect(setupProgress({ ...DEFAULT_SETTINGS, returnConditions: ["unused"] }).policies).toBe(true);
-    expect(setupProgress({ ...DEFAULT_SETTINGS, codAvailable: "yes" }).policies).toBe(true);
+    expect(setupProgress({ ...DEFAULT_SETTINGS, exchanges: "yes" }).policies).toBe(true);
     expect(setupProgress({ ...DEFAULT_SETTINGS, topics: { sizing: "small" } }).details).toBe(true);
     // Words left behind after switching back to Shopify's description are not in use.
     expect(setupProgress({ ...DEFAULT_SETTINGS, businessDescription: "old words" }).details).toBe(false);

@@ -108,7 +108,6 @@ export const settingsSchema = z.object({
     .string()
     .trim()
     .refine((value) => value === "" || AMOUNT.test(value), "Enter an amount like 50 or 4.99."),
-  codAvailable: choice(POLICY_CHOICES.codAvailable),
 });
 
 export type AssistantSettings = z.infer<typeof settingsSchema>;
@@ -150,7 +149,6 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   shipsTo: "",
   shippingFee: "",
   shippingAmount: "",
-  codAvailable: "",
 };
 
 /** Returns the stored value when it is a known choice, otherwise "not set". */
@@ -221,7 +219,6 @@ export async function getSettings(
     shipsTo: pick(POLICY_CHOICES.shipsTo, row.shipsTo),
     shippingFee: pick(POLICY_CHOICES.shippingFee, row.shippingFee),
     shippingAmount: AMOUNT.test(row.shippingAmount ?? "") ? row.shippingAmount : "",
-    codAvailable: pick(POLICY_CHOICES.codAvailable, row.codAvailable),
   };
 }
 
@@ -399,7 +396,6 @@ export function setupProgress(settings: AssistantSettings) {
         settings.deliveryTime,
         settings.shipsTo,
         settings.shippingFee,
-        settings.codAvailable,
         settings.returnPolicy,
         settings.shippingInfo,
       ].some((value) => value.length > 0) || settings.returnConditions.length > 0,
@@ -463,14 +459,6 @@ export function describeQuickPolicies(settings: AssistantSettings): string {
     lines.push("Exchanges: the store exchanges items. The shopper contacts the store to arrange one.");
   } else if (settings.exchanges === "no") {
     lines.push("Exchanges: not offered.");
-  }
-
-  // Paying on delivery is picked on the store's checkout page, like any other
-  // way of paying: the chat takes no orders itself.
-  if (settings.codAvailable === "yes") {
-    lines.push("Cash on delivery: available. The shopper chooses it at checkout.");
-  } else if (settings.codAvailable === "no") {
-    lines.push("Cash on delivery: not available.");
   }
 
   return lines.join("\n");

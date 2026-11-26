@@ -27,7 +27,6 @@ export const POLICY_CHOICES = {
   deliveryTime: ["", "2_4", "3_5", "5_8", "7_14"],
   shipsTo: ["", "domestic", "international"],
   shippingFee: ["", "free", "free_over", "flat", "calculated"],
-  codAvailable: ["", "yes", "no"],
 } as const;
 
 export type PolicyField = keyof typeof POLICY_CHOICES;
@@ -74,7 +73,6 @@ export const POLICY_LABELS: {
     flat: "Flat rate per order",
     calculated: "Calculated at checkout",
   },
-  codAvailable: { "": NOT_SET, yes: "Offered", no: "Not offered" },
 };
 
 /** The shipping picks that come with an amount: the threshold, or the rate. */
@@ -458,7 +456,6 @@ export const SECTION_FIELDS = {
     "shippingFee",
     "shippingAmount",
     "shippingInfo",
-    "codAvailable",
   ],
   knowledge: ["aboutStore", "businessDescription", "topics", "faq", "instructions"],
 } as const satisfies Record<SectionKey, readonly SettingsField[]>;

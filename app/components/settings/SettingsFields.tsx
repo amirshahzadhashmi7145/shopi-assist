@@ -709,14 +709,10 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
             }
             state={paymentState}
           />
-          <Pick
-            name="codAvailable"
-            label="Cash on delivery"
-            details="Only for shoppers who ask whether you offer it: Shopify doesn't tell apps. Ordering is not affected: every order goes to your checkout, which shows the ways to pay."
-            value={settings.codAvailable}
-            options={policyOptions("codAvailable")}
-            error={errors.codAvailable}
-          />
+          <s-text color="subdued">
+            Nothing to set here. Whatever you offer in Shopify, cash on delivery included, shows
+            on your checkout by itself, and that is where shoppers choose how to pay.
+          </s-text>
         </s-stack>
       </s-section>
     </>

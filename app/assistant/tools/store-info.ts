@@ -367,15 +367,10 @@ const getShippingInfo = defineTool({
   },
 });
 
-const COD_ANSWERS = {
-  yes: "offered: the shopper picks it as the way to pay on the store's checkout page",
-  no: "not offered",
-} as const;
-
 const getPaymentMethods = defineTool({
   name: "get_payment_methods",
   description:
-    "How shoppers can pay at this store, read from the store's checkout settings at this moment: card brands, wallets, and whether cash on delivery is offered. Use it only when a shopper asks which ways of paying the store takes. It is not needed to start an order: every way of paying is chosen on the store's checkout page.",
+    "The card brands and wallets this store's checkout takes, read from the store's checkout settings at this moment. Use it only when a shopper asks which ways of paying the store takes. It is not needed to start an order: every way of paying is chosen on the store's checkout page.",
   audiences: ["shopper"],
   schema: z.object({}),
   isAvailable: (context) => Boolean(context.storefront),
@@ -393,19 +388,22 @@ const getPaymentMethods = defineTool({
       cards: data.shop?.paymentSettings?.acceptedCardBrands ?? [],
       wallets: data.shop?.paymentSettings?.supportedDigitalWallets ?? [],
     });
-    const cod = context.settings.cashOnDelivery;
 
+    // Cards and wallets are all Shopify tells an app. Whatever else a store
+    // takes (cash on delivery, a bank transfer) shows on its checkout page by
+    // itself, so nothing here says whether it is offered, and neither may the
+    // assistant.
+    const elsewhere =
+      " Any other way of paying, such as cash on delivery or a bank transfer, is not something Shopify tells apps about: if the shopper asks about one, say that the checkout page shows every way of paying the store offers, and do not say that it is or is not offered.";
     return {
       output: {
         cards,
         wallets,
-        cashOnDelivery: cod
-          ? COD_ANSWERS[cod]
-          : "not known: the store has not said. The checkout page shows whether it can be chosen",
         note:
-          cards.length || wallets.length
+          (cards.length || wallets.length
             ? "Read from the store's checkout settings just now. The checkout may offer more, depending on the shopper's country."
-            : "Shopify lists no card brands or wallets for this store's checkout right now. Say that the checkout shows the ways to pay; do not guess any.",
+            : "Shopify lists no card brands or wallets for this store's checkout right now. Say that the checkout page shows the ways to pay; do not guess any.") +
+          elsewhere,
       },
     };
   },

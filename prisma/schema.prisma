@@ -110,7 +110,6 @@ model ShopSettings {
   shippingFee         String  @default("") // "free" | "free_over" | "flat" | "calculated"
   // The order amount for "free_over", or the rate for "flat", in the store's currency.
   shippingAmount      String  @default("")
-  codAvailable        String  @default("") // "yes" | "no"
 
   // Setup tour: opened automatically until it has been seen once.
   setupStartedAt      DateTime?

@@ -57,7 +57,6 @@ const DEFAULTS: AssistantSettings = {
   shipsTo: "",
   shippingFee: "",
   shippingAmount: "",
-  codAvailable: "",
 };
 
 const FACTS: StoreFacts = {
@@ -675,16 +674,18 @@ describe("what Shopify already knows is shown, not asked", () => {
     );
   });
 
-  it("always asks whether cash on delivery is offered, since Shopify does not say and the checkout handles it", () => {
+  it("asks nothing about how shoppers pay: the checkout shows whatever the store offers", () => {
     const page = open();
-    expect(page.isShown("codAvailable")).toBe(true);
-    expect(page.field("codAvailable").getAttribute("details")).toBe(
-      "Only for shoppers who ask whether you offer it: Shopify doesn't tell apps. Ordering is not affected: every order goes to your checkout, which shows the ways to pay.",
+    expect(page.find('[name="codAvailable"]')).toBeNull();
+    const payment = [...page.host.querySelectorAll("s-section")].find(
+      (section) => section.getAttribute("heading") === "Payment",
+    )!;
+    // What Shopify says the checkout takes is shown; nothing is there to pick, tick or type.
+    expect(payment.textContent).toContain("Your checkout takes Visa.");
+    expect(payment.textContent).toContain(
+      "Nothing to set here. Whatever you offer in Shopify, cash on delivery included, shows on your checkout by itself",
     );
-    // Nothing else on the page switches it off or answers it for the merchant.
-    page.toggle("allowCheckout", false);
-    expect(page.isShown("codAvailable")).toBe(true);
-    expect(page.host.textContent).not.toContain("pay-on-delivery orders in the chat");
+    expect(payment.querySelectorAll("[name]")).toHaveLength(0);
   });
 });
 

@@ -38,13 +38,6 @@ export interface ToolContext {
     allowOrderCancel?: boolean;
     allowAddressChange?: boolean;
     allowOrderEdit?: boolean;
-    /**
-     * Whether shoppers can pay when the order arrives, as the merchant
-     * picked. It is chosen on the store's checkout page like any other way of
-     * paying. Shopify does not tell apps whether a store offers it, so it is
-     * the one payment fact that is a setting.
-     */
-    cashOnDelivery?: "yes" | "no" | "";
   };
   /**
    * Reads the store's shipping zones and rates from Shopify, now. The rates
