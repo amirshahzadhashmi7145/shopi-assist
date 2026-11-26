@@ -1008,7 +1008,7 @@ function sumMoney(amounts: Money[]): Money | null {
 const placeOrder = defineTool({
   name: "place_order",
   description:
-    "Start an order as soon as the shopper says they want to buy or order something. Puts the items in the shopper's cart and shows an order summary with the buttons to complete it. Call it once with every item; the quantity is 1 unless they said otherwise. Only ask first when a product has several variants and they have not said which. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details yourself.",
+    "Start an order as soon as the shopper says they want to buy or order something. Puts the items in the shopper's cart and shows an order summary with one button, Go to checkout. Call it once with every item; the quantity is 1 unless they said otherwise. Only ask first when a product has several variants and they have not said which. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details yourself: the email, the address and the way of paying are all entered on the checkout page, so the way the shopper wants to pay changes nothing here.",
   audiences: ["shopper"],
   schema: z.object({
     items: z
@@ -1102,8 +1102,8 @@ const placeOrder = defineTool({
         })),
         itemsTotal: itemsTotal ? formatMoney(itemsTotal) : undefined,
         note: onlyTheseItems
-          ? "The chat widget is emptying the shopper's cart, putting in only these items and showing an order summary with the buttons to complete the order. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed."
-          : "The chat widget is putting these items in the shopper's cart and showing an order summary with the buttons to complete the order. The summary lists everything in the cart, including anything that was already there, so its total can be higher than itemsTotal; say so if the cart held other items. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed.",
+          ? "The chat widget is emptying the shopper's cart, putting in only these items and showing an order summary with one button, Go to checkout. Delivery, taxes, discounts and payment are all handled on the checkout page. Confirm the items briefly and tell the shopper to check the summary and press Go to checkout. The order is not placed until they finish there, so do not say it has been placed."
+          : "The chat widget is putting these items in the shopper's cart and showing an order summary with one button, Go to checkout. The summary lists everything in the cart, including anything that was already there, so its total can be higher than itemsTotal; say so if the cart held other items. Delivery, taxes, discounts and payment are all handled on the checkout page. Confirm the items briefly and tell the shopper to check the summary and press Go to checkout. The order is not placed until they finish there, so do not say it has been placed.",
       },
       actions: [
         { type: "order" as const, items: orderItems, ...(onlyTheseItems ? { replace: true } : {}) },

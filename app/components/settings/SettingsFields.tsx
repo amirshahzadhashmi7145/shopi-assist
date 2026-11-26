@@ -712,7 +712,7 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
           <Pick
             name="codAvailable"
             label="Cash on delivery"
-            details="Whether shoppers can choose to pay when the order arrives. They pick it on your checkout page, like any other way of paying; Shopify doesn't tell apps whether you offer it."
+            details="Only for shoppers who ask whether you offer it: Shopify doesn't tell apps. Ordering is not affected: every order goes to your checkout, which shows the ways to pay."
             value={settings.codAvailable}
             options={policyOptions("codAvailable")}
             error={errors.codAvailable}

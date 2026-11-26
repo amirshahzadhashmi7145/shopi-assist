@@ -42,7 +42,7 @@ On a development store the address form (for a change of delivery address) shows
 | Remove an item | "Remove the [product name]", or press Remove on a summary line | Summary updates |
 | Empty the cart | "Clear the cart" | "Your cart is empty now." |
 | Checkout | "Checkout" | Summary of the cart |
-| Pay on delivery | "I want to pay cash on delivery" | The same order summary and Go to checkout button; the bot says to choose cash on delivery on the checkout page (if you picked "Offered" under Policies), and never asks for an address or takes the order itself |
+| Pay on delivery, or by card | "I want to buy [product], cash on delivery" | The same order summary with one button, Go to checkout; the bot says payment is chosen on the checkout page, and never asks for an address, an email or how you want to pay |
 | Order status | "Where is my order #1002? My email is test.buyer@example.com" | Payment and delivery status |
 | Follow-up on a looked-up order | After an order status answer, "where is it?" | Answers again without asking for the email |
 | Order status, number only | Tick "Let shoppers check status with the order number alone", then "status of order 1002" | Date, payment and delivery status, and an offer of tracking with email or phone |

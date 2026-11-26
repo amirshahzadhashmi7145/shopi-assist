@@ -678,7 +678,9 @@ describe("what Shopify already knows is shown, not asked", () => {
   it("always asks whether cash on delivery is offered, since Shopify does not say and the checkout handles it", () => {
     const page = open();
     expect(page.isShown("codAvailable")).toBe(true);
-    expect(page.field("codAvailable").getAttribute("details")).toContain("They pick it on your checkout page");
+    expect(page.field("codAvailable").getAttribute("details")).toBe(
+      "Only for shoppers who ask whether you offer it: Shopify doesn't tell apps. Ordering is not affected: every order goes to your checkout, which shows the ways to pay.",
+    );
     // Nothing else on the page switches it off or answers it for the merchant.
     page.toggle("allowCheckout", false);
     expect(page.isShown("codAvailable")).toBe(true);

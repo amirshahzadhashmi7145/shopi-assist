@@ -565,7 +565,7 @@ describe("handleChatTurn", () => {
       expect(prompt).not.toContain("Order here");
       expect(prompt).not.toContain("order form");
     }
-    expect(byDefault.system).toContain("cash on delivery included");
+    expect(byDefault.system).toContain("they choose how to pay on the checkout page");
     expect(byDefault.tools).not.toContain("place_chat_order");
     expect(changed.tools).toContain("request_return");
     expect(changed.system).toContain("You cannot add items to the cart");

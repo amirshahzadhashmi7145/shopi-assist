@@ -1068,9 +1068,9 @@
     );
     box.appendChild(total);
 
-    // Every order is finished on the store's checkout page, where the shopper
-    // picks how to pay: card, wallet or cash on delivery.
-    box.appendChild(el("p", "sa-order-note", "Shipping, taxes and payment are at checkout."));
+    // One way on from here: the store's checkout page, which takes it from
+    // there (email, address, delivery, and payment by whichever way).
+    box.appendChild(el("p", "sa-order-note", "Address, delivery and payment are all at checkout."));
     var actions = el("div", "sa-order-actions");
     var pay = this.checkoutControl(
       "sa-card-button sa-card-button-primary sa-order-checkout",

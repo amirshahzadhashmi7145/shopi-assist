@@ -375,7 +375,7 @@ const COD_ANSWERS = {
 const getPaymentMethods = defineTool({
   name: "get_payment_methods",
   description:
-    "How shoppers can pay at this store, read from the store's checkout settings at this moment: card brands, wallets, and whether cash on delivery is offered. Every way of paying, cash on delivery included, is chosen on the store's checkout page. Use it every time a shopper asks how they can pay, or wants to pay on delivery.",
+    "How shoppers can pay at this store, read from the store's checkout settings at this moment: card brands, wallets, and whether cash on delivery is offered. Use it only when a shopper asks which ways of paying the store takes. It is not needed to start an order: every way of paying is chosen on the store's checkout page.",
   audiences: ["shopper"],
   schema: z.object({}),
   isAvailable: (context) => Boolean(context.storefront),

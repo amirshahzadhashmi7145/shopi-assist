@@ -1164,7 +1164,10 @@ describe("place_order", () => {
     ]);
     expect(result.json.itemsTotal).toBe("$143.50");
     // The model is told the order is not placed yet.
-    expect(result.json.note).toMatch(/not placed until they complete it/);
+    expect(result.json.note).toMatch(/not placed until they finish there/);
+    // One way on from the summary, and the checkout page does the rest.
+    expect(result.json.note).toMatch(/one button, Go to checkout/);
+    expect(result.json.note).toMatch(/Delivery, taxes, discounts and payment are all handled on the checkout page/);
     expect(result.json.note).toMatch(/lists everything in the cart/);
   });
 

@@ -316,22 +316,25 @@ describe("system prompts", () => {
     expect(none).not.toMatch(/start the order/);
   });
 
-  it("sends every order to the checkout page, cash on delivery included", () => {
+  it("only starts the order: the checkout page does the rest, payment included", () => {
     const abilities = { addToCart: true, checkout: true, returns: false, placeOrder: true };
     const prompt = buildSystemPrompt({ ...input, audience: "shopper", abilities });
 
     // No order form in the chat to point to, and no details taken in it.
     expect(prompt).not.toMatch(/Order here|order form|pay on delivery' button/);
     expect(prompt).toMatch(/never ask for an address, phone number or card details in chat/);
-    // Paying on delivery is one more way of paying at the checkout.
-    expect(prompt).toMatch(
-      /cash on delivery included: a shopper who wants to pay when the order arrives gets the same summary and checkout button as anyone else, and picks that way of paying on the checkout page/,
+    // One button, and everything after it is the checkout page's business.
+    expect(prompt).toContain(
+      "The chat only starts the order: the summary has one button, Go to checkout, and everything else happens on that page: the email, the delivery address, the delivery option and the way of paying.",
     );
-    // Whether the store offers it is not the assistant's to promise.
-    expect(prompt).toMatch(
-      /Whether the store offers it is for your payment tool or the store owner's notes to say, never for you to promise: unless one of them says it is offered, say that they can choose it at checkout if the store offers it/,
+    // The way of paying is not gone into while ordering, whichever it is.
+    expect(prompt).toContain(
+      "So when a shopper orders, never ask how they want to pay, and do not look up or discuss payment methods for it. If they name one (card, cash on delivery, anything else), do not repeat it back as the way the order will be paid: say only that they choose how to pay on the checkout page, and go on with the order.",
     );
+    // Nothing makes the order wait on whether the store offers a way of paying.
+    expect(prompt).not.toMatch(/if the store offers it|Whether the store offers it/);
     expect(prompt).toMatch(/never say an order has been placed/);
+    expect(prompt).toMatch(/shows an order summary with one button, Go to checkout/);
 
     // The same holds where the assistant can only show the checkout summary.
     const checkoutOnly = buildSystemPrompt({
@@ -339,7 +342,7 @@ describe("system prompts", () => {
       audience: "shopper",
       abilities: { ...abilities, addToCart: false, placeOrder: false },
     });
-    expect(checkoutOnly).toMatch(/cash on delivery included/);
+    expect(checkoutOnly).toContain("never ask how they want to pay");
   });
 
   it("shows the assistant the shopper's cart as data, and says when it cannot see it", () => {

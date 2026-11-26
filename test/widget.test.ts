@@ -797,7 +797,7 @@ describe("chat widget", () => {
       "1 \u00d7Camp Blanket - Large$89.50",
     ]);
     expect(widget.$(".sa-order-total").textContent).toBe("Subtotal$125.50");
-    expect(order.textContent).toContain("Shipping, taxes and payment are at checkout.");
+    expect(order.textContent).toContain("Address, delivery and payment are all at checkout.");
 
     const links = Array.from(order.querySelectorAll("a"));
     expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
@@ -1282,7 +1282,7 @@ describe("chat widget", () => {
       expect(Array.from(order.querySelectorAll("button, a")).map((control) => control.textContent)).not.toContain(
         "Order here, pay on delivery",
       );
-      expect(order.textContent).toContain("Shipping, taxes and payment are at checkout.");
+      expect(order.textContent).toContain("Address, delivery and payment are all at checkout.");
       const checkout = widget.$<HTMLAnchorElement>(".sa-order-checkout");
       expect([checkout.textContent, checkout.getAttribute("href")]).toEqual(["Go to checkout", "/checkout"]);
       // The checkout opens in place of the page, not beside the chat.
