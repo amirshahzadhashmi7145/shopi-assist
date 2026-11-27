@@ -11,6 +11,11 @@
   var STORAGE_KEY = "shopi-assist:v1";
   var OPEN_KEY = "shopi-assist:open";
   var CONFIG_KEY = "shopi-assist:config";
+  // The widget's colour until the app says which the merchant picked.
+  var DEFAULT_ACCENT = "#1F3D2F";
+  // How long the widget waits for the app to say how it should look before
+  // showing itself as it is.
+  var LOOK_WAIT_MS = 2500;
   var MAX_STORED_MESSAGES = 40;
   var IDLE_RESET_MS = 24 * 60 * 60 * 1000;
   var REQUEST_TIMEOUT_MS = 60000;
@@ -336,8 +341,10 @@
       // name and welcome message the merchant set there.
       title: data.title || "Ava",
       greeting: data.greeting || "Hi there! 👋 Welcome! How can I help you today?",
-      accent: /^#[0-9a-f]{6}$/i.test(data.accent || "") ? data.accent : "#1F3D2F",
-      position: data.position === "left" ? "left" : "right",
+      // The colour and the corner of the page are the merchant's picks in the
+      // app as well, and arrive with the name and welcome message.
+      accent: DEFAULT_ACCENT,
+      position: "right",
       suggestions: [data.suggestion1, data.suggestion2, data.suggestion3].filter(function (s) {
         return s && s.trim();
       }),
@@ -373,6 +380,9 @@
     this.lastFailedMessage = null;
     // False only while the stylesheet is still loading.
     this.stylesReady = !this.config.stylesheet;
+    // False until the app has said which colour and corner the merchant
+    // picked, or could not be asked. See reveal.
+    this.lookKnown = false;
     // True when the merchant has paused chat in the app.
     this.pausedByShop = false;
     this.state = this.loadState();
@@ -415,23 +425,21 @@
     this.host.style.setProperty("display", "block", "important");
 
     var wrapper = el("div", "sa");
-    wrapper.setAttribute("data-position", config.position);
-    wrapper.style.setProperty("--sa-accent", config.accent);
-    wrapper.style.setProperty("--sa-on-accent", readableOn(config.accent));
     this.wrapper = wrapper;
+    this.applyLook(config.accent, config.position);
+    // Held back until nothing is left that would change how it looks: see reveal.
+    wrapper.hidden = true;
 
-    // Hold the UI back until its stylesheet has loaded, so it never flashes unstyled.
     if (config.stylesheet) {
-      wrapper.hidden = true;
       var link = el("link");
       link.rel = "stylesheet";
       link.href = config.stylesheet;
-      var reveal = function () {
+      var styled = function () {
         self.stylesReady = true;
-        wrapper.hidden = Boolean(self.pausedByShop);
+        self.reveal();
       };
-      link.addEventListener("load", reveal);
-      link.addEventListener("error", reveal);
+      link.addEventListener("load", styled);
+      link.addEventListener("error", styled);
       root.appendChild(link);
     }
 
@@ -584,15 +592,41 @@
   };
 
   /**
+   * Draws the widget in a colour and a corner of the page. A value that is
+   * not a colour, or not a corner, changes nothing: the one in use stays.
+   */
+  Widget.prototype.applyLook = function (accent, position) {
+    if (typeof accent === "string" && /^#[0-9a-f]{6}$/i.test(accent)) this.config.accent = accent;
+    if (position === "left" || position === "right") this.config.position = position;
+    this.wrapper.setAttribute("data-position", this.config.position);
+    this.wrapper.style.setProperty("--sa-accent", this.config.accent);
+    this.wrapper.style.setProperty("--sa-on-accent", readableOn(this.config.accent));
+  };
+
+  /**
+   * Shows the widget once nothing is left that would change how it looks:
+   * its stylesheet has loaded, and the app has said which colour and corner
+   * the merchant picked (or could not be asked). Shown sooner, the bubble
+   * would appear in one colour and corner and then jump to another. A chat
+   * the merchant has paused stays hidden.
+   */
+  Widget.prototype.reveal = function () {
+    this.wrapper.hidden = !this.stylesReady || !this.lookKnown || this.pausedByShop;
+  };
+
+  /**
    * Applies what the merchant set in the app: the assistant's name and
-   * welcome message (which override the theme editor's when filled in) and
-   * whether chat is paused. Values are plain text and only ever used as text.
+   * welcome message, the colour and the corner of the page, and whether chat
+   * is paused. Values are plain text and only ever used as text; the colour
+   * is used only if it is six hex digits.
    */
   Widget.prototype.applyRemoteConfig = function (remote) {
     if (!remote || remote.ok !== true) return;
 
     this.pausedByShop = remote.enabled === false;
-    if (this.stylesReady) this.wrapper.hidden = this.pausedByShop;
+    this.applyLook(remote.accent, remote.position);
+    this.lookKnown = true;
+    this.reveal();
     if (this.pausedByShop) return;
 
     var changed = false;
@@ -620,7 +654,10 @@
     if (changed && !this.pending) this.renderAll();
   };
 
-  /** Uses the cached settings at once, then refreshes them in the background. */
+  /**
+   * Uses the settings kept from an earlier page at once, so the widget shows
+   * straight away and as it did there, then refreshes them in the background.
+   */
   Widget.prototype.loadRemoteConfig = function () {
     var self = this;
     var cached = null;
@@ -630,6 +667,14 @@
       cached = null;
     }
     this.applyRemoteConfig(cached);
+
+    // Whatever the app answers, and if it does not answer at all, the widget
+    // is not held back for long: it shows as it is and the chat still works.
+    var known = function () {
+      self.lookKnown = true;
+      self.reveal();
+    };
+    var waiting = window.setTimeout(known, LOOK_WAIT_MS);
 
     window
       .fetch(this.config.endpoint, {
@@ -651,7 +696,11 @@
         self.applyRemoteConfig(remote);
       })
       .catch(function () {
-        // Keep the theme editor's values; the chat still works.
+        // The app could not be asked. Its defaults stay; the chat still works.
+      })
+      .then(function () {
+        window.clearTimeout(waiting);
+        known();
       });
   };
 

@@ -264,7 +264,7 @@ export default function Setup() {
                 This is the one step Shopify asks you to do yourself. The button opens your
                 theme editor with the chat already switched on. Press{" "}
                 <s-text type="strong">Save</s-text> there, and the chat bubble appears on every
-                page of your store. You can also set its color and position there.
+                page of your store.
               </s-paragraph>
               <s-stack direction="inline" gap="small">
                 <s-button

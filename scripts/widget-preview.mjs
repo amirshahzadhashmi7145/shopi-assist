@@ -111,11 +111,25 @@ function cartJson() {
 const productImage = (hue) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" fill="hsl(${hue} 30% 88%)"/><circle cx="64" cy="64" r="34" fill="hsl(${hue} 35% 55%)"/><rect x="40" y="72" width="48" height="26" rx="6" fill="hsl(${hue} 40% 35%)"/></svg>`;
 
+/**
+ * The colour and corner asked for in a page's address. The widget is told
+ * them the way the app tells it, with the rest of its settings, so they are
+ * read off the address of the page that asks for those.
+ */
+function look(address) {
+  let params = new URLSearchParams();
+  try {
+    params = new URL(address || "", "http://localhost").searchParams;
+  } catch {
+    // Not an address: the defaults.
+  }
+  return {
+    accent: /^#[0-9a-f]{6}$/i.test(params.get("accent") || "") ? params.get("accent") : "#1F3D2F",
+    position: params.get("position") === "left" ? "left" : "right",
+  };
+}
+
 function page(url) {
-  const accent = /^#[0-9a-f]{6}$/i.test(url.searchParams.get("accent") || "")
-    ? url.searchParams.get("accent")
-    : "#1F3D2F";
-  const position = url.searchParams.get("position") === "left" ? "left" : "right";
   const demo = url.searchParams.get("demo");
 
   return `<!doctype html>
@@ -156,8 +170,6 @@ function page(url) {
   id="shopi-assist-root"
   data-endpoint="/apps/shopi-assist/chat"
   data-stylesheet="/assets/shopi-assist.css"
-  data-accent="${accent}"
-  data-position="${position}"
   data-suggestion-1="What are your best sellers?"
   data-suggestion-2="What's your return policy?"
   data-suggestion-3="Help me find a gift"
@@ -224,6 +236,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && url.pathname === "/apps/shopi-assist/chat") {
       return send(200, "application/json", JSON.stringify({
         ok: true, enabled: true, ready: true, title: "", greeting: "", testMode: true,
+        ...look(request.headers.referer),
       }));
     }
 

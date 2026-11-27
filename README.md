@@ -39,7 +39,7 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 **For the merchant (inside Shopify admin)**
 
 - **Settings a merchant can finish without writing anything**, in four parts with a live preview beside them:
-  - *Assistant:* show or pause the chat, its name (Ava until changed), a welcome message picked from presets or written, chat ratings, how long transcripts are kept. Its tone is not a setting: always professional, polite and precise.
+  - *Assistant:* show or pause the chat, its name (Ava until changed), a welcome message picked from presets or written, its color (eight swatches, or any color after "Custom") and the corner of the page it sits in, chat ratings, how long transcripts are kept. Its tone is not a setting: always professional, polite and precise.
   - *Orders:* order status, cancellations, address changes, edits to unpaid orders, return requests.
   - *Policies:* return window, eligibility, return shipping, exchanges and refund method; delivery time. All picked from lists. Shipping regions, shipping rates and order processing time are not picked at all: they are shown live from Shopify. A delivery time is asked for only while some rate has none of its own in Shopify.
   - *Knowledge:* answers to the questions shoppers ask most (sizing, warranty, care, compatibility, discount codes, support hours, contact), each picked from a list.
@@ -176,9 +176,9 @@ npm run graphql-codegen     # validates every GraphQL query against Shopify's Ad
 
 What the merchant sets, and where:
 
-- **In the app (setup tour or Settings):** which abilities are on, the policy picks, answers to common questions, the assistant's name and welcome message, optional notes in the merchant's own words, pause chat, transcript retention. The widget fetches the name and welcome message from the app, and hides itself while chat is paused.
+- **In the app (setup tour or Settings):** which abilities are on, the policy picks, answers to common questions, the assistant's name and welcome message, the widget's color and position, optional notes in the merchant's own words, pause chat, transcript retention. The widget fetches the name, the welcome message, the color and the position from the app, and hides itself while chat is paused. It stays out of sight until it has heard them (or for 2.5 seconds at most), so the chat bubble never shows in one color and corner and then jumps to another; on the next page of the same visit it uses what it was told and shows at once.
 - **In Shopify, read by the app:** published policies, delivery rates (the store's markets or shipping zones), order processing time, checkout payment methods, the store's description and contact address. They are changed in Shopify, never in the app.
-- **In the theme editor:** accent color, position and suggested questions. The name and welcome message are set in the app only.
+- **In the theme editor:** switching the widget on, the suggested questions, and whether the address form lists states and provinces. Nothing about how the widget looks: its color and position were theme settings once and are set in the app now, so that everything is in one place and the app's preview shows the real thing.
 
 What the merchant picks or writes is added to the assistant's instructions as "notes from the store owner", below the fixed rules, which it cannot override. It should be treated as public: a determined shopper can get the assistant to repeat it.
 

@@ -1,8 +1,9 @@
 /**
  * The storefront chat as shoppers will see it, inside the admin.
  *
- * Its look follows what the merchant picks before they save: the name and
- * the welcome message. Under it are questions to try, which change with what
+ * Its look follows what the merchant picks before they save: the name, the
+ * welcome message, the colour and the corner of the page the chat bubble
+ * sits in. Under it are questions to try, which change with what
  * is switched on (an order question once order status is on, a return once
  * returns are). They are for the merchant: the questions suggested to
  * shoppers are a theme setting. Messages sent here are answered by the real
@@ -10,18 +11,22 @@
  * of the conversation log.
  *
  * Drawn to match the widget (extensions/chat-widget) in plain markup: the
- * widget itself is a storefront script and does not run in the admin. The
- * accent colour and position are theme settings, so the default is shown.
+ * widget itself is a storefront script and does not run in the admin.
  */
 import { useEffect, useRef } from "react";
 import type { CSSProperties, FormEvent } from "react";
 
 import { DEFAULT_ASSISTANT_NAME, DEFAULT_GREETING } from "../../assistant/assistant-defaults";
 import type { AssistantSettings } from "../../assistant/settings.server";
+import {
+  DEFAULT_ACCENT,
+  isAccent,
+  readableOn,
+  type WidgetPosition,
+} from "../../assistant/widget-look";
 import { RichText } from "../RichText";
 import { useChatThread, type ChatEntry } from "../useChatThread";
 
-const ACCENT = "#1f3d2f";
 const INK = "#1c1c1a";
 const INK_SOFT = "#5f5f5a";
 const SURFACE_SOFT = "#f4f4f1";
@@ -47,8 +52,6 @@ const STYLES = {
     justifyContent: "space-between",
     gap: 8,
     padding: "10px 8px 10px 16px",
-    background: ACCENT,
-    color: "#ffffff",
   },
   title: {
     fontSize: 15,
@@ -93,8 +96,6 @@ const STYLES = {
     padding: "9px 12px",
     borderRadius: 16,
     borderBottomRightRadius: 5,
-    background: ACCENT,
-    color: "#ffffff",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
   },
@@ -155,9 +156,16 @@ const STYLES = {
     padding: 0,
     border: 0,
     borderRadius: "50%",
-    background: ACCENT,
-    color: "#ffffff",
     cursor: "pointer",
+  },
+  // The round button the chat opens from, as it sits under the open chat.
+  launcher: {
+    display: "grid",
+    placeItems: "center",
+    width: 48,
+    height: 48,
+    borderRadius: "50%",
+    boxShadow: "0 6px 20px rgba(0, 0, 0, 0.22)",
   },
   footer: { padding: "0 12px 8px", fontSize: 11, textAlign: "center", color: INK_SOFT },
 } satisfies Record<string, CSSProperties>;
@@ -184,6 +192,10 @@ interface PreviewWindowProps {
   ratings: boolean;
   /** Why nothing can be sent right now, in words. Null: it can. */
   blocked: string | null;
+  /** The widget's colour. Anything that is not one is drawn as the default. */
+  accent?: string;
+  /** The corner of the page the chat bubble sits in. */
+  position?: WidgetPosition;
   onSend: (text: string) => void;
   onReset: () => void;
 }
@@ -196,10 +208,15 @@ export function PreviewWindow({
   pending,
   ratings,
   blocked,
+  accent = DEFAULT_ACCENT,
+  position = "right",
   onSend,
   onReset,
 }: PreviewWindowProps) {
   const log = useRef<HTMLDivElement>(null);
+  // A colour half typed in Settings is not one yet: the default stands in.
+  const fill = isAccent(accent) ? accent : DEFAULT_ACCENT;
+  const coloured = { background: fill, color: readableOn(fill) };
   const busy = pending || blocked !== null;
   const answered = entries.some((entry) => entry.role === "assistant");
 
@@ -218,102 +235,124 @@ export function PreviewWindow({
   };
 
   return (
-    <div style={STYLES.frame} data-preview>
-      <div style={STYLES.header}>
-        <span style={STYLES.title}>{name}</span>
-        <button
-          type="button"
-          style={STYLES.reset}
-          aria-label="Start a new chat"
-          title="Start a new chat"
-          onClick={onReset}
-          disabled={pending}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M4 12a8 8 0 1 0 2.6-5.9M4 4v4.5h4.5"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={STYLES.frame} data-preview>
+        <div style={{ ...STYLES.header, ...coloured }}>
+          <span style={STYLES.title}>{name}</span>
+          <button
+            type="button"
+            style={STYLES.reset}
+            aria-label="Start a new chat"
+            title="Start a new chat"
+            onClick={onReset}
+            disabled={pending}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M4 12a8 8 0 1 0 2.6-5.9M4 4v4.5h4.5"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
 
-      <div ref={log} style={STYLES.messages} role="log" aria-live="polite" aria-label="Preview chat">
-        <div style={STYLES.bubble}>{greeting}</div>
-        {entries.map((entry) =>
-          entry.role === "user" ? (
-            <div key={entry.id} style={STYLES.bubbleUser}>
-              {entry.text}
-            </div>
-          ) : entry.role === "error" ? (
-            <div key={entry.id} style={STYLES.bubbleError} role="alert">
-              {entry.text}
-            </div>
-          ) : (
-            <div key={entry.id} style={{ display: "contents" }}>
-              <div style={STYLES.bubble}>
-                <RichText text={entry.text} />
+        <div
+          ref={log}
+          style={STYLES.messages}
+          role="log"
+          aria-live="polite"
+          aria-label="Preview chat"
+        >
+          <div style={STYLES.bubble}>{greeting}</div>
+          {entries.map((entry) =>
+            entry.role === "user" ? (
+              <div key={entry.id} style={{ ...STYLES.bubbleUser, ...coloured }}>
+                {entry.text}
               </div>
-              {entry.cards?.map((card, index) => (
-                <div key={index} style={STYLES.card}>
-                  <strong>{card.title}</strong>
-                  <span>{card.price}</span>
+            ) : entry.role === "error" ? (
+              <div key={entry.id} style={STYLES.bubbleError} role="alert">
+                {entry.text}
+              </div>
+            ) : (
+              <div key={entry.id} style={{ display: "contents" }}>
+                <div style={STYLES.bubble}>
+                  <RichText text={entry.text} />
                 </div>
-              ))}
-              {entry.widgetNotes?.map((note) => (
-                <div key={note} style={STYLES.note}>
-                  {note}
-                </div>
-              ))}
+                {entry.cards?.map((card, index) => (
+                  <div key={index} style={STYLES.card}>
+                    <strong>{card.title}</strong>
+                    <span>{card.price}</span>
+                  </div>
+                ))}
+                {entry.widgetNotes?.map((note) => (
+                  <div key={note} style={STYLES.note}>
+                    {note}
+                  </div>
+                ))}
+              </div>
+            ),
+          )}
+          {pending && (
+            <div style={STYLES.bubble} aria-label="The assistant is answering">
+              …
             </div>
-          ),
-        )}
-        {pending && (
-          <div style={STYLES.bubble} aria-label="The assistant is answering">
-            …
+          )}
+        </div>
+
+        {ratings && answered && (
+          <div style={STYLES.rating}>
+            <span>How is this chat going?</span>
+            <span aria-hidden="true">👍 👎</span>
           </div>
         )}
+
+        <form style={STYLES.form} onSubmit={handleSubmit}>
+          <input
+            name="message"
+            type="text"
+            style={STYLES.input}
+            aria-label="Message to the assistant"
+            placeholder="Ask a question…"
+            autoComplete="off"
+            maxLength={2000}
+            disabled={blocked !== null}
+          />
+          <button
+            type="submit"
+            style={{
+              ...STYLES.send,
+              ...coloured,
+              ...(busy ? { opacity: 0.5, cursor: "default" } : {}),
+            }}
+            aria-label="Send"
+            disabled={busy}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 19V5M5 12l7-7 7 7"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </form>
+        <div style={STYLES.footer}>AI assistant. Answers can contain mistakes.</div>
       </div>
-
-      {ratings && answered && (
-        <div style={STYLES.rating}>
-          <span>How is this chat going?</span>
-          <span aria-hidden="true">👍 👎</span>
-        </div>
-      )}
-
-      <form style={STYLES.form} onSubmit={handleSubmit}>
-        <input
-          name="message"
-          type="text"
-          style={STYLES.input}
-          aria-label="Message to the assistant"
-          placeholder="Ask a question…"
-          autoComplete="off"
-          maxLength={2000}
-          disabled={blocked !== null}
-        />
-        <button
-          type="submit"
-          style={{ ...STYLES.send, ...(busy ? { opacity: 0.5, cursor: "default" } : {}) }}
-          aria-label="Send"
-          disabled={busy}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M12 19V5M5 12l7-7 7 7"
-              stroke="currentColor"
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+      <div
+        data-launcher={position}
+        style={{ display: "flex", justifyContent: position === "left" ? "flex-start" : "flex-end" }}
+      >
+        <span style={{ ...STYLES.launcher, ...coloured }} aria-hidden="true">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 3C6.9 3 3 6.5 3 11c0 2 .8 3.8 2.2 5.2L4.3 20.4a.6.6 0 0 0 .8.7l4.3-1.7c.8.2 1.7.3 2.6.3 5.1 0 9-3.5 9-8.7S17.1 3 12 3z" />
           </svg>
-        </button>
-      </form>
-      <div style={STYLES.footer}>AI assistant. Answers can contain mistakes.</div>
+        </span>
+      </div>
     </div>
   );
 }
@@ -381,6 +420,8 @@ export function LivePreview({
         pending={thread.pending}
         ratings={settings.chatRatings}
         blocked={blocked}
+        accent={settings.accentColor}
+        position={settings.widgetPosition}
         onSend={thread.send}
         onReset={thread.startOver}
       />
@@ -398,8 +439,7 @@ export function LivePreview({
       ) : (
         <s-text color="subdued">
           Answers come from the real assistant, as a shopper would get them, and stay out of
-          your conversations. Colours, position and the questions suggested to shoppers are set
-          in the theme editor.
+          your conversations.
         </s-text>
       )}
     </s-stack>

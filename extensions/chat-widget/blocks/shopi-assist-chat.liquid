@@ -17,7 +17,7 @@
   browser never keeps running an older cached copy after an update. Written by
   `npm run widget:stamp`; a test fails when it is out of date.
 {%- endcomment -%}
-{%- assign shopi_assist_build = 'f648706d0691' -%}
+{%- assign shopi_assist_build = '27d57a80abeb' -%}
 {%- assign shopi_assist_js = 'shopi-assist.js' | asset_url -%}
 {%- assign shopi_assist_css = 'shopi-assist.css' | asset_url -%}
 {%- if shopi_assist_js contains '?' -%}
@@ -30,8 +30,6 @@
   style="display: block !important;"
   data-endpoint="/apps/shopi-assist/chat"
   data-stylesheet="{{ shopi_assist_css | append: shopi_assist_stamp | escape }}"
-  data-accent="{{ block.settings.accent_color | escape }}"
-  data-position="{{ block.settings.position | escape }}"
   data-suggestion-1="{{ block.settings.suggestion_1 | escape }}"
   data-suggestion-2="{{ block.settings.suggestion_2 | escape }}"
   data-suggestion-3="{{ block.settings.suggestion_3 | escape }}"
@@ -58,22 +56,6 @@
   "name": "Shopi Assist chat",
   "target": "body",
   "settings": [
-    {
-      "type": "color",
-      "id": "accent_color",
-      "label": "Accent color",
-      "default": "#1F3D2F"
-    },
-    {
-      "type": "select",
-      "id": "position",
-      "label": "Position",
-      "options": [
-        { "value": "right", "label": "Bottom right" },
-        { "value": "left", "label": "Bottom left" }
-      ],
-      "default": "right"
-    },
     {
       "type": "header",
       "content": "Address form"

@@ -11,6 +11,7 @@ import {
   type ShippingRates,
 } from "../app/assistant/shipping";
 import { factsForPage, type StoreFacts } from "../app/assistant/store-facts";
+import { ACCENT_PRESETS, DEFAULT_ACCENT, readableOn } from "../app/assistant/widget-look";
 import { SectionNav, SettingsFields } from "../app/components/settings/SettingsFields";
 import { PreviewWindow, TryAsking } from "../app/components/settings/StorefrontPreview";
 import { useSettingsDraft } from "../app/components/settings/useSettingsDraft";
@@ -36,6 +37,8 @@ const DEFAULTS: AssistantSettings = {
   topics: {},
   assistantName: "Ava",
   greeting: "Hi there! 👋 Welcome! How can I help you today?",
+  accentColor: "#1F3D2F",
+  widgetPosition: "right",
   allowReturns: false,
   allowOrderCancel: false,
   allowAddressChange: false,
@@ -114,7 +117,7 @@ function given(element: Element): Record<string, unknown> {
   const key = Object.keys(element).find((name) => name.startsWith("__reactProps$"));
   return key ? (element as unknown as Record<string, Record<string, unknown>>)[key] : {};
 }
-const TYPED = "s-text-field, s-text-area, s-number-field";
+const TYPED = "s-text-field, s-text-area, s-number-field, s-color-field";
 
 function Page({
   settings,
@@ -365,6 +368,110 @@ describe("a feature's own options appear only once it is on", () => {
     expect(page.field("shippingAmount").getAttribute("label")).toBe("Flat rate");
     page.pick("shippingFee", "calculated");
     expect(page.isShown("shippingAmount")).toBe(false);
+  });
+});
+
+describe("how the chat looks is picked in the app", () => {
+  type Opened = ReturnType<typeof open>;
+  const swatches = (page: Opened) => [
+    ...page.host.querySelectorAll<HTMLInputElement>('input[type="radio"][name="ui.accentMode"]'),
+  ];
+  /** What a click on a swatch does: the radio button under it is picked, and says so. */
+  const pickSwatch = (page: Opened, value: string) =>
+    act(() => {
+      const input = swatches(page).find((swatch) => swatch.value === value)!;
+      input.checked = true;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  /** The swatches drawn with a ring round them: the pick as it stands. */
+  const ringed = (page: Opened) =>
+    swatches(page)
+      .filter((swatch) => !(swatch.nextElementSibling as HTMLElement).style.boxShadow.includes("inset"))
+      .map((swatch) => swatch.value);
+
+  it("offers the color as swatches, one click each, starting from the saved one", () => {
+    const page = open();
+    expect(swatches(page).map((swatch) => [swatch.value, swatch.getAttribute("aria-label")])).toEqual([
+      ...ACCENT_PRESETS.map((preset) => [preset.value, preset.label]),
+      ["custom", "Custom color"],
+    ]);
+    expect(swatches(page).filter((swatch) => swatch.defaultChecked).map((swatch) => swatch.value)).toEqual([
+      DEFAULT_ACCENT,
+    ]);
+    expect(ringed(page)).toEqual([DEFAULT_ACCENT]);
+    expect(page.saved("accentColor")).toBe(DEFAULT_ACCENT);
+    // Nothing to type: the box for a color of one's own waits for Custom.
+    expect(page.isShown("ui.accentText")).toBe(false);
+
+    pickSwatch(page, "#2563EB");
+    expect(ringed(page)).toEqual(["#2563EB"]);
+    expect(page.saved("accentColor")).toBe("#2563EB");
+    expect(page.draft().accentColor).toBe("#2563EB");
+    expect(page.dirty()).toBe(true);
+    expect(page.isShown("ui.accentText")).toBe(false);
+  });
+
+  it("takes a color of the merchant's own after Custom, starting from the one in use", () => {
+    const page = open();
+    pickSwatch(page, "custom");
+    expect(page.isShown("ui.accentText")).toBe(true);
+    expect(given(page.field("ui.accentText")).defaultValue).toBe(DEFAULT_ACCENT);
+    // Picking Custom changes nothing by itself.
+    expect(page.saved("accentColor")).toBe(DEFAULT_ACCENT);
+    expect(page.dirty()).toBe(false);
+
+    page.type("ui.accentText", "#ab12cd");
+    expect(page.saved("accentColor")).toBe("#AB12CD");
+    expect(page.dirty()).toBe(true);
+    // Cleared, or not a color yet: passed on as it stands for the server to
+    // refuse, never quietly swapped for another.
+    page.type("ui.accentText", "");
+    expect(page.saved("accentColor")).toBe("");
+    page.type("ui.accentText", "#ab1");
+    expect(page.saved("accentColor")).toBe("#ab1");
+
+    // Back to a swatch: the box goes, what was typed in it no longer counts.
+    pickSwatch(page, "#111111");
+    expect(page.isShown("ui.accentText")).toBe(false);
+    expect(page.saved("accentColor")).toBe("#111111");
+  });
+
+  it("a store with a color of its own sees Custom picked and its color in the box", () => {
+    const page = open({ settings: { ...DEFAULTS, accentColor: "#AB12CD" } });
+    expect(swatches(page).filter((swatch) => swatch.defaultChecked).map((swatch) => swatch.value)).toEqual([
+      "custom",
+    ]);
+    expect(page.isShown("ui.accentText")).toBe(true);
+    expect(given(page.field("ui.accentText")).defaultValue).toBe("#AB12CD");
+    expect(page.saved("accentColor")).toBe("#AB12CD");
+    expect(page.dirty()).toBe(false);
+  });
+
+  it("says so when a color is refused, wherever the merchant is looking", () => {
+    const refused = { accentColor: "Pick a colour, or enter one like #1F3D2F." };
+    const custom = open({ settings: { ...DEFAULTS, accentColor: "#AB12CD" }, errors: refused });
+    expect(custom.field("ui.accentText").getAttribute("error")).toBe(refused.accentColor);
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // With a swatch picked the box is out of sight, so the message is not left in it.
+    const swatch = open({ errors: refused });
+    expect(swatch.isShown("ui.accentText")).toBe(false);
+    expect(swatch.find('[data-section="assistant"]')!.textContent).toContain(refused.accentColor);
+  });
+
+  it("picks the corner of the page from two", () => {
+    const page = open();
+    const choices = [...page.field("widgetPosition").querySelectorAll("s-choice")];
+    expect(choices.map((choice) => [choice.getAttribute("value"), choice.textContent])).toEqual([
+      ["right", "Bottom right"],
+      ["left", "Bottom left"],
+    ]);
+    expect(choices.map((choice) => given(choice).defaultSelected === true)).toEqual([true, false]);
+
+    page.choose("widgetPosition", "left");
+    expect(page.draft().widgetPosition).toBe("left");
+    expect(page.dirty()).toBe(true);
   });
 });
 
@@ -699,6 +806,7 @@ describe("what Shopify already knows is shown, not asked", () => {
     expect(sections.map((section) => section.getAttribute("heading"))).toEqual([
       "Storefront chat",
       "Name and welcome",
+      "Appearance",
       "Ratings and privacy",
       "Order management",
       "Returns",
@@ -805,6 +913,46 @@ describe("the storefront preview", () => {
     act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     expect(sent).toEqual(["  Do you ship to Canada?  "]);
     expect(input.value).toBe("");
+  });
+
+  it("is drawn in the color and corner picked, with text that can be read on the color", () => {
+    const rgb = (hex: string) =>
+      `rgb(${[1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16)).join(", ")})`;
+    const drawn = (host: HTMLElement) => {
+      const header = host.querySelector<HTMLElement>("[data-preview] > div")!;
+      const row = host.querySelector<HTMLElement>("[data-launcher]")!;
+      const bubble = row.querySelector<HTMLElement>("span")!;
+      return {
+        header: [header.style.background, header.style.color],
+        send: host.querySelector<HTMLElement>('button[type="submit"]')!.style.background,
+        bubble: [bubble.style.background, bubble.style.color],
+        side: [row.dataset.launcher, row.style.justifyContent],
+      };
+    };
+
+    // Left as it was: the app's own color, bottom right.
+    expect(drawn(preview().host)).toEqual({
+      header: [rgb(DEFAULT_ACCENT), "rgb(255, 255, 255)"],
+      send: rgb(DEFAULT_ACCENT),
+      bubble: [rgb(DEFAULT_ACCENT), "rgb(255, 255, 255)"],
+      side: ["right", "flex-end"],
+    });
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // A light color gets dark text, as the widget gives it.
+    expect(readableOn("#FFE680")).toBe("#111111");
+    expect(drawn(preview({ accent: "#FFE680", position: "left" }).host)).toEqual({
+      header: [rgb("#FFE680"), "rgb(17, 17, 17)"],
+      send: rgb("#FFE680"),
+      bubble: [rgb("#FFE680"), "rgb(17, 17, 17)"],
+      side: ["left", "flex-start"],
+    });
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // Half typed in Settings: not a color yet, so the app's own stands in.
+    expect(drawn(preview({ accent: "#ab1" }).host).header[0]).toBe(rgb(DEFAULT_ACCENT));
   });
 
   it("offers questions to try under the chat, not inside it", () => {

@@ -23,9 +23,9 @@ import { isDevelopmentStore, toGraphqlFn } from "../assistant/shopify-clients.se
 import { authenticate } from "../shopify.server";
 
 /**
- * GET: the widget's configuration. The name and welcome message set in the
- * app override the theme editor's defaults when they are filled in, and a
- * paused chat tells the widget to hide itself.
+ * GET: the widget's configuration, all of it set in the app: the name and
+ * welcome message, the colour and the corner of the page, and whether the
+ * chat is paused, in which case the widget hides itself.
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.public.appProxy(request);
@@ -40,6 +40,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ready: getLlmStatus().ready,
       title: settings.assistantName,
       greeting: settings.greeting,
+      // How the widget looks: its colour and the corner of the page it sits in.
+      accent: settings.accentColor,
+      position: settings.widgetPosition,
       // Whether shoppers can give the chat a thumbs-up or thumbs-down.
       ratings: settings.chatRatings,
       // For a widget from when "Buy now" on product cards was a setting: a

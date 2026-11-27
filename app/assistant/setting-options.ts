@@ -428,7 +428,15 @@ export const isSectionKey = (value: unknown): value is SectionKey =>
  * change. A page reads exactly these from what is submitted.
  */
 export const SECTION_FIELDS = {
-  assistant: ["enabled", "assistantName", "greeting", "chatRatings", "retentionDays"],
+  assistant: [
+    "enabled",
+    "assistantName",
+    "greeting",
+    "accentColor",
+    "widgetPosition",
+    "chatRatings",
+    "retentionDays",
+  ],
   orders: [
     "orderLookupEnabled",
     "orderLookupByNumber",

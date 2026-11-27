@@ -56,6 +56,7 @@ import {
   type ControlInput,
 } from "../app/components/settings/draft";
 import { NO_SHIPPING_RATES, shippingForPage } from "../app/assistant/shipping";
+import { ACCENT_PRESETS, DEFAULT_ACCENT, isAccent } from "../app/assistant/widget-look";
 import { SettingsFields } from "../app/components/settings/SettingsFields";
 import { PreviewWindow, previewSuggestions } from "../app/components/settings/StorefrontPreview";
 import { createTestDb } from "./helpers/db";
@@ -155,6 +156,63 @@ describe("the four parts of Settings", () => {
       for (const option of topic.options) expect(option.says.length).toBeGreaterThan(20);
     }
     expect(new Set(TOPICS.map((topic) => topic.key)).size).toBe(TOPICS.length);
+  });
+});
+
+describe("how the chat looks", () => {
+  it("is the app's own color, bottom right, until the merchant picks", async () => {
+    expect(DEFAULT_SETTINGS).toMatchObject({ accentColor: DEFAULT_ACCENT, widgetPosition: "right" });
+    expect(await getSettings(SHOP_A, db)).toMatchObject({
+      accentColor: DEFAULT_ACCENT,
+      widgetPosition: "right",
+    });
+    // Each swatch is a color the widget takes, and the first is the default.
+    expect(ACCENT_PRESETS[0].value).toBe(DEFAULT_ACCENT);
+    for (const preset of ACCENT_PRESETS) expect(isAccent(preset.value), preset.label).toBe(true);
+    expect(new Set(ACCENT_PRESETS.map((preset) => preset.value)).size).toBe(ACCENT_PRESETS.length);
+  });
+
+  it("is saved as picked, for this shop only", async () => {
+    const saved = await saveSettings(SHOP_A, { accentColor: " #ab12cd ", widgetPosition: "left" }, db);
+    expect(saved.ok).toBe(true);
+    // One spelling of a color, whatever was typed.
+    expect(await getSettings(SHOP_A, db)).toMatchObject({ accentColor: "#AB12CD", widgetPosition: "left" });
+    expect(await getSettings(SHOP_B, db)).toMatchObject({
+      accentColor: DEFAULT_ACCENT,
+      widgetPosition: "right",
+    });
+    // Read from the form like any other pick.
+    const form = new FormData();
+    form.set("accentColor", "#0F766E");
+    form.set("widgetPosition", "right");
+    expect(settingsFromForm(form, ["accentColor", "widgetPosition"])).toEqual({
+      accentColor: "#0F766E",
+      widgetPosition: "right",
+    });
+  });
+
+  it("refuses what is not a color or a corner, and keeps what the store had", async () => {
+    await saveSettings(SHOP_A, { accentColor: "#2563EB", widgetPosition: "left" }, db);
+    for (const accentColor of ["", "red", "#12", "#GGGGGG", "#2563EB; background: url(x)", "rgb(1, 2, 3)"]) {
+      const refused = await saveSettings(SHOP_A, { accentColor }, db);
+      expect(refused, accentColor).toEqual({
+        ok: false,
+        errors: { accentColor: "Pick a colour, or enter one like #1F3D2F." },
+      });
+    }
+    const corner = await saveSettings(SHOP_A, { widgetPosition: "top" }, db);
+    expect(corner).toMatchObject({ ok: false, errors: { widgetPosition: expect.any(String) } });
+    expect(await getSettings(SHOP_A, db)).toMatchObject({ accentColor: "#2563EB", widgetPosition: "left" });
+
+    // Something in the database that is neither is read as the default, never passed on.
+    await db.shopSettings.update({
+      where: { shop: SHOP_A },
+      data: { accentColor: "javascript:alert(1)", widgetPosition: "middle" },
+    });
+    expect(await getSettings(SHOP_A, db)).toMatchObject({
+      accentColor: DEFAULT_ACCENT,
+      widgetPosition: "right",
+    });
   });
 });
 
@@ -952,6 +1010,38 @@ describe("the merchant's unsaved picks", () => {
       expect(initialDraft({ ...DEFAULT_SETTINGS, ...changed }).ui.open.addressForm).toBe(true);
     }
     expect(openBox(initialDraft(DEFAULT_SETTINGS), "addressForm").ui.open.addressForm).toBe(true);
+  });
+
+  it("work the color out from a swatch or the merchant's own", () => {
+    // A swatch's color is shown as that swatch, any other as "custom".
+    expect(initialDraft(DEFAULT_SETTINGS).ui).toMatchObject({
+      accentMode: DEFAULT_ACCENT,
+      accentText: DEFAULT_ACCENT,
+    });
+    // Stored in small letters by something older: still the same swatch.
+    expect(initialDraft({ ...DEFAULT_SETTINGS, accentColor: "#be123c" }).ui.accentMode).toBe("#BE123C");
+    const own = initialDraft({ ...DEFAULT_SETTINGS, accentColor: "#AB12CD" });
+    expect(own.ui).toMatchObject({ accentMode: "custom", accentText: "#AB12CD" });
+    expect(resolveDraft(own).accentColor).toBe("#AB12CD");
+
+    let state = initialDraft(DEFAULT_SETTINGS);
+    const apply = (input: ControlInput) => {
+      state = applyInput(state, input);
+    };
+    // A swatch is a plain radio button: it reports its own value.
+    apply(control("ui.accentMode", "input", { checked: true, value: "#2563EB" }));
+    expect(resolveDraft(state).accentColor).toBe("#2563EB");
+    // Custom starts from the color the store had, not from the swatch just left.
+    apply(control("ui.accentMode", "input", { checked: true, value: "custom" }));
+    expect(resolveDraft(state).accentColor).toBe(DEFAULT_ACCENT);
+    apply(control("ui.accentText", "s-color-field", { value: " #0a0b0c " }));
+    expect(resolveDraft(state).accentColor).toBe("#0A0B0C");
+    // Not a color: handed on as it is, so the save is refused instead of
+    // going through with a color nobody picked.
+    apply(control("ui.accentText", "s-color-field", { value: "" }));
+    expect(resolveDraft(state).accentColor).toBe("");
+    apply(control("widgetPosition", "s-choice-list", { values: ["left"] }));
+    expect(resolveDraft(state).widgetPosition).toBe("left");
   });
 
   it("follow each kind of control", () => {

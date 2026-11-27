@@ -19,6 +19,7 @@ import {
   type TopicAnswers,
 } from "../../assistant/setting-options";
 import type { AssistantSettings } from "../../assistant/settings.server";
+import { isAccent, presetFor } from "../../assistant/widget-look";
 
 /**
  * Parts that stay away until the merchant asks for them: the text boxes for
@@ -30,6 +31,10 @@ export interface DraftUi {
   /** Which welcome message: a preset's position as text, or "custom". */
   greetingMode: string;
   greetingText: string;
+  /** Which colour: one of the swatches' own, or "custom". */
+  accentMode: string;
+  /** The merchant's own colour, as the colour field last reported it. */
+  accentText: string;
   /** Per topic: "" for not set, a listed answer's value, or "custom". */
   topicPick: Record<string, string>;
   topicText: Record<string, string>;
@@ -84,6 +89,9 @@ export function initialDraft(settings: AssistantSettings): DraftState {
       // A store always has a welcome message, so there is no "none" here.
       greetingMode: greeting.mode || "0",
       greetingText: greeting.text,
+      accentMode: presetFor(settings.accentColor)?.value ?? CUSTOM,
+      // "Custom" starts from the colour in use, so picking it changes nothing by itself.
+      accentText: settings.accentColor,
       topicPick,
       topicText,
       // Shown from the start only where the merchant already wrote something.
@@ -103,8 +111,8 @@ export function initialDraft(settings: AssistantSettings): DraftState {
   };
 }
 
-const UI_TEXT = ["greetingText"] as const;
-const UI_MODE = ["greetingMode"] as const;
+const UI_TEXT = ["greetingText", "accentText"] as const;
+const UI_MODE = ["greetingMode", "accentMode"] as const;
 
 /** The state after one control reported a change. Unknown controls change nothing. */
 export function applyInput(state: DraftState, control: ControlInput): DraftState {
@@ -168,9 +176,21 @@ function topicAnswers(ui: DraftUi): TopicAnswers {
 }
 
 /**
+ * The colour picked: a swatch's own, or the merchant's. One of their own
+ * that is not a colour (the field cleared, or half typed) is passed on as it
+ * stands, for the server to refuse by name instead of quietly saving another.
+ */
+function accentOf(ui: DraftUi): string {
+  if (ui.accentMode !== CUSTOM) return ui.accentMode;
+  const own = ui.accentText.trim();
+  return isAccent(own) ? own.toUpperCase() : own;
+}
+
+/**
  * The settings as they would be saved now. The fields worked out from
  * several controls (a welcome message that is a preset or the merchant's own
- * words, the answers to common questions) are filled in here.
+ * words, a colour that is a swatch or their own, the answers to common
+ * questions) are filled in here.
  */
 export function resolveDraft(state: DraftState): AssistantSettings {
   const { values, ui } = state;
@@ -182,6 +202,7 @@ export function resolveDraft(state: DraftState): AssistantSettings {
       values.returnConditions.includes(condition),
     ),
     greeting: fromMode(ui.greetingMode, ui.greetingText, GREETING_PRESETS),
+    accentColor: accentOf(ui),
     topics: topicAnswers(ui),
   };
 }

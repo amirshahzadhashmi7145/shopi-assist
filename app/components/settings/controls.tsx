@@ -1,7 +1,7 @@
 /**
  * The few building blocks every part of Settings is made of: a switch, a
- * list to pick from, a place that stays hidden until it is needed, and a line
- * that says something came from Shopify.
+ * list to pick from, a row of colours, a place that stays hidden until it is
+ * needed, and a line that says something came from Shopify.
  *
  * The controls keep their own state. They are given the saved value to start
  * from and never pushed a new one, so nothing the merchant has picked is
@@ -88,6 +88,97 @@ export function Reveal({
         children
       )}
     </div>
+  );
+}
+
+/** A colour not in the row of swatches: any at all, so it is drawn as every colour. */
+const ANY_COLOUR =
+  "conic-gradient(#ef4444, #f59e0b, #eab308, #22c55e, #06b6d4, #3b82f6, #a855f7, #ec4899, #ef4444)";
+
+/**
+ * The radio button under each swatch is kept, clear of the eye, so the row
+ * works as any group of radio buttons does: arrow keys, the form's reset,
+ * the unsaved-changes bar. Only the keyboard's place in it needs drawing.
+ */
+const SWATCH_CSS = `
+.shopi-swatch-input:focus-visible + .shopi-swatch {
+  outline: 2px solid #005bd3;
+  outline-offset: 3px;
+}`;
+
+/**
+ * A colour picked by eye from a row of swatches, with one more for a colour
+ * of the merchant's own. Plain radio buttons drawn as circles: Shopify's own
+ * list of choices shows text only.
+ */
+export function Swatches({
+  name,
+  label,
+  value,
+  picked,
+  options,
+  other,
+}: {
+  name: string;
+  label: string;
+  /** The saved pick, which the row starts from. */
+  value: string;
+  /** The pick as it stands now, which gets the ring. */
+  picked: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  /** The last swatch: any other colour. */
+  other: { value: string; label: string };
+}) {
+  const swatches = [
+    ...options.map((option) => ({ ...option, fill: option.value })),
+    { ...other, fill: ANY_COLOUR },
+  ];
+  return (
+    <s-stack direction="block" gap="small-200">
+      <style>{SWATCH_CSS}</style>
+      <s-text>{label}</s-text>
+      <div role="radiogroup" aria-label={label} style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        {swatches.map((swatch) => (
+          <label
+            key={swatch.value}
+            title={swatch.label}
+            style={{ position: "relative", display: "inline-flex", width: 32, height: 32 }}
+          >
+            <input
+              type="radio"
+              className="shopi-swatch-input"
+              name={name}
+              value={swatch.value}
+              aria-label={swatch.label}
+              defaultChecked={swatch.value === value}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                margin: 0,
+                opacity: 0,
+                cursor: "pointer",
+              }}
+            />
+            <span
+              className="shopi-swatch"
+              aria-hidden="true"
+              style={{
+                width: "100%",
+                height: "100%",
+                borderRadius: "50%",
+                background: swatch.fill,
+                boxShadow:
+                  swatch.value === picked
+                    ? "0 0 0 2px #ffffff, 0 0 0 4px #303030"
+                    : "inset 0 0 0 1px rgba(0, 0, 0, 0.18)",
+              }}
+            />
+          </label>
+        ))}
+      </div>
+    </s-stack>
   );
 }
 

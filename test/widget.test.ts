@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ACCENT_PRESETS, DEFAULT_ACCENT, readableOn } from "../app/assistant/widget-look";
+
 // The widget is a classic script: importing it once registers
 // `window.ShopiAssist.mount`, which each test then calls on a fresh mount point.
 // @ts-expect-error -- a classic browser script with no exports, not a module
@@ -51,8 +53,6 @@ function mountWidget(dataset: Record<string, string> = {}) {
     endpoint: "/apps/shopi-assist/chat",
     title: "Shop helper",
     greeting: "Welcome! Ask me anything.",
-    accent: "#1F3D2F",
-    position: "right",
     suggestion1: "What are your best sellers?",
     suggestion2: "",
     country: "US",
@@ -187,25 +187,104 @@ describe("chat widget", () => {
     ]);
   });
 
-  it("applies the accent color and a readable text color", () => {
-    const dark = mountWidget({ accent: "#1F3D2F" });
-    expect(dark.$(".sa").style.getPropertyValue("--sa-on-accent")).toBe("#ffffff");
+  const look = (widget: ReturnType<typeof mountWidget>) => {
+    const wrapper = widget.$(".sa");
+    return {
+      accent: wrapper.style.getPropertyValue("--sa-accent"),
+      text: wrapper.style.getPropertyValue("--sa-on-accent"),
+      position: wrapper.getAttribute("data-position"),
+      hidden: wrapper.hidden,
+    };
+  };
 
-    const light = mountWidget({ accent: "#FFE680" });
-    expect(light.$(".sa").style.getPropertyValue("--sa-accent")).toBe("#FFE680");
-    expect(light.$(".sa").style.getPropertyValue("--sa-on-accent")).toBe("#111111");
+  it("draws itself in the color and corner picked in the app, and waits to be told them", async () => {
+    configMock.mockImplementation(() => appConfig({ accent: "#FFE680", position: "left" }));
+    const widget = mountWidget();
+    // Until the app has answered it is the app's own defaults, and out of
+    // sight: shown now, the bubble would jump to another corner and colour.
+    expect(look(widget)).toEqual({ accent: DEFAULT_ACCENT, text: "#ffffff", position: "right", hidden: true });
 
-    const invalid = mountWidget({ accent: "red; background:url(x)" });
-    expect(invalid.$(".sa").style.getPropertyValue("--sa-accent")).toBe("#1F3D2F");
+    await flush();
+    // Dark text on a light colour, so it can be read.
+    expect(look(widget)).toEqual({ accent: "#FFE680", text: "#111111", position: "left", hidden: false });
   });
 
-  it("stays hidden until its stylesheet has loaded", () => {
+  it("takes nothing about its look from the page: the theme editor no longer says", async () => {
+    const widget = mountWidget({ accent: "#FF0000", position: "left" });
+    await flush();
+    expect(look(widget)).toMatchObject({ accent: DEFAULT_ACCENT, position: "right" });
+  });
+
+  it("keeps the color and corner it has when the app sends something that is neither", async () => {
+    configMock.mockImplementation(() =>
+      appConfig({ accent: "red; background:url(x)", position: "top: 0; left" }),
+    );
+    const widget = mountWidget();
+    await flush();
+    expect(look(widget)).toEqual({ accent: DEFAULT_ACCENT, text: "#ffffff", position: "right", hidden: false });
+    // Nothing of what was sent reached the page.
+    expect(widget.$(".sa").getAttribute("style")).not.toMatch(/url|red|top/);
+  });
+
+  it("shows straight away on the next page, as it looked on the last", async () => {
+    configMock.mockImplementation(() => appConfig({ accent: "#2563EB", position: "left" }));
+    mountWidget();
+    await flush();
+
+    // A new page in the same visit. The app is slow to answer this time.
+    configMock.mockImplementation(() => new Promise<Response>(() => {}));
+    const next = mountWidget();
+    expect(look(next)).toEqual({ accent: "#2563EB", text: "#ffffff", position: "left", hidden: false });
+  });
+
+  it("does not wait for ever: with no answer from the app it shows as it is", async () => {
+    vi.useFakeTimers();
+    try {
+      configMock.mockImplementation(() => new Promise<Response>(() => {}));
+      const widget = mountWidget();
+      vi.advanceTimersByTime(2400);
+      expect(look(widget).hidden).toBe(true);
+      vi.advanceTimersByTime(200);
+      expect(look(widget)).toEqual({ accent: DEFAULT_ACCENT, text: "#ffffff", position: "right", hidden: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("picks the text on each of the app's colors exactly as the app's preview does", async () => {
+    for (const preset of ACCENT_PRESETS) {
+      window.sessionStorage.clear();
+      configMock.mockImplementation(() => appConfig({ accent: preset.value }));
+      const widget = mountWidget();
+      await flush();
+      expect(look(widget), preset.label).toMatchObject({
+        accent: preset.value,
+        text: readableOn(preset.value),
+      });
+    }
+    // A light colour of the merchant's own gets dark text in both, too.
+    expect(readableOn("#FFE680")).toBe("#111111");
+    expect(readableOn("not a colour")).toBe("#ffffff");
+  });
+
+  it("stays hidden until its stylesheet has loaded as well", async () => {
     const widget = mountWidget({ stylesheet: "https://cdn.example/shopi-assist.css" });
     const wrapper = widget.$(".sa");
+    expect(wrapper.hidden).toBe(true);
+    // The app has answered, but the widget has no styles yet.
+    await flush();
     expect(wrapper.hidden).toBe(true);
 
     widget.root.querySelector("link")!.dispatchEvent(new Event("load"));
     expect(wrapper.hidden).toBe(false);
+
+    // The other way round: styled, and still waiting to hear how it should look.
+    window.sessionStorage.clear();
+    const early = mountWidget({ stylesheet: "https://cdn.example/shopi-assist.css" });
+    early.root.querySelector("link")!.dispatchEvent(new Event("load"));
+    expect(early.$(".sa").hidden).toBe(true);
+    await flush();
+    expect(early.$(".sa").hidden).toBe(false);
   });
 
   it("posts the message to the app proxy and shows the reply", async () => {
@@ -2183,8 +2262,9 @@ describe("chat widget", () => {
     expect(lastBody(fetchMock).conversationId).toBeNull();
   });
 
-  it("closes with Escape and returns focus to the launcher", () => {
+  it("closes with Escape and returns focus to the launcher", async () => {
     const widget = mountWidget();
+    await flush();
     widget.launcher.click();
 
     widget.input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

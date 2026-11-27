@@ -45,10 +45,16 @@ import type { AssistantSettings, SettingsErrors } from "../../assistant/settings
 import type { ShippingView } from "../../assistant/shipping";
 import type { StoreFactsView } from "../../assistant/store-facts";
 import {
+  ACCENT_PRESETS,
+  WIDGET_POSITIONS,
+  WIDGET_POSITION_LABELS,
+} from "../../assistant/widget-look";
+import {
   AddOwnWords,
   Columns,
   Pick,
   Reveal,
+  Swatches,
   SyncedLine,
   Toggle,
   errorProp,
@@ -150,6 +156,47 @@ function AssistantSection({ settings, errors, draft }: SectionProps) {
             />
           </Reveal>
           <input type="hidden" name="greeting" value={draft.draft.greeting} />
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Appearance">
+        <s-stack direction="block" gap="base">
+          <Swatches
+            name="ui.accentMode"
+            label="Chat color"
+            value={start.accentMode}
+            picked={ui.accentMode}
+            options={ACCENT_PRESETS}
+            other={{ value: CUSTOM, label: "Custom color" }}
+          />
+          <Reveal open={ui.accentMode === CUSTOM}>
+            <s-color-field
+              name="ui.accentText"
+              label="Your color"
+              defaultValue={start.accentText}
+              {...errorProp(errors.accentColor)}
+            />
+          </Reveal>
+          {/* Out of sight, a refused colour is still said. */}
+          {errors.accentColor && ui.accentMode !== CUSTOM && (
+            <s-text tone="critical">{errors.accentColor}</s-text>
+          )}
+          <input type="hidden" name="accentColor" value={draft.draft.accentColor} />
+          <s-choice-list
+            name="widgetPosition"
+            label="Position on the page"
+            {...errorProp(errors.widgetPosition)}
+          >
+            {WIDGET_POSITIONS.map((position) => (
+              <s-choice
+                key={position}
+                value={position}
+                {...selected(settings.widgetPosition === position)}
+              >
+                {WIDGET_POSITION_LABELS[position]}
+              </s-choice>
+            ))}
+          </s-choice-list>
         </s-stack>
       </s-section>
 

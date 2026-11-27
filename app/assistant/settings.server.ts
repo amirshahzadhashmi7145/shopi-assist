@@ -18,6 +18,7 @@ import {
 } from "./setting-options";
 import type { ShippingPicks } from "./shipping";
 import { NO_FACTS, type StoreFacts } from "./store-facts";
+import { DEFAULT_ACCENT, WIDGET_POSITIONS, isAccent } from "./widget-look";
 
 // The lists themselves live in setting-options.ts, which the settings pages
 // share. Re-exported for the code that has always found them here.
@@ -77,6 +78,13 @@ export const settingsSchema = z.object({
   // Personality.
   assistantName: text(40, "the name"),
   greeting: text(300, "the welcome message"),
+  // How the widget looks on the storefront.
+  accentColor: z
+    .string()
+    .trim()
+    .refine(isAccent, "Pick a colour, or enter one like #1F3D2F.")
+    .transform((colour) => colour.toUpperCase()),
+  widgetPosition: choice(WIDGET_POSITIONS),
   // What the assistant may do with an order that already exists.
   allowReturns: z.boolean(),
   allowOrderCancel: z.boolean(),
@@ -126,6 +134,8 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   topics: {},
   assistantName: DEFAULT_ASSISTANT_NAME,
   greeting: DEFAULT_GREETING,
+  accentColor: DEFAULT_ACCENT,
+  widgetPosition: "right",
   allowReturns: false,
   allowOrderCancel: false,
   allowAddressChange: false,
@@ -194,6 +204,8 @@ export async function getSettings(
     // Left empty, or never set: the defaults.
     assistantName: row.assistantName || DEFAULT_ASSISTANT_NAME,
     greeting: row.greeting || DEFAULT_GREETING,
+    accentColor: isAccent(row.accentColor) ? row.accentColor.toUpperCase() : DEFAULT_ACCENT,
+    widgetPosition: pickOr(WIDGET_POSITIONS, row.widgetPosition),
     allowReturns: row.allowReturns,
     allowOrderCancel: row.allowOrderCancel,
     allowAddressChange: row.allowAddressChange,
