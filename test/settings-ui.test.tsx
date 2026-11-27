@@ -682,10 +682,15 @@ describe("what Shopify already knows is shown, not asked", () => {
     )!;
     // What Shopify says the checkout takes is shown; nothing is there to pick, tick or type.
     expect(payment.textContent).toContain("Your checkout takes Visa.");
-    expect(payment.textContent).toContain(
-      "Nothing to set here. Whatever you offer in Shopify, cash on delivery included, shows on your checkout by itself",
-    );
     expect(payment.querySelectorAll("[name]")).toHaveLength(0);
+  });
+
+  it("has no line that only says there is nothing to set", () => {
+    // What has no setting is simply not on the page: the tone of voice is the
+    // same for every store, and how shoppers pay is the checkout's business.
+    const text = open().host.textContent ?? "";
+    expect(text).not.toContain("Tone of voice");
+    expect(text).not.toMatch(/nothing to set/i);
   });
 });
 

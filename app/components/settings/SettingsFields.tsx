@@ -150,13 +150,6 @@ function AssistantSection({ settings, errors, draft }: SectionProps) {
             />
           </Reveal>
           <input type="hidden" name="greeting" value={draft.draft.greeting} />
-          <s-stack direction="block" gap="small-500">
-            <s-text type="strong">Tone of voice</s-text>
-            <s-text color="subdued">
-              Professional, polite and precise. The same for every store, so there is nothing to
-              set.
-            </s-text>
-          </s-stack>
         </s-stack>
       </s-section>
 
@@ -697,23 +690,17 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
       </s-section>
 
       <s-section heading="Payment">
-        <s-stack direction="block" gap="base">
-          <SyncedLine
-            label="Online payments"
-            value={
-              paymentState === "unknown"
-                ? "Shopify couldn't be reached to check."
-                : paysWith.length
-                  ? `Your checkout takes ${listed(paysWith, 4)}.`
-                  : "Shopify reports no card brands or wallets for your checkout. A store on a test payment provider shows none."
-            }
-            state={paymentState}
-          />
-          <s-text color="subdued">
-            Nothing to set here. Whatever you offer in Shopify, cash on delivery included, shows
-            on your checkout by itself, and that is where shoppers choose how to pay.
-          </s-text>
-        </s-stack>
+        <SyncedLine
+          label="Online payments"
+          value={
+            paymentState === "unknown"
+              ? "Shopify couldn't be reached to check."
+              : paysWith.length
+                ? `Your checkout takes ${listed(paysWith, 4)}.`
+                : "Shopify reports no card brands or wallets for your checkout. A store on a test payment provider shows none."
+          }
+          state={paymentState}
+        />
       </s-section>
     </>
   );
