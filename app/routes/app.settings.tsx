@@ -37,10 +37,9 @@ import { shippingForPage, type ShippingView } from "../assistant/shipping";
 import { loadShippingRates } from "../assistant/shipping.server";
 import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
-import { syncStoreFactsForPage, type FactsReached } from "../assistant/store-facts.server";
+import { syncStoreFactsForPage } from "../assistant/store-facts.server";
 import { SectionNav, SettingsFields } from "../components/settings/SettingsFields";
 import { LivePreview } from "../components/settings/StorefrontPreview";
-import { SyncedFromShopify } from "../components/settings/SyncedFromShopify";
 import { useSettingsDraft } from "../components/settings/useSettingsDraft";
 import { factClients } from "../facts-clients.server";
 import { authenticate } from "../shopify.server";
@@ -71,7 +70,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     settings,
     facts: factsForPage(synced.facts),
     shipping: shippingForPage(rates),
-    reached: synced.reached,
     section: isSectionKey(wanted) ? wanted : ("assistant" as SectionKey),
     llmReady: getLlmStatus().ready,
   };
@@ -79,23 +77,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // The shop always comes from the authenticated session, never from the form.
-  const { session, admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const form = await request.formData();
-
-  if (form.get("intent") === "sync") {
-    const synced = await syncStoreFactsForPage(
-      session.shop,
-      await factClients(session.shop, admin),
-    );
-    return { ok: true, errors: {} as SettingsErrors, reached: synced.reached };
-  }
 
   const result = await saveSettings(
     session.shop,
     settingsFromForm(form, fieldsOf(ALL_SECTIONS)),
   );
   const errors: SettingsErrors = result.ok ? {} : result.errors;
-  return { ok: result.ok, errors, reached: null };
+  return { ok: result.ok, errors };
 };
 
 /**
@@ -115,10 +105,9 @@ type FormSubmitEvent =
 const NO_ERRORS: SettingsErrors = {};
 
 export default function Settings() {
-  const { shop, settings, facts, shipping, reached, section: startAt, llmReady } =
+  const { shop, settings, facts, shipping, section: startAt, llmReady } =
     useLoaderData<typeof loader>();
   const save = useFetcher<typeof action>({ key: "settings-save" });
-  const sync = useFetcher<typeof action>({ key: "settings-sync" });
   const shopify = useAppBridge();
 
   const saving = save.state !== "idle";
@@ -158,15 +147,12 @@ export default function Settings() {
         settings={settings}
         facts={facts}
         shipping={shipping}
-        reached={sync.data?.reached ?? reached}
         errors={errors}
         failed={failed}
         section={section}
         onSection={setSection}
         llmReady={llmReady}
         onSubmit={handleSubmit}
-        checking={sync.state !== "idle"}
-        onCheckAgain={() => sync.submit({ intent: "sync" }, { method: "POST" })}
       />
     </s-page>
   );
@@ -177,29 +163,23 @@ function Workspace({
   settings,
   facts,
   shipping,
-  reached,
   errors,
   failed,
   section,
   onSection,
   llmReady,
   onSubmit,
-  checking,
-  onCheckAgain,
 }: {
   shop: string;
   settings: AssistantSettings;
   facts: StoreFactsView;
   shipping: ShippingView;
-  reached: FactsReached | null;
   errors: SettingsErrors;
   failed: boolean;
   section: SectionKey;
   onSection: (section: SectionKey) => void;
   llmReady: boolean;
   onSubmit: (event: FormSubmitEvent) => void;
-  checking: boolean;
-  onCheckAgain: () => void;
 }) {
   const draft = useSettingsDraft(settings);
 
@@ -238,26 +218,6 @@ function Workspace({
           unsaved={draft.dirty}
           ready={llmReady}
           fetcherKey="settings-preview"
-        />
-      </s-section>
-
-      <s-section slot="aside" heading="From your Shopify store">
-        <SyncedFromShopify
-          facts={facts}
-          shipping={shipping}
-          reached={reached}
-          action={
-            <s-stack direction="inline">
-              <s-button
-                variant="tertiary"
-                icon="refresh"
-                onClick={onCheckAgain}
-                {...(checking ? { loading: true } : {})}
-              >
-                Check again
-              </s-button>
-            </s-stack>
-          }
         />
       </s-section>
     </>

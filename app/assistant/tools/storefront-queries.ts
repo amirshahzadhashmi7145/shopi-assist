@@ -311,23 +311,17 @@ export const PAYMENT_SETTINGS_QUERY = `#graphql
 
 /**
  * What the store's own settings say that a visitor could find out anyway:
- * where it delivers, how the checkout can be paid, which policies it has
- * published. Shown to the merchant as "synced from Shopify".
+ * how it describes itself, where it delivers, and whether it has published a
+ * refund policy and a shipping policy. Each stands in Settings where a
+ * question would otherwise be asked.
  */
 export const STORE_FACTS_QUERY = `#graphql
   query ShopiAssistStorefrontFacts {
     shop {
-      name
       description
       shipsToCountries
-      paymentSettings {
-        acceptedCardBrands
-        supportedDigitalWallets
-      }
       refundPolicy { id }
       shippingPolicy { id }
-      privacyPolicy { id }
-      termsOfService { id }
     }
   }
 `;

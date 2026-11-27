@@ -58,7 +58,6 @@ import {
 import { NO_SHIPPING_RATES, shippingForPage } from "../app/assistant/shipping";
 import { SettingsFields } from "../app/components/settings/SettingsFields";
 import { PreviewWindow, previewSuggestions } from "../app/components/settings/StorefrontPreview";
-import { syncedRows } from "../app/components/settings/SyncedFromShopify";
 import { createTestDb } from "./helpers/db";
 import { fakeGraphql, scriptedProvider, text } from "./helpers/fakes";
 
@@ -80,39 +79,25 @@ beforeEach(async () => {
 
 /** What Shopify's two APIs answer for a small, complete store. */
 const adminAnswer = (overrides: Record<string, unknown> = {}) => ({
-  shop: { name: "Alpine Outfitters", contactEmail: "hello@alpine.example", currencyCode: "CAD" },
-  productsCount: { count: 42, precision: "EXACT" },
-  giftCardProducts: { nodes: [{ id: "gid://shopify/Product/9" }] },
+  shop: { contactEmail: "hello@alpine.example", currencyCode: "CAD" },
   ...overrides,
 });
 const storefrontAnswer = (overrides: Record<string, unknown> = {}) => ({
   shop: {
-    name: "Alpine Outfitters",
     description: "Small-batch snowboards, built in Canada.",
     shipsToCountries: ["US", "CA"],
-    paymentSettings: {
-      acceptedCardBrands: ["VISA", "MASTERCARD"],
-      supportedDigitalWallets: ["SHOPIFY_PAY"],
-    },
     refundPolicy: { id: "gid://shopify/ShopPolicy/1" },
     shippingPolicy: null,
-    privacyPolicy: { id: "gid://shopify/ShopPolicy/3" },
-    termsOfService: null,
     ...overrides,
   },
 });
 const FACTS: StoreFacts = {
   syncedAt: "2026-11-26T10:00:00.000Z",
-  shopName: "Alpine Outfitters",
   description: "Small-batch snowboards, built in Canada.",
   currencyCode: "CAD",
   contactEmail: "hello@alpine.example",
   shipsTo: ["US", "CA"],
-  cards: ["VISA", "MASTERCARD"],
-  wallets: ["SHOPIFY_PAY"],
-  policies: { refund: true, shipping: false, privacy: true, terms: false },
-  products: 42,
-  giftCards: true,
+  policies: { refund: true, shipping: false },
 };
 const storeFacts = (shop: string, facts: StoreFacts) =>
   db.shopSettings.upsert({
@@ -474,22 +459,22 @@ describe("what Shopify says about the store", () => {
         currencyCode: "cad",
         contactEmail: "not an address",
         shipsTo: ["CA", "us", "CA", 7, "USA"],
-        cards: ["VISA", "visa", "<script>"],
-        wallets: "SHOPIFY_PAY",
-        policies: { refund: true, shipping: "yes" },
-        products: -3,
-        giftCards: "true",
+        policies: { refund: true, shipping: "yes", privacy: true, terms: true },
         // Once kept here, now read live each time: a stored copy is dropped.
         processingDays: 2,
+        // Once kept only to be shown in a panel that is gone: dropped too.
+        cards: ["VISA"],
+        wallets: ["SHOPIFY_PAY"],
+        products: 42,
+        productsCapped: true,
+        giftCards: true,
         admin: true,
       }),
     ).toEqual({
       syncedAt: "2026-11-26T10:00:00.000Z",
-      shopName: "Alpine Outfitters",
       description: "x".repeat(400),
       shipsTo: ["CA"],
-      cards: ["VISA"],
-      policies: { refund: true, shipping: false, privacy: false, terms: false },
+      policies: { refund: true, shipping: false },
     });
     for (const nothing of [null, "facts", [], 5]) expect(cleanStoreFacts(nothing)).toEqual(NO_FACTS);
     expect(readStoreFacts("{not json")).toEqual(NO_FACTS);
@@ -500,12 +485,11 @@ describe("what Shopify says about the store", () => {
   it("names cards and wallets the way shoppers know them", () => {
     expect(
       paymentNames({
-        syncedAt: null,
         cards: ["AMERICAN_EXPRESS", "SOME_NEW_CARD"],
         wallets: ["ANDROID_PAY", "GOOGLE_PAY"],
       }),
     ).toEqual({ cards: ["American Express", "Some New Card"], wallets: ["Google Pay"] });
-    expect(paymentNames(NO_FACTS)).toEqual({ cards: [], wallets: [] });
+    expect(paymentNames({})).toEqual({ cards: [], wallets: [] });
   });
 
   it("asks Shopify and stores the answer for the signed-in shop only", async () => {
@@ -578,8 +562,9 @@ describe("what Shopify says about the store", () => {
     );
     expect(partial.reached).toEqual({ admin: false, storefront: true });
     expect(partial.facts).toMatchObject({
-      contactEmail: "hello@alpine.example", // from the Admin API, as last known
-      products: 42,
+      // From the Admin API, as last known.
+      contactEmail: "hello@alpine.example",
+      currencyCode: "CAD",
       shipsTo: ["CA"],
       // Half an answer is not a sync: the time of the last full one stands.
       syncedAt: "2026-11-26T10:00:00.000Z",
@@ -704,25 +689,18 @@ describe("what Shopify says about the store", () => {
     expect(aboutBusiness({ ...written, aboutStore: "none" }, FACTS)).toBe("");
   });
 
-  it("sums the facts up for the merchant, and says when something could not be checked", () => {
-    const rows = (facts: StoreFacts) => syncedRows(factsForPage(facts));
-    const tones = (facts: StoreFacts) => Object.fromEntries(rows(facts).map((row) => [row.label, row.tone]));
-    expect(rows(FACTS).map((row) => `${row.label}: ${row.value}`)).toEqual([
-      "Catalog: 42 active products",
-      "Policies: Published: Refund, Privacy",
-      "Shipping regions: Canada, United States",
-      "Payment methods: Visa, Mastercard, Shop Pay",
-      "Store details: Your store's name, currency (CAD), contact email",
-    ]);
-    // A shipping policy is missing: worth the merchant's attention.
-    expect(tones(FACTS)).toMatchObject({ Catalog: "success", Policies: "warning", "Shipping regions": "success" });
-    expect(new Set(Object.values(tones(NO_FACTS)))).toEqual(new Set(["neutral"]));
-    expect(rows(NO_FACTS).every((row) => row.value === "Couldn't check just now")).toBe(true);
-    expect(tones({ syncedAt: null, products: 0, shipsTo: [], cards: [], wallets: [] })).toMatchObject({
-      Catalog: "warning",
-      "Shipping regions": "warning",
-      "Payment methods": "neutral",
-    });
+  it("asks Shopify only for what something uses", async () => {
+    const admin = fakeGraphql(adminAnswer());
+    const storefront = fakeGraphql(storefrontAnswer());
+    await syncStoreFacts(SHOP_A, { admin, storefront }, { db });
+    const asked = [...admin.calls, ...storefront.calls].map((call) => call.query).join("\n");
+    // Facts once read only to be listed in a panel are not read at all now.
+    for (const gone of ["productsCount", "gift_card", "paymentSettings", "privacyPolicy", "termsOfService", "name"]) {
+      expect(asked).not.toMatch(new RegExp(`\\b${gone}\\b`));
+    }
+    for (const kept of ["contactEmail", "currencyCode", "description", "shipsToCountries", "refundPolicy", "shippingPolicy"]) {
+      expect(asked).toContain(kept);
+    }
   });
 });
 

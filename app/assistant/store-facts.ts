@@ -1,19 +1,22 @@
 /**
  * What the app learned about a store from Shopify itself, so the merchant
- * does not have to type it: where it ships, how shoppers can pay, which
- * policies are published, how big the catalog is.
+ * does not have to type it: its description, its contact address, its
+ * currency, where it ships and whether its refund and shipping policies are
+ * published.
+ *
+ * Only what something uses is kept. Each fact either stands in Settings
+ * where a question would otherwise be asked, or is told to the assistant.
+ * Of these the assistant is told two, and each only if the merchant chooses:
+ * the store's own description, when they picked it as their business
+ * description, and its contact address, when they picked it as their contact
+ * answer. Where the store delivers, what delivery costs, how soon orders
+ * leave and how shoppers can pay are not taken from here: the assistant
+ * reads those from Shopify at the moment it is asked (see shipping.server.ts
+ * and the shopper tools). A fact Shopify did not answer for is simply
+ * absent: absent means "unknown", which is different from "none".
  *
  * The facts are read from Shopify with the merchant's own session (see
- * store-facts.server.ts), kept with the shop's settings, and shown in the
- * admin as "Synced from Shopify". Of these the assistant is told two, and
- * each only if the merchant chooses: the store's own description, when they
- * picked it as their business description, and its contact address, when
- * they picked it as their contact answer. Where the store delivers, what
- * delivery costs, how soon orders leave and how shoppers can pay are not
- * taken from here: the assistant reads those from Shopify at the moment it is
- * asked (see shipping.server.ts and the shopper tools). A fact Shopify did
- * not answer for is simply absent: absent means "unknown", which is different
- * from "none".
+ * store-facts.server.ts) and kept with the shop's settings.
  *
  * Nothing here touches Shopify, the database or an LLM.
  */
@@ -25,7 +28,6 @@ export interface StoreFacts {
    * it was, so the rest is asked for again soon.
    */
   syncedAt: string | null;
-  shopName?: string;
   /** The store's own description of itself, as set in Shopify. */
   description?: string;
   currencyCode?: string;
@@ -38,15 +40,8 @@ export interface StoreFacts {
    * shown only where the store is known to be on profiles.
    */
   shipsTo?: string[];
-  /** Card brands and wallets the checkout takes, as Shopify names them. */
-  cards?: string[];
-  wallets?: string[];
-  /** Which policies the store has published. */
-  policies?: { refund: boolean; shipping: boolean; privacy: boolean; terms: boolean };
-  /** Active products, and whether the real number is higher than Shopify counted. */
-  products?: number;
-  productsCapped?: boolean;
-  giftCards?: boolean;
+  /** Whether the store has published each of the two policies Settings has picks for. */
+  policies?: { refund: boolean; shipping: boolean };
 }
 
 export const NO_FACTS: StoreFacts = { syncedAt: null };
@@ -82,8 +77,6 @@ export function cleanStoreFacts(input: unknown): StoreFacts {
         : null,
   };
 
-  const shopName = text(raw.shopName, 120);
-  if (shopName) facts.shopName = shopName;
   const description = text(raw.description, 400);
   if (description) facts.description = description;
   if (typeof raw.currencyCode === "string" && /^[A-Z]{3}$/.test(raw.currencyCode)) {
@@ -99,25 +92,14 @@ export function cleanStoreFacts(input: unknown): StoreFacts {
 
   const shipsTo = codes(raw.shipsTo, /^[A-Z]{2}$/, 300);
   if (shipsTo) facts.shipsTo = shipsTo;
-  const cards = codes(raw.cards, /^[A-Z][A-Z_]{1,39}$/, 30);
-  if (cards) facts.cards = cards;
-  const wallets = codes(raw.wallets, /^[A-Z][A-Z_]{1,39}$/, 30);
-  if (wallets) facts.wallets = wallets;
 
   if (raw.policies && typeof raw.policies === "object") {
     const policies = raw.policies as Record<string, unknown>;
     facts.policies = {
       refund: policies.refund === true,
       shipping: policies.shipping === true,
-      privacy: policies.privacy === true,
-      terms: policies.terms === true,
     };
   }
-  if (typeof raw.products === "number" && Number.isInteger(raw.products) && raw.products >= 0) {
-    facts.products = raw.products;
-    if (raw.productsCapped === true) facts.productsCapped = true;
-  }
-  if (typeof raw.giftCards === "boolean") facts.giftCards = raw.giftCards;
   return facts;
 }
 
@@ -161,11 +143,22 @@ const titled = (code: string) =>
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
 
-export function paymentNames(facts: StoreFacts): { cards: string[]; wallets: string[] } {
+/**
+ * Card brands and wallets as shoppers know them, from Shopify's codes for
+ * them. Not a stored fact: the assistant reads a checkout's cards and
+ * wallets from Shopify when a shopper asks, and names them with this.
+ */
+export function paymentNames(checkout: { cards?: string[]; wallets?: string[] }): {
+  cards: string[];
+  wallets: string[];
+} {
   const named = (list: string[] | undefined, names: Record<string, string>) => [
     ...new Set((list ?? []).map((code) => names[code] ?? titled(code))),
   ];
-  return { cards: named(facts.cards, CARD_NAMES), wallets: named(facts.wallets, WALLET_NAMES) };
+  return {
+    cards: named(checkout.cards, CARD_NAMES),
+    wallets: named(checkout.wallets, WALLET_NAMES),
+  };
 }
 
 let regionNames: Intl.DisplayNames | null | undefined;

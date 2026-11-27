@@ -170,9 +170,8 @@ export default function Home() {
               )}
             </s-stack>
             <s-paragraph>
-              Switch features on or off, pick your policies and the answers to common
-              questions, and see what the assistant reads from your Shopify store. None of it
-              has to be typed.
+              Switch features on or off, and pick your policies and the answers to common
+              questions. None of it has to be typed.
             </s-paragraph>
             <s-stack direction="inline" gap="small">
               <s-button href="/app/settings">Open settings</s-button>

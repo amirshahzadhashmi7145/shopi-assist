@@ -17,39 +17,22 @@ import type { GraphqlFn } from "./types";
 export const STORE_FACTS_ADMIN_QUERY = `#graphql
   query ShopiAssistStoreFacts {
     shop {
-      name
       contactEmail
       currencyCode
-    }
-    productsCount(query: "status:active") {
-      count
-      precision
-    }
-    giftCardProducts: products(first: 1, query: "gift_card:true status:active") {
-      nodes { id }
     }
   }
 `;
 
 interface AdminFacts {
-  shop: { name: string | null; contactEmail: string | null; currencyCode: string | null } | null;
-  productsCount: { count: number; precision: string } | null;
-  giftCardProducts: { nodes: Array<{ id: string }> } | null;
+  shop: { contactEmail: string | null; currencyCode: string | null } | null;
 }
 
 interface StorefrontFacts {
   shop: {
-    name: string | null;
     description: string | null;
     shipsToCountries: string[] | null;
-    paymentSettings: {
-      acceptedCardBrands: string[] | null;
-      supportedDigitalWallets: string[] | null;
-    } | null;
     refundPolicy: { id: string } | null;
     shippingPolicy: { id: string } | null;
-    privacyPolicy: { id: string } | null;
-    termsOfService: { id: string } | null;
   } | null;
 }
 
@@ -64,15 +47,8 @@ export interface FactsReached {
   storefront: boolean;
 }
 
-const ADMIN_KEYS = [
-  "shopName",
-  "contactEmail",
-  "currencyCode",
-  "products",
-  "productsCapped",
-  "giftCards",
-] as const;
-const STOREFRONT_KEYS = ["description", "shipsTo", "cards", "wallets", "policies"] as const;
+const ADMIN_KEYS = ["contactEmail", "currencyCode"] as const;
+const STOREFRONT_KEYS = ["description", "shipsTo", "policies"] as const;
 
 /** The facts kept for a shop, or an error when the database cannot be read. */
 async function readStoredFacts(shop: string, db: PrismaClient): Promise<StoreFacts> {
@@ -143,29 +119,18 @@ export async function syncStoreFacts(
   const next: Record<string, unknown> = { ...stored };
   if (admin) {
     for (const key of ADMIN_KEYS) delete next[key];
-    next.shopName = admin.shop?.name ?? undefined;
     next.contactEmail = admin.shop?.contactEmail ?? undefined;
     next.currencyCode = admin.shop?.currencyCode ?? undefined;
-    if (admin.productsCount) {
-      next.products = admin.productsCount.count;
-      next.productsCapped = admin.productsCount.precision !== "EXACT";
-    }
-    if (admin.giftCardProducts) next.giftCards = admin.giftCardProducts.nodes.length > 0;
   }
   if (storefront?.shop) {
     for (const key of STOREFRONT_KEYS) delete next[key];
     const found = storefront.shop;
     next.description = found.description ?? undefined;
     next.shipsTo = found.shipsToCountries ?? [];
-    next.cards = found.paymentSettings?.acceptedCardBrands ?? [];
-    next.wallets = found.paymentSettings?.supportedDigitalWallets ?? [];
     next.policies = {
       refund: Boolean(found.refundPolicy),
       shipping: Boolean(found.shippingPolicy),
-      privacy: Boolean(found.privacyPolicy),
-      terms: Boolean(found.termsOfService),
     };
-    if (!next.shopName && found.name) next.shopName = found.name;
   }
   if (reached.admin && reached.storefront) next.syncedAt = now.toISOString();
 
@@ -181,8 +146,8 @@ export async function syncStoreFacts(
 
 /**
  * For the admin pages: the same, but a page never fails because of it. When
- * nothing could be read or stored, the page is told that Shopify was not
- * reached and shows what it has.
+ * nothing could be read or stored, the page gets no facts and asks the
+ * merchant what Shopify would otherwise have answered.
  */
 export async function syncStoreFactsForPage(
   shop: string,

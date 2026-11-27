@@ -384,7 +384,6 @@ const getPaymentMethods = defineTool({
       } | null;
     }>(PAYMENT_SETTINGS_QUERY);
     const { cards, wallets } = paymentNames({
-      syncedAt: null,
       cards: data.shop?.paymentSettings?.acceptedCardBrands ?? [],
       wallets: data.shop?.paymentSettings?.supportedDigitalWallets ?? [],
     });

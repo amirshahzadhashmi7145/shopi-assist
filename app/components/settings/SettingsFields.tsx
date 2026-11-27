@@ -5,13 +5,16 @@
  *
  * Only what a merchant decides is here. What every store has (answering
  * about products, adding to the cart, the way to the checkout) has no switch
- * and no line of its own.
+ * and no line of its own, and nothing here only reports what was read from
+ * Shopify: a line from Shopify stands where a question would otherwise be
+ * asked, or beside the picks it bears on.
  *
  * Built so a merchant can set the assistant up without writing anything:
  *  - features are switches, and a feature's own options appear only once it
  *    is on;
  *  - policies and common questions are picked from lists;
- *  - what Shopify already knows is read from Shopify and shown as synced;
+ *  - what Shopify already answers is not asked: its answer is shown in the
+ *    question's place;
  *  - a text box appears only where a name is needed, or after the merchant
  *    picks "Custom" or asks to add something in their own words.
  *
@@ -40,7 +43,7 @@ import {
 } from "../../assistant/setting-options";
 import type { AssistantSettings, SettingsErrors } from "../../assistant/settings.server";
 import type { ShippingView } from "../../assistant/shipping";
-import { paymentNames, type StoreFacts, type StoreFactsView } from "../../assistant/store-facts";
+import type { StoreFactsView } from "../../assistant/store-facts";
 import {
   AddOwnWords,
   Columns,
@@ -49,7 +52,6 @@ import {
   SyncedLine,
   Toggle,
   errorProp,
-  type SyncState,
 } from "./controls";
 import { initialDraft } from "./draft";
 import type { SettingsDraft } from "./useSettingsDraft";
@@ -87,11 +89,6 @@ function listed(names: string[], show = 3): string {
   if (names.length <= show) return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
   return `${names.slice(0, show).join(", ")} and ${names.length - show} more`;
 }
-
-const productCount = (facts: StoreFacts) =>
-  facts.products === undefined
-    ? ""
-    : `${facts.products.toLocaleString("en-US")}${facts.productsCapped ? "+" : ""} active ${facts.products === 1 ? "product" : "products"}`;
 
 // ---------------------------------------------------------------------------
 // Assistant
@@ -448,10 +445,6 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
   const atLeast = liveRates && shipping.truncated ? "at least " : "";
   // Shopify was read, and everything it holds was: what it lists is the whole answer.
   const readInFull = shipping.state === "live" && !shipping.truncated && !shipping.otherProfiles;
-  const { cards, wallets } = paymentNames(facts);
-  const paysWith = [...cards, ...wallets];
-  const paymentState: SyncState =
-    facts.cards === undefined ? "unknown" : paysWith.length ? "synced" : "none";
 
   return (
     <>
@@ -660,20 +653,6 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
           </AddOwnWords>
         </s-stack>
       </s-section>
-
-      <s-section heading="Payment">
-        <SyncedLine
-          label="Online payments"
-          value={
-            paymentState === "unknown"
-              ? "Shopify couldn't be reached to check."
-              : paysWith.length
-                ? `Your checkout takes ${listed(paysWith, 4)}.`
-                : "Shopify reports no card brands or wallets for your checkout. A store on a test payment provider shows none."
-          }
-          state={paymentState}
-        />
-      </s-section>
     </>
   );
 }
@@ -685,59 +664,9 @@ function PoliciesSection({ settings, facts, shipping, errors, shop, draft }: Sec
 function KnowledgeSection({ settings, facts, errors, shop, draft }: SectionProps) {
   const start = initialDraft(settings).ui;
   const { values, ui } = draft.state;
-  const count = productCount(facts);
-  const published = [
-    facts.policies?.refund ? "refund" : "",
-    facts.policies?.shipping ? "shipping" : "",
-    facts.policies?.privacy ? "privacy" : "",
-    facts.policies?.terms ? "terms of service" : "",
-  ].filter(Boolean);
 
   return (
     <>
-      <s-section heading="What the assistant already knows">
-        <s-stack direction="block" gap="base">
-          <s-paragraph color="subdued">
-            Read from your store and kept up to date, so there is nothing to type.
-          </s-paragraph>
-          <SyncedLine
-            label="Products"
-            value={`Titles, descriptions, variants, prices, stock and images${count ? `: ${count}` : ""}.`}
-            state={facts.products === undefined ? "unknown" : "synced"}
-          />
-          <SyncedLine
-            label="Store policies"
-            value={
-              facts.policies === undefined
-                ? "Shopify couldn't be reached to check."
-                : published.length
-                  ? `Published: ${listed(published, 4)}.`
-                  : "None published in Shopify yet."
-            }
-            state={
-              facts.policies === undefined ? "unknown" : published.length ? "synced" : "missing"
-            }
-          >
-            {facts.policies !== undefined && published.length === 0 && (
-              <s-link href={adminUrl(shop, "settings/legal")} target="_top">
-                Add policies in Shopify
-              </s-link>
-            )}
-          </SyncedLine>
-          {facts.giftCards !== undefined && (
-            <SyncedLine
-              label="Gift cards"
-              value={
-                facts.giftCards
-                  ? "Sold in your store. The assistant finds them like any other product."
-                  : "None in your catalog, so the assistant says you don't sell them."
-              }
-              state={facts.giftCards ? "synced" : "none"}
-            />
-          )}
-        </s-stack>
-      </s-section>
-
       <s-section heading="About your store">
         <s-stack direction="block" gap="base">
           <s-choice-list

@@ -27,7 +27,6 @@ import { shopperTools } from "../app/assistant/tools";
 import type { ToolContext } from "../app/assistant/tools/registry";
 import { toolsFor } from "../app/assistant/tools/registry";
 import { PAYMENT_SETTINGS_QUERY, SHIPS_TO_QUERY } from "../app/assistant/tools/storefront-queries";
-import { syncedRows } from "../app/components/settings/SyncedFromShopify";
 import { fakeGraphql, toolContext } from "./helpers/fakes";
 
 // ---------------------------------------------------------------------------
@@ -857,60 +856,6 @@ describe("the rates on the Settings page", () => {
     expect(shippingForPage(marketRates(markets([UNITED_STATES]))).deliveryTimes).toBe(true);
     // ...unless there are markets that were not read, whose rates may not.
     expect(shippingForPage(marketRates(markets([UNITED_STATES], true))).deliveryTimes).toBe(false);
-  });
-
-  it("tells the merchant in one line where the rates stand", () => {
-    const facts = { syncedAt: null, countries: [] };
-    const rows = (rates: ShippingRates) => {
-      const found = syncedRows(facts, shippingForPage(rates));
-      const value = (label: string) => found.find((entry) => entry.label === label);
-      return { rates: value("Shipping rates"), regions: value("Shipping regions") };
-    };
-
-    expect(rows(profileRates()).rates).toEqual({
-      label: "Shipping rates",
-      value: "2 zones, read live each time a shopper asks",
-      tone: "success",
-    });
-    expect(rows(marketRates())).toEqual({
-      rates: { label: "Shipping rates", value: "2 markets, read live each time a shopper asks", tone: "success" },
-      regions: { label: "Shipping regions", value: "Canada, United States", tone: "success" },
-    });
-    // More than were read: the figures are floors, and are shown as floors.
-    const cut = rows(marketRates(TWO_MARKETS, { truncated: true }));
-    expect(cut.rates?.value).toBe("2+ markets, read live each time a shopper asks");
-    expect(cut.regions?.value).toBe("at least 2 countries");
-
-    expect(rows({ ...NO_SHIPPING_RATES, state: "no_access" }).rates?.tone).toBe("warning");
-    expect(rows({ ...NO_SHIPPING_RATES, state: "live" }).rates?.value).toBe("None set up yet");
-    // "None" only when everything was read.
-    for (const partly of [{ truncated: true }, { otherProfiles: true }]) {
-      expect(rows({ ...NO_SHIPPING_RATES, state: "live", model: "markets", ...partly })).toMatchObject({
-        rates: { value: "Couldn't be read in full", tone: "neutral" },
-        regions: { value: "Couldn't be read in full", tone: "neutral" },
-      });
-    }
-    expect(rows(NO_SHIPPING_RATES).rates?.tone).toBe("neutral");
-    // Without rates passed in, the row is simply not there.
-    expect(syncedRows(facts).some((entry) => entry.label === "Shipping rates")).toBe(false);
-  });
-
-  it("shows Shopify's list of countries with a shipping zone only for a store that uses zones", () => {
-    // What the Storefront API lists: right on profiles, left behind on markets.
-    const facts = { syncedAt: null, shipsTo: ["US"], countries: ["United States"] };
-    const regions = (rates: ShippingRates) =>
-      syncedRows(facts, shippingForPage(rates)).find((entry) => entry.label === "Shipping regions");
-
-    expect(regions({ ...NO_SHIPPING_RATES, state: "no_access", model: "profiles" })).toMatchObject({
-      value: "United States",
-      tone: "success",
-    });
-    expect(regions({ ...NO_SHIPPING_RATES, state: "no_access", model: "markets" })).toMatchObject({
-      value: "Shown once the permission is approved",
-      tone: "neutral",
-    });
-    // Not known which the store is on: the list is not trusted either.
-    expect(regions(NO_SHIPPING_RATES)?.value).toBe("Couldn't check just now");
   });
 });
 

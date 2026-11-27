@@ -59,16 +59,11 @@ const DEFAULTS: AssistantSettings = {
 
 const FACTS: StoreFacts = {
   syncedAt: "2026-11-26T10:00:00.000Z",
-  shopName: "Alpine Outfitters",
   description: "Small-batch snowboards, built in Canada.",
   currencyCode: "CAD",
   contactEmail: "hello@alpine.example",
   shipsTo: ["US", "CA"],
-  cards: ["VISA"],
-  wallets: [],
-  policies: { refund: true, shipping: false, privacy: true, terms: false },
-  products: 42,
-  giftCards: false,
+  policies: { refund: true, shipping: false },
 };
 
 /** A store on shipping zones whose rates could not be read: Shopify still lists its countries. */
@@ -678,15 +673,14 @@ describe("what Shopify already knows is shown, not asked", () => {
     );
   });
 
-  it("asks nothing about how shoppers pay: the checkout shows whatever the store offers", () => {
+  it("asks nothing about how shoppers pay, and says nothing about it: that is the checkout's business", () => {
     const page = open();
     expect(page.find('[name="codAvailable"]')).toBeNull();
-    const payment = [...page.host.querySelectorAll("s-section")].find(
-      (section) => section.getAttribute("heading") === "Payment",
-    )!;
-    // What Shopify says the checkout takes is shown; nothing is there to pick, tick or type.
-    expect(payment.textContent).toContain("Your checkout takes Visa.");
-    expect(payment.querySelectorAll("[name]")).toHaveLength(0);
+    const headings = [...page.host.querySelectorAll("s-section")].map((section) =>
+      section.getAttribute("heading"),
+    );
+    expect(headings).not.toContain("Payment");
+    expect(page.host.textContent).not.toMatch(/online payments|your checkout takes/i);
   });
 
   it("has no line that only says there is nothing to set", () => {
@@ -694,7 +688,34 @@ describe("what Shopify already knows is shown, not asked", () => {
     // same for every store, and how shoppers pay is the checkout's business.
     const text = open().host.textContent ?? "";
     expect(text).not.toContain("Tone of voice");
-    expect(text).not.toMatch(/nothing to set/i);
+    expect(text).not.toMatch(/nothing to (set|type)/i);
+  });
+
+  it("has no block that only reports what was read from Shopify", () => {
+    // A line from Shopify stands where a question would otherwise be asked, or
+    // beside the picks it bears on. A section holding nothing to set is gone.
+    const page = open();
+    const sections = [...page.host.querySelectorAll("s-section")];
+    expect(sections.map((section) => section.getAttribute("heading"))).toEqual([
+      "Storefront chat",
+      "Name and welcome",
+      "Ratings and privacy",
+      "Order management",
+      "Returns",
+      "Shipping",
+      "About your store",
+      "Common questions",
+      "Anything else",
+    ]);
+    for (const section of sections) {
+      expect(
+        section.querySelectorAll("[name], s-button").length,
+        `"${section.getAttribute("heading")}" has something to set`,
+      ).toBeGreaterThan(0);
+    }
+    expect(page.host.textContent).not.toMatch(
+      /what the assistant already knows|from your shopify store|active products|gift cards|store details/i,
+    );
   });
 });
 

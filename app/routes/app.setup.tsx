@@ -41,7 +41,6 @@ import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
 import { syncStoreFactsForPage } from "../assistant/store-facts.server";
 import { SettingsFields } from "../components/settings/SettingsFields";
 import { LivePreview } from "../components/settings/StorefrontPreview";
-import { SyncedFromShopify } from "../components/settings/SyncedFromShopify";
 import { useSettingsDraft } from "../components/settings/useSettingsDraft";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
 import { factClients } from "../facts-clients.server";
@@ -71,7 +70,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const [settings, synced, rates] = await Promise.all([
     getSettings(shop),
-    // The first thing the tour shows is what the store already told us.
+    // What Shopify already answers for the store is not asked in the steps.
     factClients(shop, admin).then((clients) =>
       syncStoreFactsForPage(shop, clients, { maxAgeMs: 10 * 1000 }),
     ),
@@ -86,7 +85,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     settings,
     facts: factsForPage(synced.facts),
     shipping: shippingForPage(rates),
-    reached: synced.reached,
     progress: setupProgress(settings),
     completed: state.completed,
     llmReady: getLlmStatus().ready,
@@ -180,7 +178,7 @@ function StepForm({
 }
 
 export default function Setup() {
-  const { step, shop, apiKey, settings, facts, shipping, reached, progress, completed, llmReady } =
+  const { step, shop, apiKey, settings, facts, shipping, progress, completed, llmReady } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -310,10 +308,6 @@ export default function Setup() {
             </s-stack>
           ))}
         </s-stack>
-      </s-section>
-
-      <s-section slot="aside" heading="From your Shopify store">
-        <SyncedFromShopify facts={facts} shipping={shipping} reached={reached} />
       </s-section>
 
       <s-section slot="aside" heading="Good to know">
