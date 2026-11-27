@@ -277,7 +277,6 @@ describe("chat widget", () => {
       { id: "202", title: "Special", price: { amount: "49.95", currencyCode: "USD" }, available: false },
       { id: "203", title: "Sample", price: { amount: "9.95", currencyCode: "USD" }, available: true },
     ];
-    configMock.mockImplementation(() => appConfig({ buyNow: true }));
     const { adds } = liveCart(
       { 201: ["Ski Wax - Regular", 2495], 203: ["Ski Wax - Sample", 995] },
       () =>
@@ -353,7 +352,7 @@ describe("chat widget", () => {
     expect([add.disabled, buy.disabled]).toEqual([true, true]);
   });
 
-  it("adds the picked versions to the cart, starts the only one in stock at one, and offers Buy now only when allowed", async () => {
+  it("adds the picked versions to the cart, and starts the only one in stock at one", async () => {
     fetchMock.mockImplementation((url: string) =>
       url === "/cart/add.js"
         ? jsonResponse({ items: [] })
@@ -385,7 +384,7 @@ describe("chat widget", () => {
     expect(item.querySelector(".sa-card-total")!.textContent).toBe("1 item · $18.00");
 
     const buttons = Array.from(item.querySelectorAll<HTMLButtonElement>(".sa-card-actions button"));
-    expect(buttons.map((button) => button.textContent)).toEqual(["Add to cart"]);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Add to cart", "Buy now"]);
     expect(buttons[0].disabled).toBe(false);
     buttons[0].click();
     await flush();
@@ -414,7 +413,6 @@ describe("chat widget", () => {
           ],
         }),
     );
-    configMock.mockImplementation(() => appConfig({ buyNow: true }));
     const widget = mountWidget();
     await flush();
     widget.launcher.click();
@@ -481,19 +479,21 @@ describe("chat widget", () => {
   it("asks for the app's settings again after a reply when the page loaded without them", async () => {
     // The app could not be reached when the page loaded.
     configMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
-    configMock.mockImplementation(() => appConfig({ buyNow: true }));
+    configMock.mockImplementation(() => appConfig({ title: "Ava" }));
     const widget = mountWidget();
     await flush();
-    widget.launcher.click();
-    widget.send("mugs?");
-    await flush();
-    expect(widget.all(".sa-card")).toHaveLength(0);
+    expect(configMock).toHaveBeenCalledTimes(1);
+    expect(widget.$(".sa-title").textContent).toBe("Shop helper");
 
+    // A reply shows the app is back, so the widget asks again and takes what it says.
     fetchMock.mockImplementation(() => reply("Try the Trail Mug.", { cards: [card()] }));
+    widget.launcher.click();
     widget.send("mugs?");
     await flush();
 
     expect(configMock).toHaveBeenCalledTimes(2);
+    expect(widget.$(".sa-title").textContent).toBe("Ava");
+    // The card's buttons never waited on the settings: every store has both.
     expect(widget.$(".sa-card .sa-card-actions").textContent).toBe("Add to cartBuy nowView");
   });
 
@@ -1292,7 +1292,6 @@ describe("chat widget", () => {
     it("sends only the ticked lines to the store's checkout", async () => {
       const opened = vi.spyOn(window, "open");
       try {
-        configMock.mockImplementation(() => appConfig({ buyNow: true }));
         const lines = [
           { ...cartLine(101, 2, "Trail Mug", 1800), key: "101:k", properties: { Engraving: "Ada" } },
           {
@@ -1369,7 +1368,6 @@ describe("chat widget", () => {
     });
 
     it("ticks what was just picked and leaves the rest of the cart unticked", async () => {
-      configMock.mockImplementation(() => appConfig({ buyNow: true }));
       const catalog: Record<number, [string, number]> = {
         101: ["Trail Mug", 1800],
         102: ["Camp Kettle", 4500],

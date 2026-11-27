@@ -587,8 +587,6 @@ describe("the tools that start a change", () => {
       settings: {
         orderLookupEnabled: true,
         orderLookupByNumber: true,
-        allowAddToCart: true,
-        allowCheckout: true,
         allowReturns: true,
         allowOrderCancel: true,
         allowAddressChange: true,

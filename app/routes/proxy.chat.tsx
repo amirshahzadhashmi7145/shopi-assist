@@ -42,8 +42,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       greeting: settings.greeting,
       // Whether shoppers can give the chat a thumbs-up or thumbs-down.
       ratings: settings.chatRatings,
-      // Whether product cards offer "Buy now", which starts an order.
-      buyNow: settings.allowCheckout && settings.allowAddToCart,
+      // For a widget from when "Buy now" on product cards was a setting: a
+      // page still running one shows the button only when told to. Every
+      // store has it now, and the current widget does not ask.
+      buyNow: true,
       // On a development store the address form offers to fill in test details.
       testMode:
         settings.allowAddressChange && admin

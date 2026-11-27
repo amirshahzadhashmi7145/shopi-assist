@@ -397,8 +397,6 @@ export async function handleChatTurn(
     settings: {
       orderLookupEnabled: settings.orderLookupEnabled,
       orderLookupByNumber: settings.orderLookupEnabled && settings.orderLookupByNumber,
-      allowAddToCart: settings.allowAddToCart,
-      allowCheckout: settings.allowCheckout,
       allowReturns: settings.allowReturns,
       allowOrderCancel: settings.allowOrderCancel,
       allowAddressChange: settings.allowAddressChange,
@@ -456,9 +454,6 @@ export async function handleChatTurn(
     shopName,
     assistantName: settings.assistantName,
     abilities: {
-      addToCart: tools.some((tool) => tool.name === "add_to_cart"),
-      checkout: tools.some((tool) => tool.name === "start_checkout"),
-      placeOrder: tools.some((tool) => tool.name === "place_order"),
       returns: tools.some((tool) => tool.name === "request_return"),
       cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
       changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
@@ -604,11 +599,7 @@ export async function handleChatTurn(
   return {
     conversationId: conversation.id,
     reply: lifted ? lifted.text : turn.reply,
-    // With add to cart switched off, cards link to the product but offer
-    // nothing to add or pick.
-    cards: settings.allowAddToCart
-      ? turn.cards
-      : turn.cards.map((card) => ({ ...card, variantId: null, variants: undefined })),
+    cards: turn.cards,
     // The server's own answers win over ones read out of the reply.
     actions: quick
       ? [{ type: "choices", options: quick, other: true }]

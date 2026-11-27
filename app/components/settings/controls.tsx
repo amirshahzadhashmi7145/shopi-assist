@@ -28,11 +28,6 @@ export function Toggle({
   );
 }
 
-/** Something the assistant always does: shown switched on, and not a setting. */
-export function AlwaysOn({ label, details }: { label: string; details: string }) {
-  return <s-switch label={label} details={details} defaultChecked disabled />;
-}
-
 /** One answer from a short list. `value` is the saved one. */
 export function Pick({
   name,

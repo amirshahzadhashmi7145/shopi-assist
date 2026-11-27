@@ -408,12 +408,11 @@ export const ORDER_FORM_LABELS: {
 };
 
 // ---------------------------------------------------------------------------
-// The five parts of Settings
+// The four parts of Settings
 // ---------------------------------------------------------------------------
 
 export const SECTIONS = [
   { key: "assistant", label: "Assistant" },
-  { key: "shopping", label: "Shopping" },
   { key: "orders", label: "Orders" },
   { key: "policies", label: "Policies" },
   { key: "knowledge", label: "Knowledge" },
@@ -430,7 +429,6 @@ export const isSectionKey = (value: unknown): value is SectionKey =>
  */
 export const SECTION_FIELDS = {
   assistant: ["enabled", "assistantName", "greeting", "chatRatings", "retentionDays"],
-  shopping: ["allowAddToCart", "allowCheckout"],
   orders: [
     "orderLookupEnabled",
     "orderLookupByNumber",

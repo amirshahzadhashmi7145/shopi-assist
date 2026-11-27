@@ -121,20 +121,23 @@ const storeFacts = (shop: string, facts: StoreFacts) =>
     update: { storeFacts: JSON.stringify(facts) },
   });
 
-describe("the five parts of Settings", () => {
+describe("the four parts of Settings", () => {
   it("put every setting in exactly one part", () => {
     const placed = SECTIONS.flatMap((section) => [...SECTION_FIELDS[section.key]]);
     expect(new Set(placed).size).toBe(placed.length);
     expect([...placed].sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
+    // No part for shopping: adding to the cart and the way to the checkout
+    // are on for every store, so there is nothing to set.
     expect(SECTIONS.map((section) => section.key)).toEqual([
       "assistant",
-      "shopping",
       "orders",
       "policies",
       "knowledge",
     ]);
-    expect(fieldsOf(["shopping", "orders"])).toEqual([
-      ...SECTION_FIELDS.shopping,
+    expect(placed).not.toContain("allowAddToCart");
+    expect(placed).not.toContain("allowCheckout");
+    expect(fieldsOf(["assistant", "orders"])).toEqual([
+      ...SECTION_FIELDS.assistant,
       ...SECTION_FIELDS.orders,
     ]);
   });
@@ -891,10 +894,9 @@ describe("the settings pages on the server", () => {
       }),
     );
 
-    // All five parts are in the page; four are out of sight.
+    // All four parts are in the page; three are out of sight.
     expect(markup.match(/data-section="\w+"( hidden="")?/g)).toEqual([
       'data-section="assistant" hidden=""',
-      'data-section="shopping" hidden=""',
       'data-section="orders" hidden=""',
       'data-section="policies"',
       'data-section="knowledge" hidden=""',
@@ -1055,17 +1057,18 @@ describe("the merchant's unsaved picks", () => {
       "What is your return policy?",
     ]);
     expect(
-      previewSuggestions({
-        ...DEFAULT_SETTINGS,
-        allowAddToCart: false,
-        orderLookupEnabled: true,
-        allowReturns: true,
-        allowOrderCancel: true,
-      }),
+      previewSuggestions({ ...DEFAULT_SETTINGS, orderLookupEnabled: true, allowReturns: true }),
     ).toEqual([
       "What are your best sellers?",
+      "Add your best seller to my cart",
       "Where is my order?",
       "I want to return an item",
+    ]);
+    // Four at most, so a cancellation is suggested where returns are not.
+    expect(previewSuggestions({ ...DEFAULT_SETTINGS, allowOrderCancel: true })).toEqual([
+      "What are your best sellers?",
+      "Add your best seller to my cart",
+      "What is your return policy?",
       "Cancel my order",
     ]);
   });

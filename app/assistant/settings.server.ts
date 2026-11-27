@@ -77,9 +77,7 @@ export const settingsSchema = z.object({
   // Personality.
   assistantName: text(40, "the name"),
   greeting: text(300, "the welcome message"),
-  // What the assistant may do for shoppers.
-  allowAddToCart: z.boolean(),
-  allowCheckout: z.boolean(),
+  // What the assistant may do with an order that already exists.
   allowReturns: z.boolean(),
   allowOrderCancel: z.boolean(),
   allowAddressChange: z.boolean(),
@@ -128,8 +126,6 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   topics: {},
   assistantName: DEFAULT_ASSISTANT_NAME,
   greeting: DEFAULT_GREETING,
-  allowAddToCart: true,
-  allowCheckout: true,
   allowReturns: false,
   allowOrderCancel: false,
   allowAddressChange: false,
@@ -198,8 +194,6 @@ export async function getSettings(
     // Left empty, or never set: the defaults.
     assistantName: row.assistantName || DEFAULT_ASSISTANT_NAME,
     greeting: row.greeting || DEFAULT_GREETING,
-    allowAddToCart: row.allowAddToCart,
-    allowCheckout: row.allowCheckout,
     allowReturns: row.allowReturns,
     allowOrderCancel: row.allowOrderCancel,
     allowAddressChange: row.allowAddressChange,
@@ -280,8 +274,6 @@ const BOOLEAN_FIELDS: readonly SettingsField[] = [
   "enabled",
   "orderLookupEnabled",
   "orderLookupByNumber",
-  "allowAddToCart",
-  "allowCheckout",
   "allowReturns",
   "allowOrderCancel",
   "allowAddressChange",

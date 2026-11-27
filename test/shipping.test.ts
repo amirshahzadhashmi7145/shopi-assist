@@ -1450,7 +1450,7 @@ describe("the assistant's rule for delivery and payment", () => {
       shopName: "Alpine Outfitters",
       orderLookupEnabled: false,
       today: new Date("2026-11-26T12:00:00Z"),
-      abilities: { addToCart: true, checkout: true, returns: false, ...abilities },
+      abilities: { returns: false, ...abilities },
     });
 
   it("sends it to its tools every time, and never to memory", () => {

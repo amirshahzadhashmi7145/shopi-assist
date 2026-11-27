@@ -353,8 +353,6 @@
     };
     // True when the merchant lets shoppers rate the chat.
     this.ratings = false;
-    // True when product cards may start an order with "Buy now".
-    this.buyNow = false;
     // False until the app's settings have arrived. A page that loaded while
     // the app was unreachable asks again once a reply shows it is back.
     this.remoteLoaded = false;
@@ -599,14 +597,6 @@
 
     var changed = false;
     this.testMode = remote.testMode === true;
-    var buyNow = remote.buyNow === true;
-    if (buyNow !== this.buyNow) {
-      this.buyNow = buyNow;
-      // Product cards already on screen gain or lose the button.
-      changed = this.state.messages.some(function (message) {
-        return message.cards && message.cards.length;
-      });
-    }
     this.ratings = remote.ratings === true;
     this.renderRating();
     if (typeof remote.title === "string" && remote.title.trim()) {
@@ -1244,8 +1234,8 @@
   }
 
   /**
-   * "Add to cart" and, where the store allows it, "Buy now", acting on
-   * whatever `picked` returns when one of them is pressed.
+   * "Add to cart" and "Buy now", acting on whatever `picked` returns when
+   * one of them is pressed.
    */
   Widget.prototype.buyButtons = function (picked) {
     var self = this;
@@ -1276,7 +1266,6 @@
           }
         });
     });
-    if (!self.buyNow) return [add];
 
     // The same as asking the assistant to order it: the items go in the
     // cart and the order summary appears.

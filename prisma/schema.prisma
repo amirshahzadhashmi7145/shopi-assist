@@ -61,9 +61,9 @@ model ShopSettings {
   // First message in the widget. Empty means the app's default welcome.
   greeting            String  @default("")
 
-  // What the assistant is allowed to do for shoppers (ticked in setup).
-  allowAddToCart      Boolean @default(true)
-  allowCheckout       Boolean @default(true)
+  // What the assistant is allowed to do with an existing order, each one
+  // switched on by the merchant. (Adding to the cart and showing the way to
+  // the checkout are not settings: every store has them.)
   // Opt-in: lets shoppers ask for a return with order number + checkout email.
   // It creates a return REQUEST that the merchant approves or declines.
   allowReturns        Boolean @default(false)

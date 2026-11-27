@@ -939,7 +939,7 @@ const addToCart = defineTool({
       .regex(/^\d{1,20}$/, "Use a numeric variantId given with a product's versions or by get_product_details."),
     quantity: z.number().int().min(1).max(10).default(1),
   }),
-  isAvailable: (context) => Boolean(context.storefront) && context.settings.allowAddToCart,
+  isAvailable: (context) => Boolean(context.storefront),
   async run({ variantId, quantity }, context) {
     // Confirm the variant is real and purchasable, so a made-up id cannot
     // produce a confusing error in the shopper's browser.
@@ -1031,12 +1031,7 @@ const placeOrder = defineTool({
         "True empties the cart first, so the order holds these items and nothing else. Use it only when the shopper says so: 'only this', 'just that', 'nothing else', 'start over'.",
       ),
   }),
-  // Building an order means putting items in the cart, so the merchant must
-  // have allowed both.
-  isAvailable: (context) =>
-    Boolean(context.storefront) &&
-    context.settings.allowCheckout &&
-    context.settings.allowAddToCart,
+  isAvailable: (context) => Boolean(context.storefront),
   async run({ items, onlyTheseItems }, context) {
     // The same variant listed twice is one line.
     const quantities = new Map<string, number>();
@@ -1123,7 +1118,6 @@ const removeFromCart = defineTool({
       .trim()
       .regex(/^\d{1,20}$/, "Use the numeric variantId listed with the shopper's cart."),
   }),
-  isAvailable: (context) => context.settings.allowAddToCart,
   async run({ variantId }, context) {
     const line = context.cart?.find((entry) => entry.variantId === variantId);
     // When the cart is known, a variant that is not in it is a mistake worth
@@ -1150,7 +1144,6 @@ const clearCart = defineTool({
     "Empty the shopper's cart. Use only when the shopper asks to clear or empty their cart or to start over.",
   audiences: ["shopper"],
   schema: z.object({}),
-  isAvailable: (context) => context.settings.allowAddToCart,
   async run() {
     return {
       output: {
@@ -1294,7 +1287,6 @@ const startCheckout = defineTool({
     "Show the shopper a summary of what is already in their cart with a button to the store's secure checkout. Use when they want to buy, pay or check out what is in the cart. You cannot take payment or place the order yourself.",
   audiences: ["shopper"],
   schema: z.object({}),
-  isAvailable: (context) => context.settings.allowCheckout,
   async run() {
     return {
       output: {

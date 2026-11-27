@@ -38,18 +38,17 @@ An AI shopping assistant for Shopify stores. Installing the app adds a chat widg
 
 **For the merchant (inside Shopify admin)**
 
-- **Settings a merchant can finish without writing anything**, in five parts with a live preview beside them:
+- **Settings a merchant can finish without writing anything**, in four parts with a live preview beside them:
   - *Assistant:* show or pause the chat, its name (Ava until changed), a welcome message picked from presets or written, chat ratings, how long transcripts are kept. Its tone is not a setting: always professional, polite and precise.
-  - *Shopping:* add to cart, checkout help.
   - *Orders:* order status, cancellations, address changes, edits to unpaid orders, return requests.
   - *Policies:* return window, eligibility, return shipping, exchanges and refund method; delivery time. All picked from lists. Shipping regions, shipping rates and order processing time are not picked at all: they are shown live from Shopify. A delivery time is asked for only while some rate has none of its own in Shopify.
   - *Knowledge:* answers to the questions shoppers ask most (sizing, warranty, care, compatibility, discount codes, support hours, contact), each picked from a list.
 
-  Features are switches, and a feature's own options appear only once it is on (the address form's options only with delivery address changes, lookup by order number alone only with order status). A text box appears only where a name is needed, after "Custom" is picked, or when the merchant asks to add a note in their own words. One save covers all five parts.
+  Features are switches, and a feature's own options appear only once it is on (the address form's options only with delivery address changes, lookup by order number alone only with order status). A text box appears only where a name is needed, after "Custom" is picked, or when the merchant asks to add a note in their own words. One save covers all four parts. What every store has is not in Settings at all, neither as a switch nor as a line saying it is on: answering about products, adding to the cart, starting an order and the way to the checkout.
 - **What Shopify already knows is read from Shopify, not asked for.** The app reads the store's published policies, delivery rates (from its markets or its shipping zones, whichever it uses), order processing time, the cards and wallets its checkout takes, its catalog size, its own description and its contact address, and shows each as "Synced from Shopify" or "Live from Shopify" (or says what is missing, with a link to where it is set). Where Shopify has answered, the matching question is not asked at all. See "Store facts" and "Delivery and payment" under Security model.
 - **Delivery and payment are answered live.** When a shopper asks which countries the store delivers to, what delivery costs, how soon orders are sent out or how they can pay, the assistant asks Shopify at that moment (`get_shipping_info`, `get_payment_methods`) and answers with the store's own rates, conditions and delivery times ("Standard 8.00 USD, free on orders of 70.00 USD or more, 3 to 5 business days"). It works for both ways Shopify keeps shipping: in the store's markets (where Shopify is moving every store) and in its older shipping profiles. Nothing about these is stored or typed in: a rate the merchant changed a minute ago is the rate quoted. The merchant's own picks fill in only what Shopify does not answer, and their typed shipping note is used only while Shopify cannot be read.
 - **A live preview of the storefront chat** next to Settings. Its look follows the name and welcome message before they are saved. Its answers come from the real assistant with the saved settings, so a test message can be sent only once changes are saved. Test chats stay out of the conversation log.
-- A **setup tour** that opens the first time the app is opened after install, showing the same parts in three steps: *what it can do* (Shopping and Orders), *your policies*, and *go live* (turn the widget on, try the preview). Every step is optional and saves on its own.
+- A **setup tour** that opens the first time the app is opened after install, showing the same parts in three steps: *what it can do* (Orders), *your policies*, and *go live* (turn the widget on, try the preview). Every step is optional and saves on its own.
 
 - A store assistant that answers from private store data: top-selling products by units or revenue, sales summaries, recent and unfulfilled orders, low stock, catalog search including drafts.
 - Setup page with a one-click link to turn the widget on, settings, and a log of shopper conversations.
@@ -89,7 +88,7 @@ App server  /proxy/chat
 | `app/routes/proxy.chat.tsx` | Storefront chat endpoint (app proxy) |
 | `app/routes/app.*.tsx` | Admin pages: home, setup tour, store assistant, conversations, settings |
 | `app/routes/app.preview.tsx` | "Try it as a shopper" chat for staff |
-| `app/components/settings/` | The five parts of Settings, shared by the Settings page and the tour; the live preview; the "From your Shopify store" panel |
+| `app/components/settings/` | The four parts of Settings, shared by the Settings page and the tour; the live preview; the "From your Shopify store" panel |
 | `app/assistant/setting-options.ts` | Every list a merchant picks from, with what the assistant is told for each pick |
 | `app/assistant/store-facts.ts`, `store-facts.server.ts` | What is read from Shopify about the store, and when |
 | `app/routes/webhooks.*.tsx` | Uninstall, scope updates, mandatory privacy webhooks |

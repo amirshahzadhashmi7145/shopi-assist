@@ -61,8 +61,6 @@ export function toolContext(overrides: Partial<ToolContext> = {}): ToolContext {
     audience,
     settings: {
       orderLookupEnabled: false,
-      allowAddToCart: true,
-      allowCheckout: true,
       allowReturns: false,
     },
     buyer: {},

@@ -19,7 +19,6 @@ const settings = {
   enabled: true,
   assistantName: "Ava",
   greeting: "Hi there!",
-  allowCheckout: true,
   allowAddressChange: false,
 };
 vi.mock("../app/assistant/settings.server", () => ({
@@ -234,6 +233,9 @@ describe("GET /proxy/chat", () => {
       enabled: true,
       title: "Ava",
       greeting: "Hi there!",
+      // No store can switch "Buy now" off. A page still running a widget from
+      // when one could shows the button only when told to, so it is told.
+      buyNow: true,
     });
   });
 

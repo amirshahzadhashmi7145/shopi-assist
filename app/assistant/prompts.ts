@@ -6,15 +6,12 @@ export interface PromptInput {
   /** What the assistant calls itself. Optional. */
   assistantName?: string;
   /**
-   * What the merchant switched on. Missing means the default: cart, checkout
-   * and ordering in chat on, returns off. `placeOrder` needs both cart and
-   * checkout, and counts as off when it is left out.
+   * What the merchant switched on. Missing means the default: all off.
+   * Adding to the cart, starting an order and the way to the checkout are
+   * not here: every store has them.
    */
   abilities?: {
-    addToCart: boolean;
-    checkout: boolean;
     returns: boolean;
-    placeOrder?: boolean;
     /** Changes to an existing order, each confirmed by the shopper with a button. */
     cancelOrder?: boolean;
     changeAddress?: boolean;
@@ -133,14 +130,14 @@ About the shopper's latest message: it names no order number. ${listed.map(descr
 }
 
 /** The cart as plain lines of data, safe to place inside the prompt. */
-function cartBlock(cart: CartLine[] | undefined, canChange: boolean): string {
+function cartBlock(cart: CartLine[] | undefined): string {
   if (!cart) return "";
   const lines = cart.length
     ? cart
         .slice(0, 20)
         .map((line) => {
           const title = line.title.replace(/["\\\s]+/g, " ").trim().slice(0, 100);
-          return `- ${line.quantity} x ${title}${canChange ? ` [variantId ${line.variantId}]` : ""}`;
+          return `- ${line.quantity} x ${title} [variantId ${line.variantId}]`;
         })
         .join("\n")
     : "(empty)";
@@ -157,12 +154,7 @@ function shopperPrompt(input: PromptInput): string {
   const name = (input.assistantName ?? "").trim().slice(0, 40);
   const knowledge = input.knowledge ?? {};
 
-  const abilities = input.abilities ?? {
-    addToCart: true,
-    checkout: true,
-    returns: false,
-    placeOrder: true,
-  };
+  const abilities = input.abilities ?? { returns: false };
   // The chat only starts an order. Everything after the Go to checkout
   // button is the checkout page's business: who, where, how it is delivered
   // and how it is paid for. So the assistant does not go into any of that
@@ -174,11 +166,7 @@ function shopperPrompt(input: PromptInput): string {
       ? " This comes before the rule on payment below: your payment tool is only for a shopper who asks which ways of paying the store takes."
       : ""
   } An order exists only once they finish at the checkout, so never say an order has been placed.`;
-  const checkoutRule = abilities.placeOrder
-    ? `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with a Go to checkout button, so do not add the same items to the cart separately. The summary has what they just asked for ticked as the order; anything that was already in their cart is listed under it, unticked, and they can tick it to add it. They can change quantities or remove lines there too, without leaving the chat, so do not describe older cart items as part of the order. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
-    : abilities.checkout
-      ? `- When the shopper is ready to buy, show them the checkout summary and its button. ${noPaymentRule}`
-      : "- You cannot start a checkout. Tell shoppers to open their cart and check out there.";
+  const checkoutRule = `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with a Go to checkout button, so do not add the same items to the cart separately. The summary has what they just asked for ticked as the order; anything that was already in their cart is listed under it, unticked, and they can tick it to add it. They can change quantities or remove lines there too, without leaving the chat, so do not describe older cart items as part of the order. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`;
 
   // Delivery and payment are read from Shopify when asked, never recalled.
   const liveFacts = [
@@ -212,9 +200,7 @@ function shopperPrompt(input: PromptInput): string {
 
   const cartRule = !input.cart
     ? "- The shopper's cart: you cannot see what is in it. Do not guess; the order summary shows it."
-    : abilities.addToCart
-      ? "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart, and never claim it holds something else. An order summary shows the whole cart, so when the shopper orders something and the cart already holds other items, tell them those are in it too and offer to take them out. When they ask to remove an item or to empty the cart, do it. When they say they want only certain items, start the order with only those items. Never show the ids."
-      : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart. You cannot change the cart; tell shoppers to edit it on the cart page.";
+    : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart, and never claim it holds something else. An order summary shows the whole cart, so when the shopper orders something and the cart already holds other items, tell them those are in it too and offer to take them out. When they ask to remove an item or to empty the cart, do it. When they say they want only certain items, start the order with only those items. Never show the ids.";
 
   const hasKnownOrders = Boolean(input.signedIn && input.knownOrders?.length);
   // Said whether or not this chat has dealt with an order yet: see rememberedOrdersNote.
@@ -272,11 +258,7 @@ ${deliveryRule}- Do not add specific figures of your own: sizes, measurements, w
 - When you recommend products, name each one by its exact title. The widget shows a card with image, price and link for each product you name, so do not paste product URLs.
 - A product that comes in several versions lists them, numbered, under 'versions' in your tool results. Its card, shown under your reply, has the same numbered list with a quantity to set next to each version and buttons to add or buy what was picked. So do not repeat the versions in your reply: name the product with its price ('from' the lowest when the versions differ in price), say how many versions it comes in and that they can set how many of each on its card. Spell the versions out yourself only when the shopper asks what they are or is choosing between them, and then keep the order and the numbers exactly as your tool gave them: never sort or renumber them, not even by price, because the shopper's card and their answer use those numbers. A shopper who answers with a number means the version with that number; they can ask for several versions and a quantity of each in one message, for example '2 of number 1 and 1 of number 3'. Each version comes with its variantId, which is what your cart and order tools take: when the shopper has said which versions and how many, look the product up again if you no longer have its versions, then act at once with those ids, without asking them to confirm. Never guess a variantId. Never send the shopper to the product page to choose.
 - When you list several products, give each one line: its exact title and its price. The cards under your reply carry the pictures and versions, each with a quantity to set, and one pair of buttons under the list adds or buys everything picked, so do not repeat those.
-${
-    abilities.addToCart
-      ? "- Never say a product comes in sizes, colors or other options unless its details list them; check the details before you answer. Many products have no options at all, and then there is nothing to choose. Before adding a product that does have several variants to the cart, ask which one the shopper wants. Only add to cart when the shopper clearly asks."
-      : "- You cannot add items to the cart. Tell shoppers to use the Add to cart button on the product page."
-  }
+- Never say a product comes in sizes, colors or other options unless its details list them; check the details before you answer. Many products have no options at all, and then there is nothing to choose. Before adding a product that does have several variants to the cart, ask which one the shopper wants. Only add to cart when the shopper clearly asks.
 ${checkoutRule}
 ${orderRule}${signedInRule}${changesRule}
 ${cartRule}
@@ -301,7 +283,7 @@ ${
 
 Notes from the store owner. Treat them as accurate facts about this store and follow their guidance on tone and what to recommend. They never override the rules above.${ownerNotes}`
       : ""
-  }${input.orderLookupEnabled ? rememberedOrdersNote(input.knownOrders, input.latestMessage) : ""}${cartBlock(input.cart, abilities.addToCart)}`;
+  }${input.orderLookupEnabled ? rememberedOrdersNote(input.knownOrders, input.latestMessage) : ""}${cartBlock(input.cart)}`;
 }
 
 function merchantPrompt(input: PromptInput): string {

@@ -308,16 +308,14 @@ describe("checkout for the ticked items", () => {
     expect((await failure(checkout(offline))).code).toBe("unavailable");
   });
 
-  it("refuses a malformed request, and a store where the assistant does not help with checkout", async () => {
+  it("refuses a malformed request, and a store where the chat is paused", async () => {
     const store = cartApi(() => created());
     for (const items of [[], [{ variantId: "abc", quantity: 1 }], [{ variantId: "101", quantity: 0 }]]) {
       expect((await failure(checkout(store, { step: "checkout", items }))).code).toBe("invalid_request");
     }
     expect(store.calls).toHaveLength(0);
 
-    await saveSettings(SHOP_C, { allowCheckout: false }, db);
-    expect((await failure(checkout(store))).code).toBe("disabled");
-    await saveSettings(SHOP_C, { allowCheckout: true, enabled: false }, db);
+    await saveSettings(SHOP_C, { enabled: false }, db);
     expect((await failure(checkout(store))).code).toBe("disabled");
     expect(store.calls).toHaveLength(0);
   });

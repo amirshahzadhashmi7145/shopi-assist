@@ -49,7 +49,7 @@ import { authenticate } from "../shopify.server";
 
 /** Each step and the parts of Settings it shows. The last step saves nothing. */
 const STEPS = [
-  { key: "abilities", title: "What it can do", sections: ["shopping", "orders"] },
+  { key: "abilities", title: "What it can do", sections: ["orders"] },
   { key: "policies", title: "Your policies", sections: ["policies"] },
   { key: "live", title: "Go live", sections: [] },
 ] as const satisfies ReadonlyArray<{ key: string; title: string; sections: readonly SectionKey[] }>;

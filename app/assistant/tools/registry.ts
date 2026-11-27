@@ -31,8 +31,6 @@ export interface ToolContext {
     orderLookupEnabled: boolean;
     /** Basic status from the order number alone. Off unless the merchant opts in. */
     orderLookupByNumber?: boolean;
-    allowAddToCart: boolean;
-    allowCheckout: boolean;
     allowReturns: boolean;
     /** Changes to an existing order. All off unless the merchant opts in. */
     allowOrderCancel?: boolean;

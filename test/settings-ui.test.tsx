@@ -36,8 +36,6 @@ const DEFAULTS: AssistantSettings = {
   topics: {},
   assistantName: "Ava",
   greeting: "Hi there! 👋 Welcome! How can I help you today?",
-  allowAddToCart: true,
-  allowCheckout: true,
   allowReturns: false,
   allowOrderCancel: false,
   allowAddressChange: false,
@@ -221,13 +219,13 @@ describe("Settings without typing", () => {
     expect(page.typedOnShow()).toEqual(["assistantName"]);
     expect(given(page.field("assistantName")).defaultValue).toBe("Ava");
     // Features are switches, policies and answers are lists.
-    expect(page.host.querySelectorAll("s-switch[name]").length).toBe(11);
+    expect(page.host.querySelectorAll("s-switch[name]").length).toBe(9);
     expect(page.host.querySelectorAll("s-select").length).toBeGreaterThan(15);
     expect(page.dirty()).toBe(false);
   });
 
   it("shows the setup tour's steps as switches and lists only", () => {
-    const abilities = open({ show: ["shopping", "orders"] });
+    const abilities = open({ show: ["orders"] });
     expect(abilities.typedOnShow()).toEqual([]);
     expect(abilities.find('[name="assistantName"]')).toBeNull();
     expect(abilities.find('[name="topics"]')).toBeNull();
@@ -236,7 +234,7 @@ describe("Settings without typing", () => {
     document.body.replaceChildren();
     const policies = open({ show: ["policies"] });
     expect(policies.typedOnShow()).toEqual([]);
-    expect(policies.find('[name="allowAddToCart"]')).toBeNull();
+    expect(policies.find('[name="orderLookupEnabled"]')).toBeNull();
   });
 
   it("shows one part at a time and keeps the others on the page, so one save covers them all", () => {
@@ -244,7 +242,6 @@ describe("Settings without typing", () => {
     const parts = [...page.host.querySelectorAll<HTMLElement>("[data-section]")];
     expect(parts.map((part) => [part.dataset.section, part.hidden])).toEqual([
       ["assistant", true],
-      ["shopping", true],
       ["orders", true],
       ["policies", false],
       ["knowledge", true],
@@ -277,14 +274,21 @@ describe("a feature's own options appear only once it is on", () => {
     expect(page.find('[name="allowChatOrders"]')).toBeNull();
     expect(page.find('[name="orderPaymentName"]')).toBeNull();
     expect(page.find('[name="ui.paymentNameMode"]')).toBeNull();
-    const shopping = page.find('[data-section="shopping"]')!;
-    expect(shopping.textContent).not.toMatch(/orders in the chat|pay on delivery/i);
-    // Checkout help says where every order is paid for, cash on delivery included.
-    expect(page.field("allowCheckout").getAttribute("details")).toContain("cash on delivery");
-    expect([...shopping.querySelectorAll("[name]")].map((control) => control.getAttribute("name"))).toEqual([
-      "allowAddToCart",
-      "allowCheckout",
-    ]);
+    expect(page.host.textContent).not.toMatch(/orders in the chat|pay on delivery/i);
+  });
+
+  it("has no Shopping part: products, the cart and the checkout are on for every store", () => {
+    const page = open();
+    expect(page.find('[data-section="shopping"]')).toBeNull();
+    expect(page.find('[name="allowAddToCart"]')).toBeNull();
+    expect(page.find('[name="allowCheckout"]')).toBeNull();
+    // Nor a line that lists them as always on.
+    const headings = [...page.host.querySelectorAll("s-section")].map((section) =>
+      section.getAttribute("heading"),
+    );
+    expect(headings).not.toContain("Shopping");
+    expect(page.host.querySelector("s-switch[disabled]")).toBeNull();
+    expect(page.host.textContent).not.toMatch(/always on|checkout help/i);
   });
 
   it("says the order settings are for orders already placed, not for checkout", () => {
@@ -722,7 +726,6 @@ describe("saving and discarding", () => {
     const buttons = [...host.querySelectorAll("s-button")];
     expect(buttons.map((button) => button.textContent)).toEqual([
       "Assistant",
-      "Shopping",
       "Orders",
       "Policies",
       "Knowledge",
@@ -732,16 +735,14 @@ describe("saving and discarding", () => {
       "false",
       "false",
       "false",
-      "false",
     ]);
     expect(buttons.map((button) => button.getAttribute("icon"))).toEqual([
       "check",
       null,
-      null,
       "alert-circle",
       null,
     ]);
-    act(() => buttons[3].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    act(() => buttons[2].dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(picked).toEqual(["policies"]);
     act(() => nav.unmount());
   });

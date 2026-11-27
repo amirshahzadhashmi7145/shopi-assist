@@ -167,8 +167,7 @@ const STYLES = {
  * features are switched on and off, so the merchant sees what a setting adds.
  */
 export function previewSuggestions(settings: AssistantSettings): string[] {
-  const questions = ["What are your best sellers?"];
-  if (settings.allowAddToCart) questions.push("Add your best seller to my cart");
+  const questions = ["What are your best sellers?", "Add your best seller to my cart"];
   if (settings.orderLookupEnabled) questions.push("Where is my order?");
   if (settings.allowReturns) questions.push("I want to return an item");
   else questions.push("What is your return policy?");

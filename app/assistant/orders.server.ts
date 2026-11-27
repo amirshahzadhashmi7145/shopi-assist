@@ -346,7 +346,7 @@ export async function openCheckout(
 ): Promise<CheckoutResult> {
   const deps = withDefaults(overrides);
   const settings = await getSettings(input.shop, deps.db);
-  if (!settings.enabled || !settings.allowCheckout) {
+  if (!settings.enabled) {
     throw new OrderError("disabled", 403, "Checkout from the chat is not available for this store.");
   }
   const parsed = checkoutSchema.safeParse(input.body);

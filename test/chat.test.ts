@@ -539,37 +539,31 @@ describe("handleChatTurn", () => {
       };
     };
 
-    // Defaults: cart and checkout on, order status and returns off.
+    // Defaults: order status and returns off. The cart, ordering and the way
+    // to the checkout are not settings: every store has them.
+    const SHOPPING = ["add_to_cart", "remove_from_cart", "clear_cart", "place_order", "start_checkout"];
     const byDefault = await names();
-    expect(byDefault.tools).toEqual(
-      expect.arrayContaining(["add_to_cart", "place_order", "start_checkout"]),
-    );
+    expect(byDefault.tools).toEqual(expect.arrayContaining(SHOPPING));
     expect(byDefault.system).toContain("start the order in that same reply");
     expect(byDefault.system).toContain("never say an order has been placed");
     expect(byDefault.tools).not.toContain("request_return");
     expect(byDefault.tools).not.toContain("get_order_status");
     expect(byDefault.system).toContain("you cannot start a return");
 
-    await saveSettings(
-      SHOP_A,
-      { allowAddToCart: false, allowCheckout: false, allowReturns: true, returnWindow: "14" },
-      db,
-    );
+    await saveSettings(SHOP_A, { allowReturns: true, returnWindow: "14" }, db);
     const changed = await names();
-    expect(changed.tools).not.toContain("add_to_cart");
-    expect(changed.tools).not.toContain("start_checkout");
-    expect(changed.tools).not.toContain("place_order");
+    expect(changed.tools).toEqual(expect.arrayContaining(SHOPPING));
     // No store's assistant takes an order in the chat: paying on delivery,
     // like any way of paying, is picked on the checkout page.
     for (const prompt of [byDefault.system, changed.system]) {
       expect(prompt).not.toContain("Order here");
       expect(prompt).not.toContain("order form");
+      // Nor is any store's assistant told it cannot add to the cart or start a checkout.
+      expect(prompt).not.toMatch(/cannot add items to the cart|cannot start a checkout|cannot change the cart/i);
     }
     expect(byDefault.system).toContain("they choose how to pay on the checkout page");
     expect(byDefault.tools).not.toContain("place_chat_order");
     expect(changed.tools).toContain("request_return");
-    expect(changed.system).toContain("You cannot add items to the cart");
-    expect(changed.system).toContain("You cannot start a checkout");
     expect(changed.system).toContain("a return is a request the store will review");
     expect(changed.system).toContain("Returns: accepted within 14 days of delivery.");
   });
@@ -786,7 +780,7 @@ describe("handleChatTurn", () => {
     }
   });
 
-  it("removes one-click add from product cards when add to cart is off", async () => {
+  it("sends product cards with the variant to add, so the widget can offer Add to cart", async () => {
     const product = {
       id: "gid://shopify/Product/1",
       title: "Trail Mug",
@@ -804,21 +798,17 @@ describe("handleChatTurn", () => {
       compareAtPriceRange: { maxVariantPrice: { amount: "0.0", currencyCode: "USD" } },
       variants: { nodes: [{ id: "gid://shopify/ProductVariant/101", availableForSale: true }] },
     };
-    const ask = () =>
-      turn(
-        { storefront: fakeGraphql({ products: { nodes: [product] } }) },
-        {
-          provider: scriptedProvider([
-            { content: null, toolCalls: [{ id: "c1", name: "get_best_sellers", arguments: "{}" }] },
-            text("Try the Trail Mug."),
-          ]),
-        },
-      );
+    const result = await turn(
+      { storefront: fakeGraphql({ products: { nodes: [product] } }) },
+      {
+        provider: scriptedProvider([
+          { content: null, toolCalls: [{ id: "c1", name: "get_best_sellers", arguments: "{}" }] },
+          text("Try the Trail Mug."),
+        ]),
+      },
+    );
 
-    expect((await ask()).cards[0].variantId).toBe("101");
-    await saveSettings(SHOP_A, { allowAddToCart: false }, db);
-    const off = await ask();
-    expect(off.cards[0]).toMatchObject({ title: "Trail Mug", variantId: null });
+    expect(result.cards[0]).toMatchObject({ title: "Trail Mug", variantId: "101" });
   });
 
   it("runs a staff preview as a shopper but keeps it out of the conversation log", async () => {

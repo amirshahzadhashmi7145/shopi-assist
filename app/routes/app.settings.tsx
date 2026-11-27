@@ -1,5 +1,5 @@
 /**
- * Settings: everything the merchant can decide about the assistant, in five
+ * Settings: everything the merchant can decide about the assistant, in four
  * parts, with a live preview of the storefront chat beside them.
  *
  * Nothing here has to be typed. Features are switches, policies and common

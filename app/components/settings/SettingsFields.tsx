@@ -1,7 +1,11 @@
 /**
- * The five parts of Settings: Assistant, Shopping, Orders, Policies and
- * Knowledge. Shared by the Settings page (all five, one shown at a time) and
- * the setup tour (a few at a time), so the two can never drift apart.
+ * The four parts of Settings: Assistant, Orders, Policies and Knowledge.
+ * Shared by the Settings page (all four, one shown at a time) and the setup
+ * tour (a few at a time), so the two can never drift apart.
+ *
+ * Only what a merchant decides is here. What every store has (answering
+ * about products, adding to the cart, the way to the checkout) has no switch
+ * and no line of its own.
  *
  * Built so a merchant can set the assistant up without writing anything:
  *  - features are switches, and a feature's own options appear only once it
@@ -39,7 +43,6 @@ import type { ShippingView } from "../../assistant/shipping";
 import { paymentNames, type StoreFacts, type StoreFactsView } from "../../assistant/store-facts";
 import {
   AddOwnWords,
-  AlwaysOn,
   Columns,
   Pick,
   Reveal,
@@ -172,37 +175,6 @@ function AssistantSection({ settings, errors, draft }: SectionProps) {
         </s-stack>
       </s-section>
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Shopping
-// ---------------------------------------------------------------------------
-
-function ShoppingSection({ settings, facts }: SectionProps) {
-  const count = productCount(facts);
-
-  return (
-    <s-section heading="Shopping">
-      <s-stack direction="block" gap="base">
-        <AlwaysOn
-          label="Product questions and recommendations"
-          details={`Always on. Answers from your Shopify catalog${count ? `: ${count}` : ""}, with prices, stock and images.`}
-        />
-        <Toggle
-          name="allowAddToCart"
-          label="Add to cart"
-          details="Shoppers can ask to add an item, and product cards get an Add to cart button."
-          on={settings.allowAddToCart}
-        />
-        <Toggle
-          name="allowCheckout"
-          label="Checkout help"
-          details="Shows an order summary with a Go to checkout button. Every order is placed and paid for on your Shopify checkout, whichever way the shopper pays: card, wallet or cash on delivery."
-          on={settings.allowCheckout}
-        />
-      </s-stack>
-    </s-section>
   );
 }
 
@@ -912,7 +884,6 @@ function KnowledgeSection({ settings, facts, errors, shop, draft }: SectionProps
 
 const SECTION_VIEWS: Record<SectionKey, (props: SectionProps) => JSX.Element> = {
   assistant: AssistantSection,
-  shopping: ShoppingSection,
   orders: OrdersSection,
   policies: PoliciesSection,
   knowledge: KnowledgeSection,
