@@ -63,8 +63,10 @@ model ShopSettings {
   // The widget's colour, as "#" and six hex digits. Empty means the app's
   // default colour (see widget-look.ts).
   accentColor         String  @default("")
-  // The corner of the page the widget sits in.
-  widgetPosition      String  @default("right") // "right" | "left"
+  // The corner of the page the widget sits in: "right" or "left". Empty
+  // means not picked yet: it then follows the store's language (left for a
+  // language written from right to left, see widget-look.ts).
+  widgetPosition      String  @default("")
 
   // What the assistant is allowed to do with an existing order, each one
   // switched on by the merchant. (Adding to the cart and showing the way to

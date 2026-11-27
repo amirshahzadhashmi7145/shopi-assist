@@ -17,8 +17,8 @@ import {
   type TopicAnswers,
 } from "./setting-options";
 import type { ShippingPicks } from "./shipping";
-import { NO_FACTS, type StoreFacts } from "./store-facts";
-import { DEFAULT_ACCENT, WIDGET_POSITIONS, isAccent } from "./widget-look";
+import { NO_FACTS, readStoreFacts, type StoreFacts } from "./store-facts";
+import { DEFAULT_ACCENT, WIDGET_POSITIONS, isAccent, positionFor } from "./widget-look";
 
 // The lists themselves live in setting-options.ts, which the settings pages
 // share. Re-exported for the code that has always found them here.
@@ -205,7 +205,12 @@ export async function getSettings(
     assistantName: row.assistantName || DEFAULT_ASSISTANT_NAME,
     greeting: row.greeting || DEFAULT_GREETING,
     accentColor: isAccent(row.accentColor) ? row.accentColor.toUpperCase() : DEFAULT_ACCENT,
-    widgetPosition: pickOr(WIDGET_POSITIONS, row.widgetPosition),
+    // The corner the merchant picked. Until they pick one it follows the
+    // store's language, as last read from Shopify and kept in the same row:
+    // bottom left where the language runs from right to left.
+    widgetPosition:
+      pick(WIDGET_POSITIONS, row.widgetPosition) ||
+      positionFor(readStoreFacts(row.storeFacts).language),
     allowReturns: row.allowReturns,
     allowOrderCancel: row.allowOrderCancel,
     allowAddressChange: row.allowAddressChange,

@@ -34,6 +34,8 @@ interface StorefrontFacts {
     refundPolicy: { id: string } | null;
     shippingPolicy: { id: string } | null;
   } | null;
+  /** Asked with no country or language given, so this is the store's own. */
+  localization: { language: { isoCode: string | null } | null } | null;
 }
 
 export interface FactClients {
@@ -48,7 +50,7 @@ export interface FactsReached {
 }
 
 const ADMIN_KEYS = ["contactEmail", "currencyCode"] as const;
-const STOREFRONT_KEYS = ["description", "shipsTo", "policies"] as const;
+const STOREFRONT_KEYS = ["description", "shipsTo", "policies", "language"] as const;
 
 /** The facts kept for a shop, or an error when the database cannot be read. */
 async function readStoredFacts(shop: string, db: PrismaClient): Promise<StoreFacts> {
@@ -131,6 +133,7 @@ export async function syncStoreFacts(
       refund: Boolean(found.refundPolicy),
       shipping: Boolean(found.shippingPolicy),
     };
+    next.language = storefront.localization?.language?.isoCode ?? undefined;
   }
   if (reached.admin && reached.storefront) next.syncedAt = now.toISOString();
 

@@ -58,14 +58,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = session.shop;
   const wanted = new URL(request.url).searchParams.get("section");
 
-  const [settings, synced, rates] = await Promise.all([
-    getSettings(shop),
+  const [synced, rates] = await Promise.all([
     factClients(shop, admin).then((clients) =>
       syncStoreFactsForPage(shop, clients, { maxAgeMs: FACTS_MAX_AGE_MS }),
     ),
     // Shipping zones and rates are never kept: read now, shown as they are.
     loadShippingRates(toGraphqlFn(admin, "Admin")),
   ]);
+  // Read once the facts are in: the corner the chat sits in follows the
+  // store's language until the merchant picks one, and on a first visit that
+  // language has only just been learned. Saved before it was, the form would
+  // keep the wrong corner for good.
+  const settings = await getSettings(shop);
   return {
     shop,
     settings,

@@ -311,9 +311,12 @@ export const PAYMENT_SETTINGS_QUERY = `#graphql
 
 /**
  * What the store's own settings say that a visitor could find out anyway:
- * how it describes itself, where it delivers, and whether it has published a
- * refund policy and a shipping policy. Each stands in Settings where a
- * question would otherwise be asked.
+ * how it describes itself, where it delivers, whether it has published a
+ * refund policy and a shipping policy, and which language it is in. Each
+ * stands in Settings where a question would otherwise be asked.
+ *
+ * No country or language is given with it (no `@inContext`), so the language
+ * that comes back is the store's own: the one a visitor gets by default.
  */
 export const STORE_FACTS_QUERY = `#graphql
   query ShopiAssistStorefrontFacts {
@@ -322,6 +325,9 @@ export const STORE_FACTS_QUERY = `#graphql
       shipsToCountries
       refundPolicy { id }
       shippingPolicy { id }
+    }
+    localization {
+      language { isoCode }
     }
   }
 `;

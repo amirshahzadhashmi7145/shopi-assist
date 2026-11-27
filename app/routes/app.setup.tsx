@@ -69,14 +69,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Remember that the tour has been seen, so the app stops opening on it.
   if (!state.started) await markSetupStarted(shop);
 
-  const [settings, synced, rates] = await Promise.all([
-    getSettings(shop),
+  const [synced, rates] = await Promise.all([
     // What Shopify already answers for the store is not asked in the steps.
     factClients(shop, admin).then((clients) =>
       syncStoreFactsForPage(shop, clients, { maxAgeMs: 10 * 1000 }),
     ),
     loadShippingRates(toGraphqlFn(admin, "Admin")),
   ]);
+  // After the facts: the preview's chat bubble sits where the store's language puts it.
+  const settings = await getSettings(shop);
 
   return {
     step: clampStep(new URL(request.url).searchParams.get("step")),

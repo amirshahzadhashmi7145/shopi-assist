@@ -56,7 +56,13 @@ import {
   type ControlInput,
 } from "../app/components/settings/draft";
 import { NO_SHIPPING_RATES, shippingForPage } from "../app/assistant/shipping";
-import { ACCENT_PRESETS, DEFAULT_ACCENT, isAccent } from "../app/assistant/widget-look";
+import {
+  ACCENT_PRESETS,
+  DEFAULT_ACCENT,
+  isAccent,
+  isRightToLeft,
+  positionFor,
+} from "../app/assistant/widget-look";
 import { SettingsFields } from "../app/components/settings/SettingsFields";
 import { PreviewWindow, previewSuggestions } from "../app/components/settings/StorefrontPreview";
 import { createTestDb } from "./helpers/db";
@@ -83,7 +89,7 @@ const adminAnswer = (overrides: Record<string, unknown> = {}) => ({
   shop: { contactEmail: "hello@alpine.example", currencyCode: "CAD" },
   ...overrides,
 });
-const storefrontAnswer = (overrides: Record<string, unknown> = {}) => ({
+const storefrontAnswer = (overrides: Record<string, unknown> = {}, language: string | null = "EN") => ({
   shop: {
     description: "Small-batch snowboards, built in Canada.",
     shipsToCountries: ["US", "CA"],
@@ -91,11 +97,13 @@ const storefrontAnswer = (overrides: Record<string, unknown> = {}) => ({
     shippingPolicy: null,
     ...overrides,
   },
+  localization: { language: { isoCode: language } },
 });
 const FACTS: StoreFacts = {
   syncedAt: "2026-11-26T10:00:00.000Z",
   description: "Small-batch snowboards, built in Canada.",
   currencyCode: "CAD",
+  language: "EN",
   contactEmail: "hello@alpine.example",
   shipsTo: ["US", "CA"],
   policies: { refund: true, shipping: false },
@@ -156,6 +164,77 @@ describe("the four parts of Settings", () => {
       for (const option of topic.options) expect(option.says.length).toBeGreaterThan(20);
     }
     expect(new Set(TOPICS.map((topic) => topic.key)).size).toBe(TOPICS.length);
+  });
+});
+
+describe("which corner the chat sits in", () => {
+  it("knows which languages are written from right to left", () => {
+    // As Shopify names a language, and as a page does.
+    for (const language of ["AR", "UR", "HE", "FA", "PS", "ar", "ur-PK", "AR_EG", "he-IL"]) {
+      expect(isRightToLeft(language), language).toBe(true);
+      expect(positionFor(language), language).toBe("left");
+    }
+    for (const language of ["EN", "FR", "DE", "HI", "ZH_CN", "PT_BR", "ja", "en-GB", "tr"]) {
+      expect(isRightToLeft(language), language).toBe(false);
+      expect(positionFor(language), language).toBe("right");
+    }
+    // Not known, or not a language at all: the usual corner.
+    for (const nothing of [undefined, "", "   ", "arabic language", "<script>", "a"]) {
+      expect(positionFor(nothing), String(nothing)).toBe("right");
+    }
+  });
+
+  const storeIn = async (shop: string, language: string | undefined) =>
+    storeFacts(shop, { syncedAt: "2026-11-26T10:00:00.000Z", ...(language ? { language } : {}) });
+  const corner = async (shop: string) => (await getSettings(shop, db)).widgetPosition;
+
+  it("is bottom right by default, and bottom left for a store in Arabic or Urdu", async () => {
+    // Nothing known about the store yet.
+    expect(await corner(SHOP_A)).toBe("right");
+
+    await storeIn(SHOP_A, "EN");
+    expect(await corner(SHOP_A)).toBe("right");
+    for (const language of ["AR", "UR", "HE", "FA"]) {
+      await storeIn(SHOP_A, language);
+      expect(await corner(SHOP_A), language).toBe("left");
+    }
+    // Each store by its own language.
+    await storeIn(SHOP_B, "FR");
+    expect([await corner(SHOP_A), await corner(SHOP_B)]).toEqual(["left", "right"]);
+    // Nothing is stored for it: a corner not picked is an empty one.
+    const row = await db.shopSettings.findUnique({ where: { shop: SHOP_A } });
+    expect(row!.widgetPosition).toBe("");
+  });
+
+  it("stays the merchant's own pick once they make one, whatever the language", async () => {
+    await storeIn(SHOP_A, "AR");
+    expect(await corner(SHOP_A)).toBe("left");
+
+    // Saving something else is not a pick: the corner still follows the language.
+    await saveSettings(SHOP_A, { assistantName: "Mia" }, db);
+    await storeIn(SHOP_A, "EN");
+    expect(await corner(SHOP_A)).toBe("right");
+    await storeIn(SHOP_A, "AR");
+    expect(await corner(SHOP_A)).toBe("left");
+
+    // An Arabic store that wants it on the right keeps it there...
+    expect((await saveSettings(SHOP_A, { widgetPosition: "right" }, db)).ok).toBe(true);
+    expect(await corner(SHOP_A)).toBe("right");
+    // ...and an English one that picked the left keeps that.
+    await saveSettings(SHOP_A, { widgetPosition: "left" }, db);
+    await storeIn(SHOP_A, "EN");
+    expect(await corner(SHOP_A)).toBe("left");
+  });
+
+  it("is what Settings shows picked, so saving the page keeps what the store already had", async () => {
+    await storeIn(SHOP_A, "UR");
+    const shown = await getSettings(SHOP_A, db);
+    expect(shown.widgetPosition).toBe("left");
+    // The whole form is saved as it stands, the corner with it.
+    expect((await saveSettings(SHOP_A, shown, db)).ok).toBe(true);
+    const row = await db.shopSettings.findUnique({ where: { shop: SHOP_A } });
+    expect(row!.widgetPosition).toBe("left");
+    expect(await corner(SHOP_A)).toBe("left");
   });
 });
 
@@ -515,6 +594,7 @@ describe("what Shopify says about the store", () => {
         shopName: "  Alpine\n Outfitters ",
         description: "x".repeat(900),
         currencyCode: "cad",
+        language: "arabic",
         contactEmail: "not an address",
         shipsTo: ["CA", "us", "CA", 7, "USA"],
         policies: { refund: true, shipping: "yes", privacy: true, terms: true },
@@ -756,9 +836,31 @@ describe("what Shopify says about the store", () => {
     for (const gone of ["productsCount", "gift_card", "paymentSettings", "privacyPolicy", "termsOfService", "name"]) {
       expect(asked).not.toMatch(new RegExp(`\\b${gone}\\b`));
     }
-    for (const kept of ["contactEmail", "currencyCode", "description", "shipsToCountries", "refundPolicy", "shippingPolicy"]) {
+    for (const kept of ["contactEmail", "currencyCode", "description", "shipsToCountries", "refundPolicy", "shippingPolicy", "language"]) {
       expect(asked).toContain(kept);
     }
+    // The store's own language: asked with no country or language given.
+    expect(asked).not.toContain("@inContext");
+  });
+
+  it("keeps the store's language as Shopify names it, or not at all", async () => {
+    expect(cleanStoreFacts({ language: "AR" }).language).toBe("AR");
+    expect(cleanStoreFacts({ language: "PT_BR" }).language).toBe("PT_BR");
+    for (const odd of ["ar", "Arabic", "AR-EG", "<script>", "", 7, null]) {
+      expect(cleanStoreFacts({ language: odd })).not.toHaveProperty("language");
+    }
+
+    const sync = (language: string | null, at: string) =>
+      syncStoreFacts(
+        SHOP_A,
+        { admin: fakeGraphql(adminAnswer()), storefront: fakeGraphql(storefrontAnswer({}, language)) },
+        { db, now: new Date(at) },
+      );
+    expect((await sync("UR", "2026-11-26T10:00:00Z")).facts.language).toBe("UR");
+    // A store that changes its language is followed at the next read...
+    expect((await sync("EN", "2026-11-26T11:00:00Z")).facts.language).toBe("EN");
+    // ...and one Shopify gives no language for has none on record.
+    expect((await sync(null, "2026-11-26T12:00:00Z")).facts).not.toHaveProperty("language");
   });
 });
 

@@ -1,8 +1,8 @@
 /**
  * What the app learned about a store from Shopify itself, so the merchant
  * does not have to type it: its description, its contact address, its
- * currency, where it ships and whether its refund and shipping policies are
- * published.
+ * currency, its language, where it ships and whether its refund and shipping
+ * policies are published.
  *
  * Only what something uses is kept. Each fact either stands in Settings
  * where a question would otherwise be asked, or is told to the assistant.
@@ -31,6 +31,11 @@ export interface StoreFacts {
   /** The store's own description of itself, as set in Shopify. */
   description?: string;
   currencyCode?: string;
+  /**
+   * The store's main language, as Shopify names it: "EN", "AR", "PT_BR".
+   * Decides which corner the chat sits in until the merchant picks one.
+   */
+  language?: string;
   /** The store's public contact address. Told to shoppers only if the merchant chooses. */
   contactEmail?: string;
   /**
@@ -81,6 +86,9 @@ export function cleanStoreFacts(input: unknown): StoreFacts {
   if (description) facts.description = description;
   if (typeof raw.currencyCode === "string" && /^[A-Z]{3}$/.test(raw.currencyCode)) {
     facts.currencyCode = raw.currencyCode;
+  }
+  if (typeof raw.language === "string" && /^[A-Z]{2,3}(_[A-Z0-9]{2,8})?$/.test(raw.language)) {
+    facts.language = raw.language;
   }
   if (
     typeof raw.contactEmail === "string" &&

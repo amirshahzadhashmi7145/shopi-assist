@@ -2,7 +2,7 @@
  * How the chat widget looks on the storefront: its colour and the corner of
  * the page it sits in. The merchant picks both in the app's Settings; the
  * widget is told them with the rest of its settings, and the admin's preview
- * draws them.
+ * draws them. Until a corner is picked it follows the store's language.
  *
  * The widget carries the same defaults and the same rule for the text on the
  * colour, for the moment before it has heard from the app. Tests keep the
@@ -46,6 +46,41 @@ export const WIDGET_POSITION_LABELS: Record<WidgetPosition, string> = {
   right: "Bottom right",
   left: "Bottom left",
 };
+
+/**
+ * Languages written from right to left, for a runtime that cannot say which
+ * way a language runs. Where it can (`Intl.Locale`), it is asked instead.
+ */
+const RIGHT_TO_LEFT = ["ar", "ckb", "dv", "fa", "he", "ks", "ps", "sd", "ug", "ur", "yi"];
+
+/**
+ * Whether a language is written from right to left: Arabic, Urdu, Hebrew,
+ * Persian and so on. Takes a language as Shopify gives it ("AR", "PT_BR") or
+ * as a page does ("ar", "pt-BR"). Anything else counts as left to right.
+ */
+export function isRightToLeft(language: string | undefined): boolean {
+  const tag = (language ?? "").trim().replace(/_/g, "-");
+  if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(tag)) return false;
+  try {
+    const locale = new Intl.Locale(tag) as Intl.Locale & {
+      getTextInfo?: () => { direction?: string };
+      textInfo?: { direction?: string };
+    };
+    const direction = (locale.getTextInfo?.() ?? locale.textInfo)?.direction;
+    if (direction === "rtl" || direction === "ltr") return direction === "rtl";
+  } catch {
+    // Not a language the runtime knows: the list below decides.
+  }
+  return RIGHT_TO_LEFT.includes(tag.split("-")[0].toLowerCase());
+}
+
+/**
+ * The corner the widget sits in until the merchant picks one: bottom right,
+ * and bottom left for a store whose language runs from right to left, where
+ * a page is laid out the other way round.
+ */
+export const positionFor = (language: string | undefined): WidgetPosition =>
+  isRightToLeft(language) ? "left" : "right";
 
 /**
  * Black or white, whichever reads better on the colour. The widget works it
