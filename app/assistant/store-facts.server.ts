@@ -1,0 +1,200 @@
+/**
+ * Reads a store's facts from Shopify and keeps them with the shop's settings.
+ *
+ * Shopify is asked when the merchant has the app open (their own admin
+ * session), and again by the chat whenever what is stored is more than a few
+ * minutes old, so an answer does not rest on facts older than that.
+ *
+ * `shop` must always come from an authenticated request.
+ */
+import type { PrismaClient } from "@prisma/client";
+
+import prisma from "../db.server";
+import { cleanStoreFacts, readStoreFacts, type StoreFacts } from "./store-facts";
+import { STORE_FACTS_QUERY } from "./tools/storefront-queries";
+import type { GraphqlFn } from "./types";
+
+export const STORE_FACTS_ADMIN_QUERY = `#graphql
+  query ShopiAssistStoreFacts {
+    shop {
+      contactEmail
+      currencyCode
+    }
+  }
+`;
+
+interface AdminFacts {
+  shop: { contactEmail: string | null; currencyCode: string | null } | null;
+}
+
+interface StorefrontFacts {
+  shop: {
+    description: string | null;
+    shipsToCountries: string[] | null;
+    refundPolicy: { id: string } | null;
+    shippingPolicy: { id: string } | null;
+  } | null;
+  /** Asked with no country or language given, so this is the store's own. */
+  localization: { language: { isoCode: string | null } | null } | null;
+}
+
+export interface FactClients {
+  admin?: GraphqlFn;
+  storefront?: GraphqlFn;
+}
+
+/** Which of Shopify's two APIs answered. False: asked, and it failed. */
+export interface FactsReached {
+  admin: boolean;
+  storefront: boolean;
+}
+
+const ADMIN_KEYS = ["contactEmail", "currencyCode"] as const;
+const STOREFRONT_KEYS = ["description", "shipsTo", "policies", "language"] as const;
+
+/** The facts kept for a shop, or an error when the database cannot be read. */
+async function readStoredFacts(shop: string, db: PrismaClient): Promise<StoreFacts> {
+  const row = await db.shopSettings.findUnique({
+    where: { shop },
+    select: { storeFacts: true },
+  });
+  return readStoreFacts(row?.storeFacts);
+}
+
+/**
+ * The facts kept for a shop. Reads the database only. The facts add to what
+ * the assistant knows and nothing depends on them, so a failure to read them
+ * counts as "none known" instead of stopping a chat.
+ */
+export async function getStoredFacts(shop: string, db: PrismaClient = prisma): Promise<StoreFacts> {
+  try {
+    return await readStoredFacts(shop, db);
+  } catch (error) {
+    console.error(
+      `[shopi-assist] store facts could not be read shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    return readStoreFacts(null);
+  }
+}
+
+/**
+ * Asks Shopify and stores what it answers. Each API is asked on its own: what
+ * one of them could not be reached for keeps its last known value, so a
+ * passing outage does not make the assistant forget where the store ships.
+ * Only an answer from both counts as a full sync; after anything less, the
+ * facts are asked for again at the next chance.
+ *
+ * With `maxAgeMs`, facts synced in full more recently than that are returned
+ * as they are and Shopify is not asked (`reached` is then null).
+ *
+ * Throws when the stored facts cannot be read: merging into facts that were
+ * not read would write over them.
+ */
+export async function syncStoreFacts(
+  shop: string,
+  clients: FactClients,
+  options: { db?: PrismaClient; now?: Date; maxAgeMs?: number } = {},
+): Promise<{ facts: StoreFacts; reached: FactsReached | null }> {
+  const db = options.db ?? prisma;
+  const now = options.now ?? new Date();
+  const stored = await readStoredFacts(shop, db);
+
+  if (
+    options.maxAgeMs &&
+    stored.syncedAt &&
+    now.getTime() - Date.parse(stored.syncedAt) < options.maxAgeMs
+  ) {
+    return { facts: stored, reached: null };
+  }
+
+  const [admin, storefront] = await Promise.all([
+    clients.admin
+      ? clients.admin<AdminFacts>(STORE_FACTS_ADMIN_QUERY).catch(() => null)
+      : Promise.resolve(null),
+    clients.storefront
+      ? clients.storefront<StorefrontFacts>(STORE_FACTS_QUERY).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+  const reached: FactsReached = { admin: Boolean(admin), storefront: Boolean(storefront) };
+  if (!reached.admin && !reached.storefront) return { facts: stored, reached };
+
+  const next: Record<string, unknown> = { ...stored };
+  if (admin) {
+    for (const key of ADMIN_KEYS) delete next[key];
+    next.contactEmail = admin.shop?.contactEmail ?? undefined;
+    next.currencyCode = admin.shop?.currencyCode ?? undefined;
+  }
+  if (storefront?.shop) {
+    for (const key of STOREFRONT_KEYS) delete next[key];
+    const found = storefront.shop;
+    next.description = found.description ?? undefined;
+    next.shipsTo = found.shipsToCountries ?? [];
+    next.policies = {
+      refund: Boolean(found.refundPolicy),
+      shipping: Boolean(found.shippingPolicy),
+    };
+    next.language = storefront.localization?.language?.isoCode ?? undefined;
+  }
+  if (reached.admin && reached.storefront) next.syncedAt = now.toISOString();
+
+  const facts = cleanStoreFacts(next);
+  const serialised = JSON.stringify(facts);
+  await db.shopSettings.upsert({
+    where: { shop },
+    create: { shop, storeFacts: serialised },
+    update: { storeFacts: serialised },
+  });
+  return { facts, reached };
+}
+
+/**
+ * For the admin pages: the same, but a page never fails because of it. When
+ * nothing could be read or stored, the page gets no facts and asks the
+ * merchant what Shopify would otherwise have answered.
+ */
+export async function syncStoreFactsForPage(
+  shop: string,
+  clients: FactClients,
+  options: { db?: PrismaClient; now?: Date; maxAgeMs?: number } = {},
+): Promise<{ facts: StoreFacts; reached: FactsReached | null }> {
+  try {
+    return await syncStoreFacts(shop, clients, options);
+  } catch (error) {
+    console.error(
+      `[shopi-assist] store facts sync failed shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
+    );
+    return { facts: readStoreFacts(null), reached: { admin: false, storefront: false } };
+  }
+}
+
+/** Facts older than this are read from Shopify again before they are used. */
+const STALE_AFTER_MS = 10 * 60 * 1000;
+const lastAttempt = new Map<string, number>();
+
+/**
+ * For the chat: reads the facts from Shopify again when what is stored is
+ * more than a few minutes old, at most once in that time per shop. Returns
+ * the refresh for the caller to wait on as long as it sees fit, or null when
+ * there is nothing to do. A store that has never been synced is left alone
+ * (the merchant opening the app does the first sync).
+ */
+export function refreshStoreFactsIfStale(
+  shop: string,
+  facts: StoreFacts,
+  clients: FactClients,
+  options: { db?: PrismaClient; now?: Date } = {},
+): Promise<void> | null {
+  const now = options.now ?? new Date();
+  if (!facts.syncedAt || now.getTime() - Date.parse(facts.syncedAt) < STALE_AFTER_MS) return null;
+  if (now.getTime() - (lastAttempt.get(shop) ?? 0) < STALE_AFTER_MS) return null;
+  if (!clients.admin && !clients.storefront) return null;
+  lastAttempt.set(shop, now.getTime());
+
+  return syncStoreFacts(shop, clients, { db: options.db, now })
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      console.error(
+        `[shopi-assist] store facts refresh failed shop=${shop} error=${error instanceof Error ? error.name : "unknown"}`,
+      );
+    });
+}

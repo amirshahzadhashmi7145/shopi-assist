@@ -10,6 +10,7 @@ import { ChatError, handleChatTurn } from "../assistant/chat.server";
 import { getLlmStatus } from "../assistant/llm/index.server";
 import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import { AssistantChat, type ChatActionData } from "../components/AssistantChat";
+import { PAGE_WIDTH, PageColumns } from "../components/PageColumns";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -67,33 +68,9 @@ const SUGGESTIONS = [
 export default function StoreAssistant() {
   const { llmReady } = useLoaderData<typeof loader>();
 
-  return (
-    <s-page heading="Store assistant">
-      {!llmReady && (
-        <s-banner tone="warning" heading="The assistant can't answer right now">
-          This is a problem on our side, not in your store. Please try again in a little while.
-        </s-banner>
-      )}
-
-      <s-section heading="Ask about your store">
-        <AssistantChat
-          action="/app/assistant"
-          fetcherKey="store-assistant"
-          disabled={!llmReady}
-          placeholder="For example: top selling items in the last 30 days"
-          pendingText="Checking your store data…"
-          suggestions={SUGGESTIONS}
-          intro={
-            <s-paragraph>
-              Ask questions in plain language. Answers come from your live store data: sales,
-              top products, recent orders, inventory and catalog. The assistant is read-only
-              and can&apos;t change anything in your store.
-            </s-paragraph>
-          }
-        />
-      </s-section>
-
-      <s-section slot="aside" heading="What it can look up">
+  const aside = (
+    <>
+      <s-section heading="What it can look up">
         <s-unordered-list>
           <s-list-item>Top-selling products by units or revenue</s-list-item>
           <s-list-item>Sales totals and average order value</s-list-item>
@@ -103,13 +80,43 @@ export default function StoreAssistant() {
         </s-unordered-list>
       </s-section>
 
-      <s-section slot="aside" heading="About the numbers">
+      <s-section heading="About the numbers">
         <s-paragraph>
           Sales figures use Shopify&apos;s analytics when your app has access to them. If
           not, the assistant totals your most recent orders instead and tells you the figures
           are approximate.
         </s-paragraph>
       </s-section>
+    </>
+  );
+
+  return (
+    <s-page heading="Store assistant" inlineSize={PAGE_WIDTH}>
+      <PageColumns aside={aside}>
+        {!llmReady && (
+          <s-banner tone="warning" heading="The assistant can't answer right now">
+            This is a problem on our side, not in your store. Please try again in a little while.
+          </s-banner>
+        )}
+
+        <s-section heading="Ask about your store">
+          <AssistantChat
+            action="/app/assistant"
+            fetcherKey="store-assistant"
+            disabled={!llmReady}
+            placeholder="For example: top selling items in the last 30 days"
+            pendingText="Checking your store data…"
+            suggestions={SUGGESTIONS}
+            intro={
+              <s-paragraph>
+                Ask questions in plain language. Answers come from your live store data: sales,
+                top products, recent orders, inventory and catalog. The assistant is read-only
+                and can&apos;t change anything in your store.
+              </s-paragraph>
+            }
+          />
+        </s-section>
+      </PageColumns>
     </s-page>
   );
 }

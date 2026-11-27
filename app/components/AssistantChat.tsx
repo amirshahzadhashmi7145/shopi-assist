@@ -1,30 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { useFetcher } from "react-router";
 
 import { RichText } from "./RichText";
+import { useChatThread } from "./useChatThread";
 
-/** What a chat action must return for this component to render it. */
-export type ChatActionData =
-  | {
-      ok: true;
-      turnId: number;
-      reply: string;
-      conversationId: string;
-      /** Products the storefront widget would show as cards under the reply. */
-      cards?: Array<{ title: string; price: string }>;
-      /** What else the storefront widget would do after this reply, in words. */
-      widgetNotes?: string[];
-    }
-  | { ok: false; turnId: number; error: string };
-
-interface ChatEntry {
-  id: number;
-  role: "user" | "assistant" | "error";
-  text: string;
-  cards?: Array<{ title: string; price: string }>;
-  widgetNotes?: string[];
-}
+export type { ChatActionData } from "./useChatThread";
 
 interface AssistantChatProps {
   /** Route whose action answers the chat, for example "/app/assistant". */
@@ -43,12 +23,7 @@ type FormSubmitEvent =
   | FormEvent<HTMLFormElement>
   | (SubmitEvent & { currentTarget: HTMLFormElement });
 
-/**
- * A simple question-and-answer panel for the admin. Finished exchanges live
- * in `history`; the newest one is rendered straight from the fetcher's
- * response, matched to its question by turn id, so nothing is copied into
- * state when an answer arrives.
- */
+/** A simple question-and-answer panel for the admin, drawn with Polaris. */
 export function AssistantChat({
   action,
   fetcherKey,
@@ -59,37 +34,8 @@ export function AssistantChat({
   userLabel = "You",
   disabled = false,
 }: AssistantChatProps) {
-  const fetcher = useFetcher<ChatActionData>({ key: fetcherKey });
-
-  const [history, setHistory] = useState<ChatEntry[]>([]);
-  const [active, setActive] = useState<{ id: number; question: string } | null>(null);
-  const [conversationId, setConversationId] = useState("");
-  const nextId = useRef(1);
+  const { entries, pending, send, startOver } = useChatThread(action, fetcherKey, disabled);
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  const response =
-    active && fetcher.state === "idle" && fetcher.data?.turnId === active.id
-      ? fetcher.data
-      : null;
-  const pending = Boolean(active) && !response;
-
-  const entries: ChatEntry[] = [...history];
-  if (active) {
-    entries.push({ id: active.id, role: "user", text: active.question });
-    if (response) {
-      entries.push(
-        response.ok
-          ? {
-              id: active.id + 0.5,
-              role: "assistant",
-              text: response.reply,
-              cards: response.cards,
-              widgetNotes: response.widgetNotes,
-            }
-          : { id: active.id + 0.5, role: "error", text: response.error },
-      );
-    }
-  }
 
   useEffect(() => {
     if (entries.length > 0) {
@@ -97,40 +43,13 @@ export function AssistantChat({
     }
   }, [entries.length, pending]);
 
-  const send = (raw: string) => {
-    const question = raw.trim();
-    if (!question || pending || disabled) return;
-
-    // Fold the previous exchange into history before starting the next one.
-    let threadId = conversationId;
-    if (active && response) {
-      setHistory(entries);
-      if (response.ok) {
-        threadId = response.conversationId;
-        setConversationId(threadId);
-      }
-    }
-
-    const id = nextId.current;
-    nextId.current += 1;
-    setActive({ id, question });
-    fetcher.submit(
-      { message: question, conversationId: threadId, turnId: String(id) },
-      { method: "POST", action },
-    );
-  };
-
   const handleSubmit = (event: FormSubmitEvent) => {
     event.preventDefault();
+    // Nothing is sent while an answer is on its way, so what was typed stays.
+    if (pending) return;
     const form = event.currentTarget;
     send(String(new FormData(form).get("message") ?? ""));
     form.reset();
-  };
-
-  const startOver = () => {
-    setHistory([]);
-    setActive(null);
-    setConversationId("");
   };
 
   return (

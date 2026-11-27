@@ -11,11 +11,19 @@ import {
   type ChatTurnInput,
 } from "../app/assistant/chat.server";
 import { DailyBudget, RateLimiter } from "../app/assistant/rate-limit";
+import {
+  MARKET_SHIPPING_QUERY,
+  SHIPPING_MODEL_QUERY,
+  SHIPPING_RATES_QUERY,
+  SHIPPING_SETUP_QUERY,
+} from "../app/assistant/shipping.server";
 import { defineTool } from "../app/assistant/tools/registry";
 import { z } from "zod";
+import { fieldsOf } from "../app/assistant/setting-options";
 import {
   DEFAULT_SETTINGS,
   describeQuickPolicies,
+  describeShippingPicks,
   getSettings,
   getSetupState,
   markSetupCompleted,
@@ -363,6 +371,8 @@ describe("handleChatTurn", () => {
     await saveSettings(
       SHOP_A,
       {
+        // "Write my own", as the Settings page saves it with the words.
+        aboutStore: "custom",
         businessDescription: "Small-batch snowboards for beginners.",
         returnPolicy: "30 days, unused, free return label.",
         shippingInfo: "Ships next business day from Calgary.",
@@ -380,13 +390,143 @@ describe("handleChatTurn", () => {
     for (const fact of [
       "Small-batch snowboards for beginners.",
       "30 days, unused, free return label.",
-      "Ships next business day from Calgary.",
       "Do you wax boards? Yes, free on request.",
     ]) {
       expect(system).toContain(fact);
     }
+    // What the owner wrote about shipping is not among the standing notes:
+    // delivery is read from the store's settings when a shopper asks, and
+    // the note is only what the shipping tool falls back on.
+    expect(system).not.toContain("Ships next business day from Calgary.");
     // Owner notes come after the fixed rules, which they cannot override.
     expect(system.indexOf("Rules:")).toBeLessThan(system.indexOf("Notes from the store owner"));
+  });
+
+  it("reads the store's delivery settings once in a turn, and again in the next", async () => {
+    const asked: string[] = [];
+    // A store that keeps its shipping with its markets.
+    const admin = (async (query: string) => {
+      asked.push(query);
+      if (query === SHIPPING_MODEL_QUERY) return { shop: { features: { marketDrivenShipping: true } } };
+      if (query === SHIPPING_SETUP_QUERY) {
+        return {
+          deliveryPromiseSettings: { processingTime: "P1D" },
+          all: { pageInfo: { hasNextPage: false }, nodes: [] },
+          own: { pageInfo: { hasNextPage: false }, nodes: [] },
+        };
+      }
+      if (query === MARKET_SHIPPING_QUERY) {
+        return {
+          markets: {
+            pageInfo: { hasNextPage: false },
+            nodes: [
+              {
+                id: "gid://shopify/Market/1",
+                name: "Canada",
+                status: "ACTIVE",
+                conditions: {
+                  regionsCondition: {
+                    applicationLevel: "SPECIFIED",
+                    regions: {
+                      pageInfo: { hasNextPage: false },
+                      nodes: [{ __typename: "MarketRegionCountry", name: "Canada", code: "CA" }],
+                    },
+                  },
+                },
+                parentMarkets: { nodes: [] },
+                delivery: {
+                  shipping: {
+                    isEnabled: true,
+                    optionDefinitions: {
+                      pageInfo: { hasNextPage: false },
+                      nodes: [
+                        {
+                          __typename: "DeliveryFlatRateOptionDefinition",
+                          description: null,
+                          isActive: true,
+                          freeDeliveryMinimumValue: null,
+                          name: "International Shipping",
+                          flatGroups: {
+                            pageInfo: { hasNextPage: false },
+                            nodes: [
+                              {
+                                conditions: { collectionsCount: null },
+                                rate: {
+                                  price: { amount: "30.0", currencyCode: "USD" },
+                                  transitTimeMinSeconds: null,
+                                  transitTimeMaxSeconds: null,
+                                },
+                              },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+      return { shop: { name: "Shop A" } };
+    }) as NonNullable<ChatTurnInput["admin"]>;
+    const reads = () => asked.filter((query) => query === MARKET_SHIPPING_QUERY).length;
+
+    // The assistant asks twice in one turn: once for a country, once for all of them.
+    const provider = scriptedProvider([
+      callTool("get_shipping_info", { country: "CA" }, "call_1"),
+      callTool("get_shipping_info", {}, "call_2"),
+      text("Delivery to Canada is 30.00 USD."),
+    ]);
+    await turn({ message: "what is delivery to Canada?", admin }, { provider });
+    expect(reads()).toBe(1);
+    // Both answers came from that one read, and from the markets, never the old profiles.
+    const results = provider.requests[2].messages.filter((entry) => entry.role === "tool");
+    expect(results).toHaveLength(2);
+    for (const result of results) expect(result.content).toContain("30.00 USD");
+    expect(asked).not.toContain(SHIPPING_RATES_QUERY);
+
+    // The next message reads Shopify again: nothing is kept between turns.
+    await turn(
+      { message: "and now?", admin },
+      { provider: scriptedProvider([callTool("get_shipping_info", { country: "CA" }), text("Still 30.00 USD.")]) },
+    );
+    expect(reads()).toBe(2);
+  });
+
+  it("tells the assistant the owner's delivery picks itself only when it has no shipping tool to ask", async () => {
+    await saveSettings(
+      SHOP_A,
+      { shipsTo: "domestic", shippingFee: "free", processingTime: "same_day", deliveryTime: "5_8", returnWindow: "30" },
+      db,
+    );
+    const picks = [
+      "Shipping area: the store's home country only. No international shipping.",
+      "Shipping cost: free on every order.",
+      "Dispatch: orders usually ship the same business day.",
+      "Delivery: usually 5 to 8 business days after the order ships.",
+    ];
+    const system = async (overrides: Partial<ChatTurnInput>) => {
+      const provider = scriptedProvider([text("ok")]);
+      await turn(overrides, { provider });
+      return {
+        tools: provider.requests[0].tools.map((tool) => tool.name),
+        prompt: provider.requests[0].messages[0].content as string,
+      };
+    };
+
+    // With the tool, delivery is the tool's to answer: the picks are its
+    // fallback and are not standing notes, where they could contradict Shopify.
+    const withTool = await system({});
+    expect(withTool.tools).toContain("get_shipping_info");
+    for (const pick of picks) expect(withTool.prompt).not.toContain(pick);
+    expect(withTool.prompt).toContain("Returns: accepted within 30 days of delivery.");
+
+    // Without it, the picks are all there is, so the assistant is told them.
+    const without = await system({ storefront: undefined });
+    expect(without.tools).not.toContain("get_shipping_info");
+    for (const pick of picks) expect(without.prompt).toContain(pick);
   });
 
   it("gives the assistant only the abilities the merchant ticked", async () => {
@@ -399,35 +539,31 @@ describe("handleChatTurn", () => {
       };
     };
 
-    // Defaults: cart and checkout on, order status and returns off.
+    // Defaults: order status and returns off. The cart, ordering and the way
+    // to the checkout are not settings: every store has them.
+    const SHOPPING = ["add_to_cart", "remove_from_cart", "clear_cart", "place_order", "start_checkout"];
     const byDefault = await names();
-    expect(byDefault.tools).toEqual(
-      expect.arrayContaining(["add_to_cart", "place_order", "start_checkout"]),
-    );
+    expect(byDefault.tools).toEqual(expect.arrayContaining(SHOPPING));
     expect(byDefault.system).toContain("start the order in that same reply");
     expect(byDefault.system).toContain("never say an order has been placed");
     expect(byDefault.tools).not.toContain("request_return");
     expect(byDefault.tools).not.toContain("get_order_status");
     expect(byDefault.system).toContain("you cannot start a return");
 
-    await saveSettings(
-      SHOP_A,
-      { allowAddToCart: false, allowCheckout: false, allowReturns: true, returnWindow: "14" },
-      db,
-    );
+    await saveSettings(SHOP_A, { allowReturns: true, returnWindow: "14" }, db);
     const changed = await names();
-    expect(changed.tools).not.toContain("add_to_cart");
-    expect(changed.tools).not.toContain("start_checkout");
-    expect(changed.tools).not.toContain("place_order");
-    expect(changed.system).not.toContain("pay on delivery");
-
-    // Pay-on-delivery orders are opt-in and ride on the checkout summary.
-    expect(byDefault.system).not.toContain("pay on delivery");
-    await saveSettings(SHOP_A, { allowAddToCart: true, allowCheckout: true, allowChatOrders: true }, db);
-    expect((await names()).system).toContain("'Order here, pay on delivery' button");
+    expect(changed.tools).toEqual(expect.arrayContaining(SHOPPING));
+    // No store's assistant takes an order in the chat: paying on delivery,
+    // like any way of paying, is picked on the checkout page.
+    for (const prompt of [byDefault.system, changed.system]) {
+      expect(prompt).not.toContain("Order here");
+      expect(prompt).not.toContain("order form");
+      // Nor is any store's assistant told it cannot add to the cart or start a checkout.
+      expect(prompt).not.toMatch(/cannot add items to the cart|cannot start a checkout|cannot change the cart/i);
+    }
+    expect(byDefault.system).toContain("they choose how to pay on the checkout page");
+    expect(byDefault.tools).not.toContain("place_chat_order");
     expect(changed.tools).toContain("request_return");
-    expect(changed.system).toContain("You cannot add items to the cart");
-    expect(changed.system).toContain("You cannot start a checkout");
     expect(changed.system).toContain("a return is a request the store will review");
     expect(changed.system).toContain("Returns: accepted within 14 days of delivery.");
   });
@@ -644,7 +780,7 @@ describe("handleChatTurn", () => {
     }
   });
 
-  it("removes one-click add from product cards when add to cart is off", async () => {
+  it("sends product cards with the variant to add, so the widget can offer Add to cart", async () => {
     const product = {
       id: "gid://shopify/Product/1",
       title: "Trail Mug",
@@ -662,21 +798,17 @@ describe("handleChatTurn", () => {
       compareAtPriceRange: { maxVariantPrice: { amount: "0.0", currencyCode: "USD" } },
       variants: { nodes: [{ id: "gid://shopify/ProductVariant/101", availableForSale: true }] },
     };
-    const ask = () =>
-      turn(
-        { storefront: fakeGraphql({ products: { nodes: [product] } }) },
-        {
-          provider: scriptedProvider([
-            { content: null, toolCalls: [{ id: "c1", name: "get_best_sellers", arguments: "{}" }] },
-            text("Try the Trail Mug."),
-          ]),
-        },
-      );
+    const result = await turn(
+      { storefront: fakeGraphql({ products: { nodes: [product] } }) },
+      {
+        provider: scriptedProvider([
+          { content: null, toolCalls: [{ id: "c1", name: "get_best_sellers", arguments: "{}" }] },
+          text("Try the Trail Mug."),
+        ]),
+      },
+    );
 
-    expect((await ask()).cards[0].variantId).toBe("101");
-    await saveSettings(SHOP_A, { allowAddToCart: false }, db);
-    const off = await ask();
-    expect(off.cards[0]).toMatchObject({ title: "Trail Mug", variantId: null });
+    expect(result.cards[0]).toMatchObject({ title: "Trail Mug", variantId: "101" });
   });
 
   it("runs a staff preview as a shopper but keeps it out of the conversation log", async () => {
@@ -1084,40 +1216,22 @@ describe("settings", () => {
     });
   });
 
-  it("asks for nothing typed in the setup tour, and keeps typed settings folded away in Settings", async () => {
-    const TYPED = /<s-(text-field|text-area|number-field)\b/;
-    const fields = readFileSync("app/components/AssistantFields.tsx", "utf8");
-    const component = (name: string) => {
-      const start = fields.indexOf(`function ${name}(`);
-      expect(start).toBeGreaterThan(-1);
-      const end = fields.indexOf("\nexport function ", start + 1);
-      return fields.slice(start, end < 0 ? undefined : end);
-    };
+  it("saving one part of Settings, or one tour step, leaves the other parts alone", async () => {
+    await saveSettings(
+      SHOP_A,
+      { orderCompany: "required", assistantName: "Mia", topics: { sizing: "small" } },
+      db,
+    );
 
-    // The tour shows the abilities and the policy picks: ticks and lists only.
-    const tour = readFileSync("app/routes/app.setup.tsx", "utf8");
-    expect(tour).not.toMatch(TYPED);
-    expect(tour.match(/<(\w+Fields)\b/g)).toEqual(["<AbilityFields", "<QuickPolicyFields"]);
-    for (const name of ["AbilityFields", "OrderFormFields", "QuickPolicyFields", "RetentionField"]) {
-      expect(component(name)).not.toMatch(TYPED);
-    }
-
-    // On the Settings page everything typed comes after the fold.
-    const page = readFileSync("app/routes/app.settings.tsx", "utf8");
-    const fold = page.indexOf("<details");
-    expect(fold).toBeGreaterThan(-1);
-    expect(page.slice(0, fold)).not.toMatch(TYPED);
-    expect(page.slice(0, fold)).not.toMatch(/<(Personality|PaymentWording|Business|Policy|Question)Fields/);
-
-    // Saving a tour step leaves what was typed in Settings alone.
-    await saveSettings(SHOP_A, { orderPaymentName: "Pay the courier", assistantName: "Mia" }, db);
-    const { FIELD_GROUPS } = await import("../app/components/AssistantFields");
-    const step = settingsFromForm(new FormData(), [...FIELD_GROUPS.abilities, ...FIELD_GROUPS.quickPolicies]);
-    expect(Object.keys(step)).not.toContain("orderPaymentName");
+    // The tour's policies step submits nothing about the assistant or orders.
+    const step = settingsFromForm(new FormData(), fieldsOf(["policies"]));
+    expect(Object.keys(step)).not.toContain("orderCompany");
+    expect(Object.keys(step)).not.toContain("topics");
     await saveSettings(SHOP_A, step, db);
     expect(await getSettings(SHOP_A, db)).toMatchObject({
-      orderPaymentName: "Pay the courier",
+      orderCompany: "required",
       assistantName: "Mia",
+      topics: { sizing: "small" },
     });
   });
 
@@ -1160,10 +1274,13 @@ describe("settings", () => {
     expect(describeQuickPolicies(await getSettings(SHOP_A, db)).split("\n")).toEqual([
       "Returns: accepted within 30 days of delivery.",
       "Return shipping: free for the customer.",
-      "Dispatch: orders usually ship the same business day.",
-      "Delivery: usually 5 to 8 business days after the order ships.",
-      "Shipping area: the store's home country only. No international shipping.",
     ]);
+    // Everything about delivery is read from Shopify; the picks are only the fallback.
+    expect(describeShippingPicks(await getSettings(SHOP_A, db))).toEqual({
+      area: "Shipping area: the store's home country only. No international shipping.",
+      dispatch: "Dispatch: orders usually ship the same business day.",
+      deliveryTime: "Delivery: usually 5 to 8 business days after the order ships.",
+    });
 
     // "No returns" drops the return-shipping line, which would contradict it.
     await saveSettings(SHOP_A, { returnWindow: "none" }, db);

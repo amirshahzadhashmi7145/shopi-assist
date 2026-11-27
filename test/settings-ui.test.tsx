@@ -1,0 +1,1020 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { SECTIONS, type SectionKey } from "../app/assistant/setting-options";
+import type { AssistantSettings, SettingsErrors } from "../app/assistant/settings.server";
+import {
+  NO_SHIPPING_RATES,
+  shippingForPage,
+  type ShippingRates,
+} from "../app/assistant/shipping";
+import { factsForPage, type StoreFacts } from "../app/assistant/store-facts";
+import { ACCENT_PRESETS, DEFAULT_ACCENT, readableOn } from "../app/assistant/widget-look";
+import { SectionNav, SettingsFields } from "../app/components/settings/SettingsFields";
+import { PreviewWindow, TryAsking } from "../app/components/settings/StorefrontPreview";
+import { useSettingsDraft } from "../app/components/settings/useSettingsDraft";
+
+// The settings pages are drawn with Shopify's web components, which a test
+// page does not load: each <s-...> is a plain element here. That is enough to
+// check what the page decides for itself: what is shown, what is hidden, and
+// what would be saved.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** The defaults, without the server module that holds them (it opens the database). */
+const DEFAULTS: AssistantSettings = {
+  enabled: true,
+  instructions: "",
+  orderLookupEnabled: false,
+  orderLookupByNumber: false,
+  retentionDays: 30,
+  aboutStore: "shopify",
+  businessDescription: "",
+  returnPolicy: "",
+  shippingInfo: "",
+  faq: "",
+  topics: {},
+  assistantName: "Ava",
+  greeting: "Hi there! 👋 Welcome! How can I help you today?",
+  accentColor: "#1F3D2F",
+  widgetPosition: "right",
+  allowReturns: false,
+  allowOrderCancel: false,
+  allowAddressChange: false,
+  allowOrderEdit: false,
+  recogniseCustomers: false,
+  chatRatings: true,
+  orderFirstName: "optional",
+  orderCompany: "hidden",
+  orderAddress2: "optional",
+  returnWindow: "",
+  returnConditions: [],
+  returnShipping: "",
+  exchanges: "",
+  refundMethod: "",
+  processingTime: "",
+  deliveryTime: "",
+  shipsTo: "",
+  shippingFee: "",
+  shippingAmount: "",
+};
+
+const FACTS: StoreFacts = {
+  syncedAt: "2026-11-26T10:00:00.000Z",
+  description: "Small-batch snowboards, built in Canada.",
+  currencyCode: "CAD",
+  contactEmail: "hello@alpine.example",
+  shipsTo: ["US", "CA"],
+  policies: { refund: true, shipping: false },
+};
+
+/** A store on shipping zones whose rates could not be read: Shopify still lists its countries. */
+const ZONES_UNREAD: ShippingRates = { ...NO_SHIPPING_RATES, state: "no_access", model: "profiles" };
+
+/** The store's shipping settings as Shopify returns them: two zones with rates. */
+const LIVE_RATES: ShippingRates = {
+  state: "live",
+  model: "profiles",
+  otherProfiles: false,
+  truncated: false,
+  zones: [
+    {
+      name: "North America",
+      countries: ["CA", "US"],
+      restOfWorld: false,
+      rates: [
+        {
+          name: "Standard",
+          price: { amount: "10.0", currencyCode: "CAD" },
+          conditions: ["orders up to 99.99 CAD"],
+        },
+        {
+          name: "Free shipping",
+          price: { amount: "0.0", currencyCode: "CAD" },
+          conditions: ["orders of 100.00 CAD or more"],
+        },
+      ],
+    },
+    {
+      name: "Everywhere else",
+      countries: [],
+      restOfWorld: true,
+      rates: [{ name: "DHL Express", price: null, carrier: "DHL", conditions: [] }],
+    },
+  ],
+};
+
+const ALL = SECTIONS.map((section) => section.key);
+
+/**
+ * What a control was given to start from. React keeps an element's props on
+ * the element itself, which is where Shopify's components read a starting
+ * value (`defaultValue`, `defaultChecked`) from; nothing is written to the
+ * markup for those.
+ */
+function given(element: Element): Record<string, unknown> {
+  const key = Object.keys(element).find((name) => name.startsWith("__reactProps$"));
+  return key ? (element as unknown as Record<string, Record<string, unknown>>)[key] : {};
+}
+const TYPED = "s-text-field, s-text-area, s-number-field, s-color-field";
+
+function Page({
+  settings,
+  facts,
+  shipping = NO_SHIPPING_RATES,
+  show,
+  active,
+  errors = {},
+}: {
+  settings: AssistantSettings;
+  facts: StoreFacts;
+  /** The shipping rates as read from Shopify. Not readable unless a test says so. */
+  shipping?: ShippingRates;
+  show: readonly SectionKey[];
+  active?: SectionKey;
+  errors?: SettingsErrors;
+}) {
+  const draft = useSettingsDraft(settings);
+  return (
+    <form onInput={draft.handleInput} onReset={draft.reset}>
+      <SettingsFields
+        show={show}
+        active={active}
+        settings={settings}
+        facts={factsForPage(facts)}
+        shipping={shippingForPage(shipping)}
+        errors={errors}
+        shop="alpine.myshopify.com"
+        draft={draft}
+      />
+      <output data-dirty={String(draft.dirty)}>{JSON.stringify(draft.draft)}</output>
+    </form>
+  );
+}
+
+let root: Root | null = null;
+afterEach(() => {
+  act(() => root?.unmount());
+  root = null;
+  document.body.replaceChildren();
+});
+
+function open(props: Partial<Parameters<typeof Page>[0]> = {}) {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  act(() =>
+    root!.render(<Page settings={DEFAULTS} facts={FACTS} show={ALL} {...props} />),
+  );
+
+  const find = (selector: string) => host.querySelector<HTMLElement>(selector);
+  const field = (name: string) => {
+    const element = find(`[name="${name}"]`);
+    if (!element) throw new Error(`no control named ${name}`);
+    return element;
+  };
+  /** Not inside anything that is hidden. */
+  const shown = (element: Element) => element.closest("[hidden]") === null;
+  /** What a web component does when the merchant uses it: update itself, then report. */
+  const report = (element: Element, state: Record<string, unknown>) =>
+    act(() => {
+      Object.assign(element, state);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+  return {
+    host,
+    find,
+    field,
+    shown,
+    isShown: (name: string) => shown(field(name)),
+    toggle: (name: string, checked: boolean) => report(field(name), { checked }),
+    pick: (name: string, value: string) => report(field(name), { value }),
+    choose: (name: string, value: string) => report(field(name), { values: [value] }),
+    type: (name: string, value: string) => report(field(name), { value }),
+    tick: (name: string, value: string, checked: boolean) =>
+      report(host.querySelector(`[name="${name}"][value="${value}"]`)!, { checked, value }),
+    press: (label: string) =>
+      act(() => {
+        const button = [...host.querySelectorAll("s-button")].find(
+          (candidate) => candidate.textContent?.trim() === label,
+        );
+        if (!button) throw new Error(`no button "${label}"`);
+        button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      }),
+    typedOnShow: () =>
+      [...host.querySelectorAll(TYPED)].filter(shown).map((element) => element.getAttribute("name")),
+    saved: (name: string) => (field(name) as HTMLInputElement).value,
+    draft: () => JSON.parse(find("output")!.textContent!) as AssistantSettings,
+    dirty: () => find("output")!.dataset.dirty === "true",
+  };
+}
+
+describe("Settings without typing", () => {
+  it("asks a new store to type nothing: the only text box on show is the assistant's name, already filled in", () => {
+    const page = open();
+    expect(page.typedOnShow()).toEqual(["assistantName"]);
+    expect(given(page.field("assistantName")).defaultValue).toBe("Ava");
+    // Features are switches, policies and answers are lists.
+    expect(page.host.querySelectorAll("s-switch[name]").length).toBe(9);
+    expect(page.host.querySelectorAll("s-select").length).toBeGreaterThan(15);
+    expect(page.dirty()).toBe(false);
+  });
+
+  it("shows the setup tour's steps as switches and lists only", () => {
+    const abilities = open({ show: ["orders"] });
+    expect(abilities.typedOnShow()).toEqual([]);
+    expect(abilities.find('[name="assistantName"]')).toBeNull();
+    expect(abilities.find('[name="topics"]')).toBeNull();
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const policies = open({ show: ["policies"] });
+    expect(policies.typedOnShow()).toEqual([]);
+    expect(policies.find('[name="orderLookupEnabled"]')).toBeNull();
+  });
+
+  it("shows one part at a time and keeps the others on the page, so one save covers them all", () => {
+    const page = open({ active: "policies" });
+    const parts = [...page.host.querySelectorAll<HTMLElement>("[data-section]")];
+    expect(parts.map((part) => [part.dataset.section, part.hidden])).toEqual([
+      ["assistant", true],
+      ["orders", true],
+      ["policies", false],
+      ["knowledge", true],
+    ]);
+    // Out of sight, still in the form.
+    expect(page.field("assistantName").closest("form")).not.toBeNull();
+    expect(page.field("topics").closest("form")).not.toBeNull();
+  });
+});
+
+describe("a feature's own options appear only once it is on", () => {
+  it("order status brings its two options with it", () => {
+    const page = open();
+    expect(page.isShown("orderLookupByNumber")).toBe(false);
+    expect(page.isShown("recogniseCustomers")).toBe(false);
+
+    page.toggle("orderLookupEnabled", true);
+    expect(page.isShown("orderLookupByNumber")).toBe(true);
+    expect(page.isShown("recogniseCustomers")).toBe(true);
+    expect(page.draft().orderLookupEnabled).toBe(true);
+    expect(page.dirty()).toBe(true);
+
+    page.toggle("orderLookupEnabled", false);
+    expect(page.isShown("orderLookupByNumber")).toBe(false);
+    expect(page.dirty()).toBe(false);
+  });
+
+  it("has no switch for taking orders in the chat: every order goes through the checkout", () => {
+    const page = open();
+    expect(page.find('[name="allowChatOrders"]')).toBeNull();
+    expect(page.find('[name="orderPaymentName"]')).toBeNull();
+    expect(page.find('[name="ui.paymentNameMode"]')).toBeNull();
+    expect(page.host.textContent).not.toMatch(/orders in the chat|pay on delivery/i);
+  });
+
+  it("has no Shopping part: products, the cart and the checkout are on for every store", () => {
+    const page = open();
+    expect(page.find('[data-section="shopping"]')).toBeNull();
+    expect(page.find('[name="allowAddToCart"]')).toBeNull();
+    expect(page.find('[name="allowCheckout"]')).toBeNull();
+    // Nor a line that lists them as always on.
+    const headings = [...page.host.querySelectorAll("s-section")].map((section) =>
+      section.getAttribute("heading"),
+    );
+    expect(headings).not.toContain("Shopping");
+    expect(page.host.querySelector("s-switch[disabled]")).toBeNull();
+    expect(page.host.textContent).not.toMatch(/always on|checkout help/i);
+  });
+
+  it("says the order settings are for orders already placed, not for checkout", () => {
+    const page = open();
+    const orders = page.find('[data-section="orders"]')!;
+    expect(orders.textContent).toContain(
+      "Everything here is for orders that are already placed. New orders always go through your checkout page.",
+    );
+    expect(page.field("allowAddressChange").getAttribute("details")).toBe(
+      "Before an order ships, the shopper can correct its delivery address in a short form in the chat (same country only). The order is tagged for you.",
+    );
+  });
+
+  it("keeps the address form's options behind a button, since most stores change none of them", () => {
+    const page = open();
+    const picks = ["orderFirstName", "orderCompany", "orderAddress2"];
+    const optionsButton = () =>
+      [...page.host.querySelectorAll("s-button")].find((button) => button.textContent === "Address form options");
+    for (const name of picks) expect(page.isShown(name)).toBe(false);
+    // The button belongs to address changes: nothing to offer while they are off.
+    expect(page.shown(optionsButton()!)).toBe(false);
+
+    // Switching address changes on adds one button, and nothing to pick or type.
+    page.toggle("allowAddressChange", true);
+    expect(page.shown(optionsButton()!)).toBe(true);
+    for (const name of picks) expect(page.isShown(name)).toBe(false);
+    expect(page.typedOnShow()).toEqual(["assistantName"]);
+
+    page.press("Address form options");
+    for (const name of picks) expect(page.isShown(name)).toBe(true);
+    expect(page.shown(optionsButton()!)).toBe(false);
+    // Three picks from lists: still nothing to type.
+    expect(page.typedOnShow()).toEqual(["assistantName"]);
+
+    page.toggle("allowAddressChange", false);
+    for (const name of picks) {
+      expect(page.isShown(name)).toBe(false);
+      // Hidden, not removed: what was picked is still saved with the form.
+      expect(page.field(name).closest("form")).not.toBeNull();
+      expect(page.field(name).closest('[data-section="orders"]')).not.toBeNull();
+    }
+
+    // A store that changed one of them sees them straight away, with no button to press.
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const changed = open({ settings: { ...DEFAULTS, allowAddressChange: true, orderCompany: "required" } });
+    for (const name of picks) expect(changed.isShown(name)).toBe(true);
+  });
+
+  it("warns about protected customer data only while something reads orders", () => {
+    const page = open();
+    const banner = () => page.find('[data-section="orders"] s-banner')!;
+    expect(page.shown(banner())).toBe(false);
+    page.toggle("allowReturns", true);
+    expect(page.shown(banner())).toBe(true);
+  });
+
+  it("no returns means nothing more to ask about returns", () => {
+    const page = open();
+    expect(page.isShown("returnShipping")).toBe(true);
+    page.pick("returnWindow", "none");
+    for (const name of ["returnShipping", "refundMethod", "returnConditions"]) {
+      expect(page.isShown(name)).toBe(false);
+    }
+    // Exchanges can still be offered.
+    expect(page.isShown("exchanges")).toBe(true);
+  });
+
+  it("takes an amount only for the shipping picks that have one, in the store's currency", () => {
+    const page = open();
+    expect(page.isShown("shippingAmount")).toBe(false);
+
+    page.pick("shippingFee", "free_over");
+    expect(page.isShown("shippingAmount")).toBe(true);
+    expect(page.field("shippingAmount").getAttribute("label")).toBe("Free on orders over");
+    expect(page.field("shippingAmount").getAttribute("suffix")).toBe("CAD");
+
+    page.pick("shippingFee", "flat");
+    expect(page.field("shippingAmount").getAttribute("label")).toBe("Flat rate");
+    page.pick("shippingFee", "calculated");
+    expect(page.isShown("shippingAmount")).toBe(false);
+  });
+});
+
+describe("how the chat looks is picked in the app", () => {
+  type Opened = ReturnType<typeof open>;
+  const swatches = (page: Opened) => [
+    ...page.host.querySelectorAll<HTMLInputElement>('input[type="radio"][name="ui.accentMode"]'),
+  ];
+  /** What a click on a swatch does: the radio button under it is picked, and says so. */
+  const pickSwatch = (page: Opened, value: string) =>
+    act(() => {
+      const input = swatches(page).find((swatch) => swatch.value === value)!;
+      input.checked = true;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  /** The swatches drawn with a ring round them: the pick as it stands. */
+  const ringed = (page: Opened) =>
+    swatches(page)
+      .filter((swatch) => !(swatch.nextElementSibling as HTMLElement).style.boxShadow.includes("inset"))
+      .map((swatch) => swatch.value);
+
+  it("offers the color as swatches, one click each, starting from the saved one", () => {
+    const page = open();
+    expect(swatches(page).map((swatch) => [swatch.value, swatch.getAttribute("aria-label")])).toEqual([
+      ...ACCENT_PRESETS.map((preset) => [preset.value, preset.label]),
+      ["custom", "Custom color"],
+    ]);
+    expect(swatches(page).filter((swatch) => swatch.defaultChecked).map((swatch) => swatch.value)).toEqual([
+      DEFAULT_ACCENT,
+    ]);
+    expect(ringed(page)).toEqual([DEFAULT_ACCENT]);
+    expect(page.saved("accentColor")).toBe(DEFAULT_ACCENT);
+    // Nothing to type: the box for a color of one's own waits for Custom.
+    expect(page.isShown("ui.accentText")).toBe(false);
+
+    pickSwatch(page, "#2563EB");
+    expect(ringed(page)).toEqual(["#2563EB"]);
+    expect(page.saved("accentColor")).toBe("#2563EB");
+    expect(page.draft().accentColor).toBe("#2563EB");
+    expect(page.dirty()).toBe(true);
+    expect(page.isShown("ui.accentText")).toBe(false);
+  });
+
+  it("takes a color of the merchant's own after Custom, starting from the one in use", () => {
+    const page = open();
+    pickSwatch(page, "custom");
+    expect(page.isShown("ui.accentText")).toBe(true);
+    expect(given(page.field("ui.accentText")).defaultValue).toBe(DEFAULT_ACCENT);
+    // Picking Custom changes nothing by itself.
+    expect(page.saved("accentColor")).toBe(DEFAULT_ACCENT);
+    expect(page.dirty()).toBe(false);
+
+    page.type("ui.accentText", "#ab12cd");
+    expect(page.saved("accentColor")).toBe("#AB12CD");
+    expect(page.dirty()).toBe(true);
+    // Cleared, or not a color yet: passed on as it stands for the server to
+    // refuse, never quietly swapped for another.
+    page.type("ui.accentText", "");
+    expect(page.saved("accentColor")).toBe("");
+    page.type("ui.accentText", "#ab1");
+    expect(page.saved("accentColor")).toBe("#ab1");
+
+    // Back to a swatch: the box goes, what was typed in it no longer counts.
+    pickSwatch(page, "#111111");
+    expect(page.isShown("ui.accentText")).toBe(false);
+    expect(page.saved("accentColor")).toBe("#111111");
+  });
+
+  it("a store with a color of its own sees Custom picked and its color in the box", () => {
+    const page = open({ settings: { ...DEFAULTS, accentColor: "#AB12CD" } });
+    expect(swatches(page).filter((swatch) => swatch.defaultChecked).map((swatch) => swatch.value)).toEqual([
+      "custom",
+    ]);
+    expect(page.isShown("ui.accentText")).toBe(true);
+    expect(given(page.field("ui.accentText")).defaultValue).toBe("#AB12CD");
+    expect(page.saved("accentColor")).toBe("#AB12CD");
+    expect(page.dirty()).toBe(false);
+  });
+
+  it("says so when a color is refused, wherever the merchant is looking", () => {
+    const refused = { accentColor: "Pick a colour, or enter one like #1F3D2F." };
+    const custom = open({ settings: { ...DEFAULTS, accentColor: "#AB12CD" }, errors: refused });
+    expect(custom.field("ui.accentText").getAttribute("error")).toBe(refused.accentColor);
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // With a swatch picked the box is out of sight, so the message is not left in it.
+    const swatch = open({ errors: refused });
+    expect(swatch.isShown("ui.accentText")).toBe(false);
+    expect(swatch.find('[data-section="assistant"]')!.textContent).toContain(refused.accentColor);
+  });
+
+  it("picks the corner of the page from two", () => {
+    const page = open();
+    const choices = [...page.field("widgetPosition").querySelectorAll("s-choice")];
+    expect(choices.map((choice) => [choice.getAttribute("value"), choice.textContent])).toEqual([
+      ["right", "Bottom right"],
+      ["left", "Bottom left"],
+    ]);
+    expect(choices.map((choice) => given(choice).defaultSelected === true)).toEqual([true, false]);
+
+    page.choose("widgetPosition", "left");
+    expect(page.draft().widgetPosition).toBe("left");
+    expect(page.dirty()).toBe(true);
+  });
+});
+
+describe("a text box appears only for Custom, or when asked for", () => {
+  it("the welcome message is a preset until the merchant writes their own", () => {
+    const page = open();
+    expect(page.isShown("ui.greetingText")).toBe(false);
+    expect(page.saved("greeting")).toBe(DEFAULTS.greeting);
+
+    page.choose("ui.greetingMode", "1");
+    expect(page.saved("greeting")).toBe("Hello! Looking for something, or need help with an order?");
+    expect(page.isShown("ui.greetingText")).toBe(false);
+
+    page.choose("ui.greetingMode", "custom");
+    expect(page.isShown("ui.greetingText")).toBe(true);
+    page.type("ui.greetingText", "Hello from Alpine!");
+    expect(page.saved("greeting")).toBe("Hello from Alpine!");
+  });
+
+  it("a store that already wrote its own welcome sees it selected and editable", () => {
+    const page = open({ settings: { ...DEFAULTS, greeting: "Hey, welcome to Alpine!" } });
+    expect(page.isShown("ui.greetingText")).toBe(true);
+    expect(given(page.field("ui.greetingText")).defaultValue).toBe("Hey, welcome to Alpine!");
+    expect(page.saved("greeting")).toBe("Hey, welcome to Alpine!");
+    expect(page.dirty()).toBe(false);
+  });
+
+  it("a common question is answered from a list, with Custom for the merchant's own words", () => {
+    const page = open();
+    expect(page.saved("topics")).toBe("{}");
+
+    page.pick("ui.topic.sizing", "small");
+    expect(JSON.parse(page.saved("topics"))).toEqual({ sizing: "small" });
+    expect(page.isShown("ui.topicText.sizing")).toBe(false);
+
+    page.pick("ui.topic.hours", "custom");
+    expect(page.isShown("ui.topicText.hours")).toBe(true);
+    // Custom with nothing written is not an answer yet.
+    expect(JSON.parse(page.saved("topics"))).toEqual({ sizing: "small" });
+    page.type("ui.topicText.hours", "Weekdays 10 to 4");
+    expect(JSON.parse(page.saved("topics"))).toEqual({
+      sizing: "small",
+      hours: "custom:Weekdays 10 to 4",
+    });
+  });
+
+  it("the store's contact address is shown only once email is the picked answer", () => {
+    const page = open();
+    const address = () =>
+      [...page.host.querySelectorAll("s-text")].find(
+        (element) => element.textContent === "hello@alpine.example",
+      )!;
+    expect(page.shown(address())).toBe(false);
+    page.pick("ui.topic.contact", "email");
+    expect(page.shown(address())).toBe(true);
+  });
+
+  it("a note in the merchant's own words is offered as a button, and opens by itself where one exists", () => {
+    const page = open();
+    expect(page.isShown("returnPolicy")).toBe(false);
+    expect(page.isShown("faq")).toBe(false);
+    page.press("Add your own questions and answers");
+    expect(page.isShown("faq")).toBe(true);
+    expect(page.isShown("instructions")).toBe(false);
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const written = open({ settings: { ...DEFAULTS, returnPolicy: "Waxed boards are exchange only." } });
+    expect(written.isShown("returnPolicy")).toBe(true);
+    expect(given(written.field("returnPolicy")).defaultValue).toBe("Waxed boards are exchange only.");
+    expect(written.isShown("shippingInfo")).toBe(false);
+  });
+
+  it("the business is described from Shopify unless the merchant writes their own", () => {
+    const page = open();
+    expect(page.isShown("businessDescription")).toBe(false);
+    expect(page.host.textContent).toContain("Small-batch snowboards, built in Canada.");
+    page.choose("aboutStore", "custom");
+    expect(page.isShown("businessDescription")).toBe(true);
+    page.choose("aboutStore", "none");
+    expect(page.isShown("businessDescription")).toBe(false);
+  });
+
+  it("tick boxes for return eligibility each add or remove one condition", () => {
+    const page = open({ settings: { ...DEFAULTS, returnConditions: ["tags"] } });
+    const boxes = [...page.host.querySelectorAll('s-checkbox[name="returnConditions"]')];
+    expect(boxes.map((box) => [box.getAttribute("value"), given(box).defaultChecked === true])).toEqual([
+      ["unused", false],
+      ["packaging", false],
+      ["tags", true],
+      ["receipt", false],
+      ["no_sale", false],
+      ["no_custom", false],
+    ]);
+    page.tick("returnConditions", "unused", true);
+    page.tick("returnConditions", "tags", false);
+    expect(page.draft().returnConditions).toEqual(["unused"]);
+  });
+});
+
+describe("what Shopify already knows is shown, not asked", () => {
+  it("does not ask where the store ships when Shopify has said", () => {
+    const page = open({ shipping: ZONES_UNREAD });
+    expect(page.isShown("shipsTo")).toBe(false);
+    expect(page.host.textContent).toContain("Delivers to 2 countries: Canada and United States.");
+    expect(page.host.textContent).toContain("Synced from Shopify");
+  });
+
+  it("does not show Shopify's list of shipping zones for a store that no longer ships by them", () => {
+    // On a store that has moved its shipping to markets that list is left
+    // behind: it would name countries the store's real settings do not.
+    for (const shipping of [
+      { ...NO_SHIPPING_RATES, state: "no_access" as const, model: "markets" as const },
+      // Not known which the store is on: not trusted either.
+      NO_SHIPPING_RATES,
+    ]) {
+      const page = open({ shipping });
+      expect(page.host.textContent).not.toContain("Delivers to");
+      expect(page.isShown("shipsTo")).toBe(true);
+      expect(page.field("shipsTo").getAttribute("label")).toBe("Shipping regions");
+      act(() => root?.unmount());
+      document.body.replaceChildren();
+    }
+  });
+
+  it("asks instead when Shopify could not be reached, and says so", () => {
+    const page = open({ facts: { syncedAt: null } });
+    expect(page.isShown("shipsTo")).toBe(true);
+    expect(page.host.textContent).toContain("Couldn't check");
+    expect(page.host.textContent).not.toContain("Synced from Shopify");
+  });
+
+  it("asks as well when Shopify lists no shipping countries at all", () => {
+    const page = open({ facts: { ...FACTS, shipsTo: [] }, shipping: ZONES_UNREAD });
+    expect(page.isShown("shipsTo")).toBe(true);
+    expect(page.host.textContent).toContain("No shipping zones found in Shopify.");
+    expect(page.field("shipsTo").getAttribute("label")).toBe("Where you ship, until then");
+  });
+
+  it("points to Shopify for what the store has not set up there", () => {
+    const page = open();
+    const links = [...page.host.querySelectorAll("s-link")].filter(page.shown);
+    // The shipping policy is not published; the refund policy is.
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "https://alpine.myshopify.com/admin/settings/legal",
+    ]);
+    expect(links[0].getAttribute("target")).toBe("_top");
+  });
+
+  it("shows the store's real shipping rates, live, and asks nothing about shipping cost or area", () => {
+    const page = open({ shipping: LIVE_RATES });
+    const text = page.host.textContent ?? "";
+    expect(text).toContain("Live from Shopify");
+    expect(text).toContain("Canada, United States");
+    expect(text).toContain("Standard: 10.00 CAD (orders up to 99.99 CAD)");
+    expect(text).toContain("Free shipping: free (orders of 100.00 CAD or more)");
+    expect(text).toContain("Rest of the world");
+    expect(text).toContain("DHL Express: calculated at checkout by DHL");
+    expect(text).toContain("Delivers to 2 named countries (Canada and United States) and the rest of the world.");
+
+    // Shopify has answered, so the merchant's own picks for these are not shown...
+    for (const name of ["shippingFee", "shippingAmount", "shipsTo"]) {
+      expect(page.isShown(name)).toBe(false);
+      // ...but stay in the form, so nothing saved earlier is lost.
+      expect(page.field(name).closest("form")).not.toBeNull();
+    }
+    // What Shopify cannot tell is still picked.
+    expect(page.isShown("processingTime")).toBe(true);
+    expect(page.isShown("deliveryTime")).toBe(true);
+  });
+
+  it("keeps a typed shipping note within reach while the store's settings are read live, and says it is a backup", () => {
+    const written = { ...DEFAULTS, shippingInfo: "We ship to Canada and Mexico too." };
+    const live = open({ settings: written, shipping: LIVE_RATES });
+    // A note that has fallen behind is the assistant's answer if Shopify
+    // cannot be read, so it must be there to change or clear.
+    expect(live.isShown("shippingInfo")).toBe(true);
+    expect(given(live.field("shippingInfo")).defaultValue).toBe("We ship to Canada and Mexico too.");
+    expect(live.field("shippingInfo").getAttribute("label")).toBe("Your note on shipping (backup only)");
+    expect(live.field("shippingInfo").getAttribute("details")).toContain(
+      "Not used while your shipping settings are read live from Shopify",
+    );
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const fallback = open({ settings: written });
+    expect(fallback.isShown("shippingInfo")).toBe(true);
+    expect(fallback.field("shippingInfo").getAttribute("label")).toBe("Your note on shipping");
+
+    // With no note written, it is a button, not a text box.
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    const none = open({ shipping: LIVE_RATES });
+    expect(none.isShown("shippingInfo")).toBe(false);
+    expect(none.host.textContent).toContain("Add a note for when Shopify can't be read");
+    none.press("Add a note for when Shopify can't be read");
+    expect(none.isShown("shippingInfo")).toBe(true);
+  });
+
+  it("shows a store's markets with what each charges, and asks for a delivery time only where a rate has none", () => {
+    const rate = (name: string, amount: string, delivery?: string) => ({
+      name,
+      price: { amount, currencyCode: "USD" },
+      conditions: [],
+      ...(delivery ? { delivery } : {}),
+    });
+    const united = {
+      name: "United States",
+      countries: ["US"],
+      restOfWorld: false,
+      rates: [
+        { ...rate("Standard", "8.0", "3 to 5 business days"), freeFrom: { amount: "70.0", currencyCode: "USD" } },
+        rate("Express", "15.0", "1 to 2 business days"),
+      ],
+    };
+    const canada = { name: "Canada", countries: ["CA"], restOfWorld: false, rates: [rate("International Shipping", "30.0")] };
+    const onMarkets = (zones: ShippingRates["zones"]): ShippingRates => ({
+      state: "live",
+      model: "markets",
+      otherProfiles: false,
+      truncated: false,
+      zones,
+    });
+
+    const page = open({ shipping: onMarkets([canada, united]) });
+    const text = page.host.textContent ?? "";
+    expect(text).toContain("Read from your markets in Shopify each time a shopper asks");
+    expect(text).toContain("International Shipping: 30.00 USD");
+    expect(text).toContain("Standard: 8.00 USD, free on orders of 70.00 USD or more (3 to 5 business days)");
+    expect(text).toContain("Delivers to 2 countries: Canada and United States.");
+    // Canada's rate has no delivery time in Shopify, so the pick is still offered, for that.
+    expect(page.isShown("deliveryTime")).toBe(true);
+    expect(page.field("deliveryTime").getAttribute("details")).toBe(
+      "Used for rates that have no delivery time set in Shopify.",
+    );
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // Every rate says how long it takes: nothing to ask, and the earlier pick is kept.
+    const timed = open({ shipping: onMarkets([united]) });
+    expect(timed.isShown("deliveryTime")).toBe(false);
+    expect(timed.field("deliveryTime").closest("form")).not.toBeNull();
+    expect(timed.host.textContent).toContain("Delivers to United States.");
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // With markets that were not read, the ones read cannot speak for all: still asked.
+    const cut = open({ shipping: { ...onMarkets([united]), truncated: true } });
+    expect(cut.isShown("deliveryTime")).toBe(true);
+  });
+
+  it("says so when Shopify has more zones than were read, instead of giving a count that is too low", () => {
+    const page = open({ shipping: { ...LIVE_RATES, truncated: true } });
+    const text = page.host.textContent ?? "";
+    expect(text).toContain("Your store has more zones in Shopify than are listed here.");
+    expect(text).toContain("Delivers to at least 2 named countries");
+  });
+
+  it("shows the store's own processing time in place of the pick, where Shopify has one", () => {
+    const page = open({ shipping: { ...LIVE_RATES, processingDays: 1 } });
+    expect(page.host.textContent).toContain("Orders are handed to the carrier within 1 business day.");
+    expect(page.isShown("processingTime")).toBe(false);
+    expect(page.field("processingTime").closest("form")).not.toBeNull();
+    // Delivery time is not something Shopify tells apps: still a pick.
+    expect(page.isShown("deliveryTime")).toBe(true);
+  });
+
+  it("says a permission is waiting for approval, and uses the merchant's pick until it is given", () => {
+    const page = open({ shipping: { ...NO_SHIPPING_RATES, state: "no_access" } });
+    expect(page.host.textContent).toContain("Needs your approval");
+    expect(page.host.textContent).toContain("once you approve the app's updated permission");
+    expect(page.isShown("shippingFee")).toBe(true);
+    page.pick("shippingFee", "flat");
+    expect(page.isShown("shippingAmount")).toBe(true);
+  });
+
+  it("asks for a pick when the store has no shipping zones yet", () => {
+    const page = open({
+      facts: { ...FACTS, shipsTo: [] },
+      shipping: { ...NO_SHIPPING_RATES, state: "live" },
+    });
+    expect(page.host.textContent).toContain("No shipping zones or rates are set up in Shopify yet.");
+    expect(page.isShown("shippingFee")).toBe(true);
+    expect(page.isShown("shipsTo")).toBe(true);
+    // Shopify was read, so the page does not say it could not be: it says what the pick is for.
+    expect(page.field("shipsTo").getAttribute("details")).toBe(
+      "Shopify lists no country you deliver to yet. This pick is the assistant's answer only if Shopify can't be read.",
+    );
+    expect(page.host.textContent).toContain("Your picks below are its answer only if Shopify can't be read.");
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // The same on a store that keeps its shipping with its markets and has set none up.
+    const markets = open({ shipping: { ...NO_SHIPPING_RATES, state: "live", model: "markets" } });
+    expect(markets.field("shipsTo").getAttribute("details")).toContain("Shopify lists no country you deliver to yet.");
+    expect(markets.host.textContent).not.toContain("couldn't be read for the countries");
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // Nothing read is not "nothing set up" when there was more than could be read.
+    const partly = open({ shipping: { ...NO_SHIPPING_RATES, state: "live", model: "markets", truncated: true } });
+    expect(partly.host.textContent).not.toContain("No shipping zones or rates are set up in Shopify yet.");
+    expect(partly.host.textContent).toContain("couldn't be read as rates for every order");
+    expect(partly.field("shipsTo").getAttribute("details")).toBe(
+      "The countries you deliver to couldn't be read from Shopify in full, so this pick is used where they can't be.",
+    );
+  });
+
+  it("asks nothing about how shoppers pay, and says nothing about it: that is the checkout's business", () => {
+    const page = open();
+    expect(page.find('[name="codAvailable"]')).toBeNull();
+    const headings = [...page.host.querySelectorAll("s-section")].map((section) =>
+      section.getAttribute("heading"),
+    );
+    expect(headings).not.toContain("Payment");
+    expect(page.host.textContent).not.toMatch(/online payments|your checkout takes/i);
+  });
+
+  it("has no line that only says there is nothing to set", () => {
+    // What has no setting is simply not on the page: the tone of voice is the
+    // same for every store, and how shoppers pay is the checkout's business.
+    const text = open().host.textContent ?? "";
+    expect(text).not.toContain("Tone of voice");
+    expect(text).not.toMatch(/nothing to (set|type)/i);
+  });
+
+  it("has no block that only reports what was read from Shopify", () => {
+    // A line from Shopify stands where a question would otherwise be asked, or
+    // beside the picks it bears on. A section holding nothing to set is gone.
+    const page = open();
+    const sections = [...page.host.querySelectorAll("s-section")];
+    expect(sections.map((section) => section.getAttribute("heading"))).toEqual([
+      "Storefront chat",
+      "Name and welcome",
+      "Appearance",
+      "Ratings and privacy",
+      "Order management",
+      "Returns",
+      "Shipping",
+      "About your store",
+      "Common questions",
+      "Anything else",
+    ]);
+    for (const section of sections) {
+      expect(
+        section.querySelectorAll("[name], s-button").length,
+        `"${section.getAttribute("heading")}" has something to set`,
+      ).toBeGreaterThan(0);
+    }
+    expect(page.host.textContent).not.toMatch(
+      /what the assistant already knows|from your shopify store|active products|gift cards|store details/i,
+    );
+  });
+});
+
+describe("saving and discarding", () => {
+  it("goes back to the saved settings when the form is reset", () => {
+    const page = open();
+    page.toggle("orderLookupEnabled", true);
+    page.pick("ui.topic.sizing", "small");
+    expect(page.dirty()).toBe(true);
+
+    act(() => page.host.querySelector("form")!.dispatchEvent(new Event("reset", { bubbles: true })));
+    expect(page.dirty()).toBe(false);
+    expect(page.isShown("orderLookupByNumber")).toBe(false);
+    expect(page.saved("topics")).toBe("{}");
+  });
+
+  it("shows the server's message on the field it refused, and marks that part", () => {
+    const errors: SettingsErrors = { shippingAmount: "Enter an amount like 50 or 4.99." };
+    const page = open({ errors });
+    expect(page.field("shippingAmount").getAttribute("error")).toBe("Enter an amount like 50 or 4.99.");
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const nav = createRoot(host);
+    const picked: SectionKey[] = [];
+    act(() =>
+      nav.render(<SectionNav active="assistant" errors={errors} onChange={(key) => picked.push(key)} />),
+    );
+    const buttons = [...host.querySelectorAll("s-button")];
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      "Assistant",
+      "Orders",
+      "Policies",
+      "Knowledge",
+    ]);
+    expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual([
+      "true",
+      "false",
+      "false",
+      "false",
+    ]);
+    expect(buttons.map((button) => button.getAttribute("icon"))).toEqual([
+      "check",
+      null,
+      "alert-circle",
+      null,
+    ]);
+    act(() => buttons[2].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(picked).toEqual(["policies"]);
+    act(() => nav.unmount());
+  });
+});
+
+describe("the storefront preview", () => {
+  function preview(props: Partial<Parameters<typeof PreviewWindow>[0]> = {}) {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const sent: string[] = [];
+    act(() =>
+      root!.render(
+        <PreviewWindow
+          name="Mia"
+          greeting="Hello from Alpine!"
+          entries={[]}
+          pending={false}
+          ratings
+          blocked={null}
+          onSend={(text) => sent.push(text)}
+          onReset={() => {}}
+          {...props}
+        />,
+      ),
+    );
+    return { host, sent };
+  }
+
+  it("shows the name and the welcome, and sends what is typed", () => {
+    const { host, sent } = preview();
+    expect(host.textContent).toContain("Mia");
+    expect(host.textContent).toContain("Hello from Alpine!");
+    // Nothing to rate before the assistant has answered.
+    expect(host.textContent).not.toContain("How is this chat going?");
+
+    const input = host.querySelector<HTMLInputElement>('input[name="message"]')!;
+    input.value = "  Do you ship to Canada?  ";
+    act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(sent).toEqual(["  Do you ship to Canada?  "]);
+    expect(input.value).toBe("");
+  });
+
+  it("is drawn in the color and corner picked, with text that can be read on the color", () => {
+    const rgb = (hex: string) =>
+      `rgb(${[1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16)).join(", ")})`;
+    const drawn = (host: HTMLElement) => {
+      const header = host.querySelector<HTMLElement>("[data-preview] > div")!;
+      const row = host.querySelector<HTMLElement>("[data-launcher]")!;
+      const bubble = row.querySelector<HTMLElement>("span")!;
+      return {
+        header: [header.style.background, header.style.color],
+        send: host.querySelector<HTMLElement>('button[type="submit"]')!.style.background,
+        bubble: [bubble.style.background, bubble.style.color],
+        side: [row.dataset.launcher, row.style.justifyContent],
+      };
+    };
+
+    // Left as it was: the app's own color, bottom right.
+    expect(drawn(preview().host)).toEqual({
+      header: [rgb(DEFAULT_ACCENT), "rgb(255, 255, 255)"],
+      send: rgb(DEFAULT_ACCENT),
+      bubble: [rgb(DEFAULT_ACCENT), "rgb(255, 255, 255)"],
+      side: ["right", "flex-end"],
+    });
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // A light color gets dark text, as the widget gives it.
+    expect(readableOn("#FFE680")).toBe("#111111");
+    expect(drawn(preview({ accent: "#FFE680", position: "left" }).host)).toEqual({
+      header: [rgb("#FFE680"), "rgb(17, 17, 17)"],
+      send: rgb("#FFE680"),
+      bubble: [rgb("#FFE680"), "rgb(17, 17, 17)"],
+      side: ["left", "flex-start"],
+    });
+
+    act(() => root?.unmount());
+    document.body.replaceChildren();
+    // Half typed in Settings: not a color yet, so the app's own stands in.
+    expect(drawn(preview({ accent: "#ab1" }).host).header[0]).toBe(rgb(DEFAULT_ACCENT));
+  });
+
+  it("offers questions to try under the chat, not inside it", () => {
+    const { host } = preview();
+    // The widget's own suggested questions are a theme setting: none are made up here.
+    expect(host.querySelectorAll("[data-preview] button")).toHaveLength(2);
+
+    const tryHost = document.createElement("div");
+    document.body.appendChild(tryHost);
+    const tryRoot = createRoot(tryHost);
+    const asked: string[] = [];
+    const render = (disabled: boolean) =>
+      act(() =>
+        tryRoot.render(
+          <TryAsking
+            questions={["What are your best sellers?", "Where is my order?"]}
+            disabled={disabled}
+            onAsk={(question) => asked.push(question)}
+          />,
+        ),
+      );
+    render(false);
+    const buttons = () => [...tryHost.querySelectorAll("s-button")];
+    expect(buttons().map((button) => button.textContent)).toEqual([
+      "What are your best sellers?",
+      "Where is my order?",
+    ]);
+    act(() => buttons()[1].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(asked).toEqual(["Where is my order?"]);
+
+    render(true);
+    expect(buttons().every((button) => button.hasAttribute("disabled"))).toBe(true);
+    act(() => tryRoot.unmount());
+  });
+
+  it("shows replies as text, never as markup, with the product cards under them", () => {
+    const { host } = preview({
+      entries: [
+        { id: 1, role: "user", text: "<b>hi</b>" },
+        {
+          id: 1.5,
+          role: "assistant",
+          text: "Try the **Trail Mug**. <img src=x onerror=alert(1)>",
+          cards: [{ title: "Trail Mug", price: "18.0 USD" }],
+        },
+      ],
+    });
+    expect(host.querySelector("b")).toBeNull();
+    expect(host.querySelector("img")).toBeNull();
+    expect(host.textContent).toContain("<b>hi</b>");
+    expect(host.textContent).toContain("Trail Mug18.0 USD");
+    expect(host.textContent).toContain("How is this chat going?");
+  });
+
+  it("sends nothing while changes are unsaved", () => {
+    const { host, sent } = preview({ blocked: "Save your changes to chat with them." });
+    const input = host.querySelector<HTMLInputElement>('input[name="message"]')!;
+    expect(input.disabled).toBe(true);
+    for (const button of host.querySelectorAll<HTMLButtonElement>("button")) {
+      if (button.getAttribute("aria-label") !== "Start a new chat") expect(button.disabled).toBe(true);
+    }
+    act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(sent).toEqual([]);
+  });
+});

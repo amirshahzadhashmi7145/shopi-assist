@@ -7,10 +7,12 @@
  *   npm run seed:test-orders -- --count 3
  *   npm run seed:test-orders -- --shop my-dev-store.myshopify.com
  *
- * The orders are unpaid, pay-on-delivery orders, made the same way the chat's
- * order form makes them, for made-up customers at example.com addresses. They
- * are tagged `shopi-assist-test`, so they are easy to find and cancel in the
- * Shopify admin.
+ * The orders are unpaid, pay-on-delivery orders for made-up customers at
+ * example.com addresses, made through draft orders. They are tagged
+ * `shopi-assist-test`, so they are easy to find and cancel in the Shopify
+ * admin. This script is the only thing that still uses the app's
+ * `write_draft_orders` and `write_payment_terms` access: the chat itself no
+ * longer places orders.
  *
  * It refuses to run on anything but a Partner development store, and it uses
  * the app's stored access for that store; nothing is read from the terminal.

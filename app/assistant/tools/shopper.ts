@@ -939,7 +939,7 @@ const addToCart = defineTool({
       .regex(/^\d{1,20}$/, "Use a numeric variantId given with a product's versions or by get_product_details."),
     quantity: z.number().int().min(1).max(10).default(1),
   }),
-  isAvailable: (context) => Boolean(context.storefront) && context.settings.allowAddToCart,
+  isAvailable: (context) => Boolean(context.storefront),
   async run({ variantId, quantity }, context) {
     // Confirm the variant is real and purchasable, so a made-up id cannot
     // produce a confusing error in the shopper's browser.
@@ -1008,7 +1008,7 @@ function sumMoney(amounts: Money[]): Money | null {
 const placeOrder = defineTool({
   name: "place_order",
   description:
-    "Start an order as soon as the shopper says they want to buy or order something. Puts the items in the shopper's cart and shows an order summary with the buttons to complete it. Call it once with every item; the quantity is 1 unless they said otherwise. Only ask first when a product has several variants and they have not said which. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details yourself.",
+    "Start an order as soon as the shopper says they want to buy or order something. Puts the items in the shopper's cart and shows an order summary with a Go to checkout button. Call it once with every item; the quantity is 1 unless they said otherwise. Only ask first when a product has several variants and they have not said which. Items already in the cart are topped up to the quantity given, never doubled. You cannot take payment or delivery details yourself: the email, the address and the way of paying are all entered on the checkout page, so the way the shopper wants to pay changes nothing here.",
   audiences: ["shopper"],
   schema: z.object({
     items: z
@@ -1031,12 +1031,7 @@ const placeOrder = defineTool({
         "True empties the cart first, so the order holds these items and nothing else. Use it only when the shopper says so: 'only this', 'just that', 'nothing else', 'start over'.",
       ),
   }),
-  // Building an order means putting items in the cart, so the merchant must
-  // have allowed both.
-  isAvailable: (context) =>
-    Boolean(context.storefront) &&
-    context.settings.allowCheckout &&
-    context.settings.allowAddToCart,
+  isAvailable: (context) => Boolean(context.storefront),
   async run({ items, onlyTheseItems }, context) {
     // The same variant listed twice is one line.
     const quantities = new Map<string, number>();
@@ -1102,8 +1097,8 @@ const placeOrder = defineTool({
         })),
         itemsTotal: itemsTotal ? formatMoney(itemsTotal) : undefined,
         note: onlyTheseItems
-          ? "The chat widget is emptying the shopper's cart, putting in only these items and showing an order summary with the buttons to complete the order. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed."
-          : "The chat widget is putting these items in the shopper's cart and showing an order summary with the buttons to complete the order. The summary lists everything in the cart, including anything that was already there, so its total can be higher than itemsTotal; say so if the cart held other items. Shipping, taxes and discounts are worked out after that. Confirm the items briefly and tell the shopper to check the summary. The order is not placed until they complete it, so do not say it has been placed.",
+          ? "The chat widget is emptying the shopper's cart, putting in only these items and showing an order summary. The way on from it is its Go to checkout button: delivery, taxes, discounts and payment are all handled on the checkout page. Confirm the items briefly and tell the shopper to check the summary and press Go to checkout. The order is not placed until they finish there, so do not say it has been placed."
+          : "The chat widget is putting these items in the shopper's cart and showing an order summary. The summary lists everything in the cart, including anything that was already there, so its total can be higher than itemsTotal; say so if the cart held other items. The way on from it is its Go to checkout button: delivery, taxes, discounts and payment are all handled on the checkout page. Confirm the items briefly and tell the shopper to check the summary and press Go to checkout. The order is not placed until they finish there, so do not say it has been placed.",
       },
       actions: [
         { type: "order" as const, items: orderItems, ...(onlyTheseItems ? { replace: true } : {}) },
@@ -1123,7 +1118,6 @@ const removeFromCart = defineTool({
       .trim()
       .regex(/^\d{1,20}$/, "Use the numeric variantId listed with the shopper's cart."),
   }),
-  isAvailable: (context) => context.settings.allowAddToCart,
   async run({ variantId }, context) {
     const line = context.cart?.find((entry) => entry.variantId === variantId);
     // When the cart is known, a variant that is not in it is a mistake worth
@@ -1150,7 +1144,6 @@ const clearCart = defineTool({
     "Empty the shopper's cart. Use only when the shopper asks to clear or empty their cart or to start over.",
   audiences: ["shopper"],
   schema: z.object({}),
-  isAvailable: (context) => context.settings.allowAddToCart,
   async run() {
     return {
       output: {
@@ -1294,7 +1287,6 @@ const startCheckout = defineTool({
     "Show the shopper a summary of what is already in their cart with a button to the store's secure checkout. Use when they want to buy, pay or check out what is in the cart. You cannot take payment or place the order yourself.",
   audiences: ["shopper"],
   schema: z.object({}),
-  isAvailable: (context) => context.settings.allowCheckout,
   async run() {
     return {
       output: {

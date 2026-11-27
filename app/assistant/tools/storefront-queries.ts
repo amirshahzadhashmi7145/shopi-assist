@@ -309,6 +309,54 @@ export const PAYMENT_SETTINGS_QUERY = `#graphql
   }
 `;
 
+/**
+ * What the store's own settings say that a visitor could find out anyway:
+ * how it describes itself, where it delivers, whether it has published a
+ * refund policy and a shipping policy, and which language it is in. Each
+ * stands in Settings where a question would otherwise be asked.
+ *
+ * No country or language is given with it (no `@inContext`), so the language
+ * that comes back is the store's own: the one a visitor gets by default.
+ */
+export const STORE_FACTS_QUERY = `#graphql
+  query ShopiAssistStorefrontFacts {
+    shop {
+      description
+      shipsToCountries
+      refundPolicy { id }
+      shippingPolicy { id }
+    }
+    localization {
+      language { isoCode }
+    }
+  }
+`;
+
+/**
+ * Where the store delivers, as far as the Storefront API can say, for when
+ * its shipping settings cannot be read from the Admin API or leave a doubt.
+ *
+ * Two lists, because neither is right on every store. `shipsToCountries` is
+ * the countries with a zone in the store's shipping profiles: right on a
+ * store that still uses profiles, left behind on one that has moved its
+ * shipping to markets (a dev store on markets, delivering to two countries,
+ * still listed one). `availableCountries` is every country in an active
+ * market: where the store sells, which on a store with delivery switched off
+ * for a market is more than where it delivers.
+ */
+export const SHIPS_TO_QUERY = `#graphql
+  query ShopiAssistShipsTo {
+    shop {
+      shipsToCountries
+    }
+    localization {
+      availableCountries {
+        isoCode
+      }
+    }
+  }
+`;
+
 /** Every line of an order in one request, priced for the buyer's country. */
 export const VARIANTS_FOR_ORDER_QUERY = `#graphql
   query ShopiAssistVariantsForOrder($ids: [ID!]!, $country: CountryCode)

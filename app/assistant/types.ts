@@ -70,9 +70,9 @@ export interface CartLine {
 }
 
 /**
- * An order tied to the current conversation: placed through its order form,
- * or proved to be the shopper's by its number and checkout email. Recorded by
- * the server, never taken from the browser.
+ * An order tied to the current conversation: proved to be the shopper's by
+ * its number and checkout email or phone, or theirs because they are signed
+ * in. Recorded by the server, never taken from the browser.
  */
 export interface KnownOrder {
   /** "gid://shopify/Order/123" */
@@ -80,8 +80,10 @@ export interface KnownOrder {
   /** "#1005" */
   name: string;
   /**
-   * "placed" through the chat's order form, "verified" by number plus email
-   * or phone, or the shopper's own because they are signed in ("customer").
+   * "verified" by number plus email or phone, or the shopper's own because
+   * they are signed in ("customer"). "placed" is from when the chat took
+   * pay-on-delivery orders itself: nothing is recorded that way any more, but
+   * a chat that placed one then still knows it.
    */
   source: "placed" | "verified" | "customer";
 }

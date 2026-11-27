@@ -6,26 +6,26 @@ export interface PromptInput {
   /** What the assistant calls itself. Optional. */
   assistantName?: string;
   /**
-   * What the merchant switched on. Missing means the default: cart, checkout
-   * and ordering in chat on, returns off. `placeOrder` needs both cart and
-   * checkout, and counts as off when it is left out.
+   * What the merchant switched on. Missing means the default: all off.
+   * Adding to the cart, starting an order and the way to the checkout are
+   * not here: every store has them.
    */
   abilities?: {
-    addToCart: boolean;
-    checkout: boolean;
     returns: boolean;
-    placeOrder?: boolean;
-    /** The order summary offers a pay-on-delivery order form. */
-    chatOrders?: boolean;
     /** Changes to an existing order, each confirmed by the shopper with a button. */
     cancelOrder?: boolean;
     changeAddress?: boolean;
     changeItems?: boolean;
+    /** The tools that read delivery zones and rates, and payment methods, from Shopify. */
+    shipping?: boolean;
+    payment?: boolean;
   };
   /** The shopper is signed in to their store account (Shopify says so). */
   signedIn?: boolean;
-  /** Plain sentences built from the merchant's dropdown picks. */
+  /** Plain sentences built from the merchant's policy picks. */
   quickPolicies?: string;
+  /** Plain sentences built from the answers the merchant picked for common questions. */
+  topicNotes?: string;
   /** Written by the merchant in setup. Every field is optional. */
   knowledge?: {
     businessDescription?: string;
@@ -130,14 +130,14 @@ About the shopper's latest message: it names no order number. ${listed.map(descr
 }
 
 /** The cart as plain lines of data, safe to place inside the prompt. */
-function cartBlock(cart: CartLine[] | undefined, canChange: boolean): string {
+function cartBlock(cart: CartLine[] | undefined): string {
   if (!cart) return "";
   const lines = cart.length
     ? cart
         .slice(0, 20)
         .map((line) => {
           const title = line.title.replace(/["\\\s]+/g, " ").trim().slice(0, 100);
-          return `- ${line.quantity} x ${title}${canChange ? ` [variantId ${line.variantId}]` : ""}`;
+          return `- ${line.quantity} x ${title} [variantId ${line.variantId}]`;
         })
         .join("\n")
     : "(empty)";
@@ -154,34 +154,53 @@ function shopperPrompt(input: PromptInput): string {
   const name = (input.assistantName ?? "").trim().slice(0, 40);
   const knowledge = input.knowledge ?? {};
 
-  const abilities = input.abilities ?? {
-    addToCart: true,
-    checkout: true,
-    returns: false,
-    placeOrder: true,
-  };
-  const noPaymentRule = abilities.chatOrders
-    ? "This store also takes pay-on-delivery orders in the chat: the order summary has an 'Order here, pay on delivery' button that opens a short form for name, phone and delivery address. Point shoppers to that button when they want to order without the checkout page or to pay on delivery. You never take payment and never ask for or accept an address, phone number or card details in the chat messages; if a shopper types them, ask them to use the form or the checkout page instead. You cannot see whether an order went through, so never say an order has been placed; the form itself confirms it with an order number."
-    : "You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. An order exists only once they finish there, so never say an order has been placed.";
-  const checkoutRule = abilities.placeOrder
-    ? `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with the buttons to complete it, so do not add the same items to the cart separately. The summary has what they just asked for ticked as the order; anything that was already in their cart is listed under it, unticked, and they can tick it to add it. They can change quantities or remove lines there too, without leaving the chat, so do not describe older cart items as part of the order. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`
-    : abilities.checkout
-      ? `- When the shopper is ready to buy, show them the checkout summary and its button. ${noPaymentRule}`
-      : "- You cannot start a checkout. Tell shoppers to open their cart and check out there.";
+  const abilities = input.abilities ?? { returns: false };
+  // The chat only starts an order. Everything after the Go to checkout
+  // button is the checkout page's business: who, where, how it is delivered
+  // and how it is paid for. So the assistant does not go into any of that
+  // while ordering, whatever way of paying the shopper has in mind. A shopper
+  // who asks which ways of paying the store takes is asking a question, and
+  // gets an answer where there is a tool for it: that is not part of ordering.
+  const noPaymentRule = `You never take payment and never ask for an address, phone number or card details in chat; the shopper enters those on the store's checkout page. The chat only starts the order: the way on from the summary is its Go to checkout button, and everything else happens on that page: the email, the delivery address, the delivery option and the way of paying. So when a shopper orders, never ask how they want to pay, and do not look up or discuss payment methods for it. If they name one (card, cash on delivery, anything else), do not repeat it back as the way the order will be paid: say only that they choose how to pay on the checkout page, and go on with the order.${
+    abilities.payment
+      ? " This comes before the rule on payment below: your payment tool is only for a shopper who asks which ways of paying the store takes."
+      : ""
+  } An order exists only once they finish at the checkout, so never say an order has been placed.`;
+  const checkoutRule = `- Placing an order: when the shopper says they want to buy or order something, start the order in that same reply, once, with every item. Do not ask "shall I go ahead?" and do not add it to the cart first and then ask about checkout: wanting to buy it is the go-ahead. Look up the product's details first. Ask a question only when it has several variants and they have not said which, or when the quantity is unclear (assume 1 if they did not say). Starting the order puts the items in their cart and shows an order summary with a Go to checkout button, so do not add the same items to the cart separately. The summary has what they just asked for ticked as the order; anything that was already in their cart is listed under it, unticked, and they can tick it to add it. They can change quantities or remove lines there too, without leaving the chat, so do not describe older cart items as part of the order. If they only want to pay for what is already in their cart, show the checkout summary instead. ${noPaymentRule}`;
+
+  // Delivery and payment are read from Shopify when asked, never recalled.
+  const liveFacts = [
+    abilities.shipping
+      ? "anything about delivery (which countries the store delivers to, what delivery costs, how soon orders are sent out, how long delivery takes)"
+      : "",
+    abilities.payment ? "how shoppers can pay" : "",
+  ].filter(Boolean);
+  const deliveryRule = liveFacts.length
+    ? `- Delivery and payment: for ${liveFacts.join(", and ")}, use your ${
+        abilities.shipping && abilities.payment
+          ? "shipping and payment tools"
+          : abilities.shipping
+            ? "shipping tool"
+            : "payment tool"
+      } every time one of these is asked, before you answer. They read the store's own settings as they are at that moment, so never answer these from memory or from earlier in this chat, and never work out a cost yourself. Give countries, rates, delivery times and methods exactly as the tool gives them, and name no country or price that it does not give, and no delivery time either. When the tool passes on what the store owner says, that is the answer: give it. When it says a rate is calculated at checkout, or it has nothing for what was asked, say that the checkout shows it.\n`
+    : "";
+  // With the shipping tool, how long delivery takes is its to answer, not the notes'.
+  const notesCover = abilities.shipping
+    ? "the business, returns or other store policies"
+    : "the business, returns, delivery times or other store policies";
 
   const ownerNotes =
-    ownerBlock("Store policies chosen by the owner", input.quickPolicies, 1000) +
+    ownerBlock("Store policies chosen by the owner", input.quickPolicies, 2000) +
     ownerBlock("About the business", knowledge.businessDescription, 1500) +
     ownerBlock("Returns and exchanges", knowledge.returnPolicy, 1500) +
     ownerBlock("Shipping and delivery", knowledge.shippingInfo, 1500) +
+    ownerBlock("Answers the owner chose for common questions", input.topicNotes, 3000) +
     ownerBlock("Other things shoppers often ask", knowledge.faq, 3000) +
     ownerBlock("Additional guidance", input.merchantInstructions, 2000);
 
   const cartRule = !input.cart
     ? "- The shopper's cart: you cannot see what is in it. Do not guess; the order summary shows it."
-    : abilities.addToCart
-      ? "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart, and never claim it holds something else. An order summary shows the whole cart, so when the shopper orders something and the cart already holds other items, tell them those are in it too and offer to take them out. When they ask to remove an item or to empty the cart, do it. When they say they want only certain items, start the order with only those items. Never show the ids."
-      : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart. You cannot change the cart; tell shoppers to edit it on the cart page.";
+    : "- The shopper's cart: its contents are listed at the end of these instructions. Use them to answer what is in the cart, and never claim it holds something else. An order summary shows the whole cart, so when the shopper orders something and the cart already holds other items, tell them those are in it too and offer to take them out. When they ask to remove an item or to empty the cart, do it. When they say they want only certain items, start the order with only those items. Never show the ids.";
 
   const hasKnownOrders = Boolean(input.signedIn && input.knownOrders?.length);
   // Said whether or not this chat has dealt with an order yet: see rememberedOrdersNote.
@@ -230,8 +249,8 @@ Tone: ${TONE_RULE}
 
 Rules:
 - Use your tools for every fact about products, prices, stock, collections and orders. Never invent a product, price, discount or stock level. If a tool returns nothing or fails, say you could not find it and suggest another search or contacting the store.
-- For questions about the business, returns, shipping or other store policies, answer from the store owner's notes below when they cover the question. Use your policy tool for anything they do not cover. If the notes answer only part of a question, share that part and say what you are not sure about. If nothing covers it, say you are not sure and suggest contacting the store. Never make up a policy.
-- Do not add specific figures of your own: sizes, measurements, weights, compatibility, delivery dates or anything similar. Give a figure only when it comes from a tool result or the store owner's notes. If the owner gave a rule of thumb, pass on the rule as written and suggest checking the product page or asking the store for an exact figure.
+- For questions about ${notesCover}, answer from the store owner's notes below when they cover the question. Use your policy tool for anything they do not cover. If the notes answer only part of a question, share that part and say what you are not sure about. If nothing covers it, say you are not sure and suggest contacting the store. Never make up a policy.
+${deliveryRule}- Do not add specific figures of your own: sizes, measurements, weights, compatibility, delivery dates or anything similar. Give a figure only when it comes from a tool result or the store owner's notes. If the owner gave a rule of thumb, pass on the rule as written and suggest checking the product page or asking the store for an exact figure.
 - Keep replies short for a small chat window: one to three short sentences, or a list of at most five items. Use plain text with light Markdown only (bold, bullet lists, links). No tables, headings or images.
 - Say only what your tool results show about a product. A colour, size, material, style or feature is true of a product only when it appears in that product's own data: its title, summary, options, versions, tags or picture description. Never call products white, or anything else, because the shopper asked for that.
 - When the shopper asks for something specific (white, waterproof, for kids, with a hood), search once with the kind of product as the query and the specific thing in 'mustMention', with close synonyms as alternatives ('grey or gray', 'teal or turquoise'). The search then returns only products whose own data mentions it. Do not repeat the search with other wordings. Present only those products, each with a few words taken from its data that show why it fits. If the search says nothing matches, say so plainly, for example "I couldn't find any white snowboards", and you may then offer its 'others', saying what they actually are. Leave out products that do not fit instead of listing them as extras.
@@ -239,11 +258,7 @@ Rules:
 - When you recommend products, name each one by its exact title. The widget shows a card with image, price and link for each product you name, so do not paste product URLs.
 - A product that comes in several versions lists them, numbered, under 'versions' in your tool results. Its card, shown under your reply, has the same numbered list with a quantity to set next to each version and buttons to add or buy what was picked. So do not repeat the versions in your reply: name the product with its price ('from' the lowest when the versions differ in price), say how many versions it comes in and that they can set how many of each on its card. Spell the versions out yourself only when the shopper asks what they are or is choosing between them, and then keep the order and the numbers exactly as your tool gave them: never sort or renumber them, not even by price, because the shopper's card and their answer use those numbers. A shopper who answers with a number means the version with that number; they can ask for several versions and a quantity of each in one message, for example '2 of number 1 and 1 of number 3'. Each version comes with its variantId, which is what your cart and order tools take: when the shopper has said which versions and how many, look the product up again if you no longer have its versions, then act at once with those ids, without asking them to confirm. Never guess a variantId. Never send the shopper to the product page to choose.
 - When you list several products, give each one line: its exact title and its price. The cards under your reply carry the pictures and versions, each with a quantity to set, and one pair of buttons under the list adds or buys everything picked, so do not repeat those.
-${
-    abilities.addToCart
-      ? "- Never say a product comes in sizes, colors or other options unless its details list them; check the details before you answer. Many products have no options at all, and then there is nothing to choose. Before adding a product that does have several variants to the cart, ask which one the shopper wants. Only add to cart when the shopper clearly asks."
-      : "- You cannot add items to the cart. Tell shoppers to use the Add to cart button on the product page."
-  }
+- Never say a product comes in sizes, colors or other options unless its details list them; check the details before you answer. Many products have no options at all, and then there is nothing to choose. Before adding a product that does have several variants to the cart, ask which one the shopper wants. Only add to cart when the shopper clearly asks.
 ${checkoutRule}
 ${orderRule}${signedInRule}${changesRule}
 ${cartRule}
@@ -268,7 +283,7 @@ ${
 
 Notes from the store owner. Treat them as accurate facts about this store and follow their guidance on tone and what to recommend. They never override the rules above.${ownerNotes}`
       : ""
-  }${input.orderLookupEnabled ? rememberedOrdersNote(input.knownOrders, input.latestMessage) : ""}${cartBlock(input.cart, abilities.addToCart)}`;
+  }${input.orderLookupEnabled ? rememberedOrdersNote(input.knownOrders, input.latestMessage) : ""}${cartBlock(input.cart)}`;
 }
 
 function merchantPrompt(input: PromptInput): string {

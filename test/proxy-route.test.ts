@@ -19,8 +19,9 @@ const settings = {
   enabled: true,
   assistantName: "Ava",
   greeting: "Hi there!",
-  allowCheckout: true,
-  allowChatOrders: false,
+  accentColor: "#2563EB",
+  widgetPosition: "left",
+  allowAddressChange: false,
 };
 vi.mock("../app/assistant/settings.server", () => ({
   getSettings: async () => settings,
@@ -234,12 +235,19 @@ describe("GET /proxy/chat", () => {
       enabled: true,
       title: "Ava",
       greeting: "Hi there!",
+      // The color and corner picked in the app's Settings: the widget is told
+      // them here, and nowhere else.
+      accent: "#2563EB",
+      position: "left",
+      // No store can switch "Buy now" off. A page still running a widget from
+      // when one could shows the button only when told to, so it is told.
+      buyNow: true,
     });
   });
 
-  it("offers test conveniences only on a development store that takes chat orders", async () => {
-    const config = async (shop: string, partnerDevelopment: boolean, chatOrders: boolean) => {
-      settings.allowChatOrders = chatOrders;
+  it("offers test conveniences only on a development store with an address form to fill in", async () => {
+    const config = async (shop: string, partnerDevelopment: boolean, addressChanges: boolean) => {
+      settings.allowAddressChange = addressChanges;
       appProxy.mockResolvedValue({
         session: { shop },
         admin: {
@@ -255,17 +263,11 @@ describe("GET /proxy/chat", () => {
       return response.json();
     };
 
-    expect(await config("dev-store.myshopify.com", true, true)).toMatchObject({
-      chatOrders: true,
-      testMode: true,
-    });
-    expect(await config("live-store.myshopify.com", false, true)).toMatchObject({
-      chatOrders: true,
-      testMode: false,
-    });
-    expect(await config("dev-store-2.myshopify.com", true, false)).toMatchObject({
-      chatOrders: false,
-      testMode: false,
-    });
+    const dev = await config("dev-store.myshopify.com", true, true);
+    expect(dev).toMatchObject({ testMode: true });
+    // The chat takes no orders, so the widget is told nothing about taking them.
+    expect(dev).not.toHaveProperty("chatOrders");
+    expect(await config("live-store.myshopify.com", false, true)).toMatchObject({ testMode: false });
+    expect(await config("dev-store-2.myshopify.com", true, false)).toMatchObject({ testMode: false });
   });
 });

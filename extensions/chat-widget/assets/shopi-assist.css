@@ -759,23 +759,7 @@ a.sa-card-title:hover {
   font-size: 14px;
 }
 
-.sa-order-here {
-  width: 100%;
-  min-height: 40px;
-  font-size: 14px;
-  white-space: normal;
-}
-
-.sa-order-online-note {
-  text-align: center;
-}
-
-.sa-order-online {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-/* Pay-on-delivery order form ---------------------------------------------- */
+/* The address form, for a change of delivery address ---------------------- */
 
 .sa-order-form {
   margin: 0;
@@ -803,10 +787,7 @@ a.sa-card-title:hover {
   gap: 8px;
 }
 
-.sa-order-form .sa-fields + .sa-order-title,
-.sa-order-form .sa-order-recap + .sa-order-rates,
-.sa-order-form .sa-order-rates + .sa-order-title,
-.sa-order-form .sa-order-pay + .sa-order-title {
+.sa-order-form .sa-fields + .sa-order-title {
   margin-top: 6px;
 }
 
@@ -855,152 +836,6 @@ a.sa-card-title:hover {
   margin: 0;
   color: var(--sa-danger);
   font-size: 12.5px;
-}
-
-/* Review: who the order is for and where it goes, with a way to change it. */
-.sa-order-recap {
-  border: 1px solid var(--sa-line);
-  border-radius: 8px;
-  font-size: 13.5px;
-}
-
-.sa-order-recap-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 8px 10px;
-}
-
-.sa-order-recap-row + .sa-order-recap-row {
-  border-top: 1px solid var(--sa-line);
-}
-
-.sa-order-recap-label {
-  flex: 0 0 56px;
-  color: var(--sa-ink-soft);
-}
-
-.sa-order-recap-value {
-  flex: 1 1 auto;
-  min-width: 0;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.sa-order-change {
-  flex: 0 0 auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--sa-ink);
-  font-size: 12.5px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.sa-order-rates {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  font-size: 14px;
-}
-
-.sa-order-rates legend {
-  padding: 0 0 8px;
-}
-
-.sa-order-rate,
-.sa-order-pay {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--sa-line);
-  border-radius: 8px;
-}
-
-.sa-order-rate:has(input:checked) {
-  border-color: var(--sa-accent);
-}
-
-.sa-order-pay {
-  flex-direction: column;
-  gap: 2px;
-  font-size: 14px;
-}
-
-.sa-order-pay span {
-  color: var(--sa-ink-soft);
-  font-size: 13px;
-}
-
-.sa-order-pay-on {
-  border-color: var(--sa-accent);
-}
-
-.sa-order-pay-note {
-  white-space: pre-line;
-}
-
-.sa-order-pay-online {
-  color: inherit;
-  text-decoration: none;
-}
-
-/* The same options as buttons, when only the ticked lines go to the checkout. */
-button.sa-order-pay-online {
-  width: 100%;
-  background: none;
-  font: inherit;
-  text-align: left;
-  align-items: flex-start;
-}
-
-button.sa-order-online {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-}
-
-.sa-order-pay-online:hover {
-  border-color: var(--sa-ink);
-}
-
-.sa-order-pay-online strong {
-  font-weight: 600;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.sa-order-rate input {
-  flex: 0 0 auto;
-  margin: 0;
-  accent-color: var(--sa-accent);
-}
-
-.sa-order-totals {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px 8px;
-  margin: 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--sa-line);
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-}
-
-.sa-order-totals dd {
-  margin: 0;
-  text-align: right;
-}
-
-.sa-order-grand {
-  font-weight: 600;
 }
 
 .sa-order-status {

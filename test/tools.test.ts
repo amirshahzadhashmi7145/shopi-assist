@@ -13,8 +13,6 @@ import { fakeGraphql, storefrontProduct, toolContext } from "./helpers/fakes";
 
 const SHOPPER_DEFAULTS = {
   orderLookupEnabled: false,
-  allowAddToCart: true,
-  allowCheckout: true,
   allowReturns: false,
 };
 
@@ -1164,7 +1162,10 @@ describe("place_order", () => {
     ]);
     expect(result.json.itemsTotal).toBe("$143.50");
     // The model is told the order is not placed yet.
-    expect(result.json.note).toMatch(/not placed until they complete it/);
+    expect(result.json.note).toMatch(/not placed until they finish there/);
+    // One way on from the summary, and the checkout page does the rest.
+    expect(result.json.note).toMatch(/The way on from it is its Go to checkout button/);
+    expect(result.json.note).toMatch(/delivery, taxes, discounts and payment are all handled on the checkout page/);
     expect(result.json.note).toMatch(/lists everything in the cart/);
   });
 
@@ -1201,17 +1202,6 @@ describe("place_order", () => {
       expect((await run("place_order", args, context)).json.error).toMatch(/Invalid arguments/);
     }
     expect(storefront.calls).toHaveLength(0);
-  });
-
-  it("needs both checkout and add to cart switched on", async () => {
-    for (const off of [{ allowCheckout: false }, { allowAddToCart: false }]) {
-      const context = toolContext({
-        storefront: fakeGraphql({ nodes: [variant("101")] }),
-        settings: { ...SHOPPER_DEFAULTS, ...off },
-      });
-      const result = await run("place_order", { items: [{ variantId: "101" }] }, context);
-      expect(result.json.error).toMatch(/Unknown tool/);
-    }
   });
 
   it("is never offered to the merchant assistant", () => {
@@ -1277,17 +1267,6 @@ describe("changing the cart", () => {
     expect(result.actions).toEqual([{ type: "clear_cart" }]);
   });
 
-  it("is off when the merchant does not let the assistant touch the cart", async () => {
-    const context = toolContext({
-      cart,
-      settings: { ...SHOPPER_DEFAULTS, allowAddToCart: false },
-    });
-    expect((await run("clear_cart", {}, context)).json.error).toMatch(/Unknown tool/);
-    expect((await run("remove_from_cart", { variantId: "103" }, context)).json.error).toMatch(
-      /Unknown tool/,
-    );
-  });
-
   it("is never offered to the merchant assistant", () => {
     const names = toolsFor(allTools, toolContext({ audience: "merchant", admin: fakeGraphql({}) })).map(
       (tool) => tool.name,
@@ -1305,13 +1284,18 @@ describe("start_checkout", () => {
     expect(result.json.note).toMatch(/Do not say an order has been placed/);
   });
 
-  it("is unavailable when the merchant switched it off, as is add to cart", async () => {
-    const context = toolContext({
-      storefront: fakeGraphql({}),
-      settings: { ...SHOPPER_DEFAULTS, allowCheckout: false, allowAddToCart: false },
-    });
-    expect((await run("start_checkout", {}, context)).json.error).toMatch(/Unknown tool/);
-    expect((await run("add_to_cart", { variantId: "101" }, context)).json.error).toMatch(/Unknown tool/);
+  it("is there on every store, with the cart and ordering tools: none of them is a setting", () => {
+    // Everything a merchant can switch is off here, and they are still offered.
+    const context = toolContext({ storefront: fakeGraphql({}), settings: SHOPPER_DEFAULTS });
+    expect(toolsFor(allTools, context).map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "add_to_cart",
+        "remove_from_cart",
+        "clear_cart",
+        "place_order",
+        "start_checkout",
+      ]),
+    );
   });
 });
 

@@ -1,66 +1,83 @@
-import { useEffect } from "react";
+/**
+ * Settings: everything the merchant can decide about the assistant, in four
+ * parts, with a live preview of the storefront chat beside them.
+ *
+ * Nothing here has to be typed. Features are switches, policies and common
+ * questions are picked from lists, and what Shopify already knows about the
+ * store is read from Shopify (see store-facts.server.ts).
+ */
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
+  ShouldRevalidateFunction,
 } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
+import { getLlmStatus } from "../assistant/llm/index.server";
+import {
+  SECTIONS,
+  fieldsOf,
+  isSectionKey,
+  sectionsWithErrors,
+  type SectionKey,
+} from "../assistant/setting-options";
 import {
   getSettings,
   saveSettings,
   settingsFromForm,
+  type AssistantSettings,
   type SettingsErrors,
-  type SettingsField,
 } from "../assistant/settings.server";
-import {
-  AbilityFields,
-  BusinessFields,
-  FIELD_GROUPS,
-  PaymentWordingFields,
-  PersonalityFields,
-  PolicyFields,
-  QuestionFields,
-  QuickPolicyFields,
-  RetentionField,
-} from "../components/AssistantFields";
-
+import { shippingForPage, type ShippingView } from "../assistant/shipping";
+import { loadShippingRates } from "../assistant/shipping.server";
+import { toGraphqlFn } from "../assistant/shopify-clients.server";
+import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
+import { syncStoreFactsForPage } from "../assistant/store-facts.server";
+import { PAGE_WIDTH, PageColumns } from "../components/PageColumns";
+import { SectionNav, SettingsFields } from "../components/settings/SettingsFields";
+import { LivePreview } from "../components/settings/StorefrontPreview";
+import { useSettingsDraft } from "../components/settings/useSettingsDraft";
+import { factClients } from "../facts-clients.server";
 import { authenticate } from "../shopify.server";
 
-/**
- * The settings that are typed. None is needed: each has a default or adds to
- * what the assistant already knows, so they sit folded away at the bottom of
- * the page and the rest is tick boxes and lists.
- */
-const TYPED_FIELDS: readonly SettingsField[] = [
-  ...FIELD_GROUPS.personality,
-  ...FIELD_GROUPS.payment,
-  ...FIELD_GROUPS.business,
-  ...FIELD_GROUPS.policies,
-  ...FIELD_GROUPS.questions,
-  "instructions",
-];
+const ALL_SECTIONS = SECTIONS.map((section) => section.key);
 
-/** Every setting this page shows, and so every setting its form may change. */
-const SETTINGS_PAGE_FIELDS: readonly SettingsField[] = [
-  ...FIELD_GROUPS.abilities,
-  ...FIELD_GROUPS.quickPolicies,
-  ...FIELD_GROUPS.personality,
-  ...FIELD_GROUPS.payment,
-  ...FIELD_GROUPS.business,
-  ...FIELD_GROUPS.policies,
-  ...FIELD_GROUPS.questions,
-  "enabled",
-  "instructions",
-  "retentionDays",
-];
+/**
+ * Opening the page asks Shopify afresh. This only keeps the reload that
+ * follows a save from asking a second time within seconds of the first.
+ */
+const FACTS_MAX_AGE_MS = 10 * 1000;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  return { settings: await getSettings(session.shop) };
+  const { session, admin } = await authenticate.admin(request);
+  const shop = session.shop;
+  const wanted = new URL(request.url).searchParams.get("section");
+
+  const [synced, rates] = await Promise.all([
+    factClients(shop, admin).then((clients) =>
+      syncStoreFactsForPage(shop, clients, { maxAgeMs: FACTS_MAX_AGE_MS }),
+    ),
+    // Shipping zones and rates are never kept: read now, shown as they are.
+    loadShippingRates(toGraphqlFn(admin, "Admin")),
+  ]);
+  // Read once the facts are in: the corner the chat sits in follows the
+  // store's language until the merchant picks one, and on a first visit that
+  // language has only just been learned. Saved before it was, the form would
+  // keep the wrong corner for good.
+  const settings = await getSettings(shop);
+  return {
+    shop,
+    settings,
+    facts: factsForPage(synced.facts),
+    shipping: shippingForPage(rates),
+    section: isSectionKey(wanted) ? wanted : ("assistant" as SectionKey),
+    llmReady: getLlmStatus().ready,
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -70,121 +87,145 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const result = await saveSettings(
     session.shop,
-    settingsFromForm(form, SETTINGS_PAGE_FIELDS),
+    settingsFromForm(form, fieldsOf(ALL_SECTIONS)),
   );
-
   const errors: SettingsErrors = result.ok ? {} : result.errors;
   return { ok: result.ok, errors };
 };
 
+/**
+ * A message sent in the preview chat changes nothing this page shows, so the
+ * page's data is not fetched again for it. Otherwise every test message would
+ * wait on the settings and, once a minute, on Shopify.
+ */
+export const shouldRevalidate: ShouldRevalidateFunction = ({
+  formAction,
+  defaultShouldRevalidate,
+}) => (formAction === "/app/preview" ? false : defaultShouldRevalidate);
 
 type FormSubmitEvent =
   | FormEvent<HTMLFormElement>
   | (SubmitEvent & { currentTarget: HTMLFormElement });
 
+const NO_ERRORS: SettingsErrors = {};
+
 export default function Settings() {
-  const { settings } = useLoaderData<typeof loader>();
-  const fetcher = useFetcher<typeof action>();
+  const { shop, settings, facts, shipping, section: startAt, llmReady } =
+    useLoaderData<typeof loader>();
+  const save = useFetcher<typeof action>({ key: "settings-save" });
   const shopify = useAppBridge();
 
-  const saving = fetcher.state !== "idle";
-  const errors = fetcher.data?.errors ?? {};
-  const failed = fetcher.data?.ok === false;
-  const typedErrors = TYPED_FIELDS.some((field) => errors[field]);
+  const saving = save.state !== "idle";
+  const errors = save.data?.errors ?? NO_ERRORS;
+  const failed = save.data?.ok === false;
+
+  // Which part is open lives here, above what is rebuilt after a save, so
+  // saving leaves the merchant where they were.
+  const [section, setSection] = useState<SectionKey>(startAt);
+  // A refused save takes them to the first part with something to fix.
+  const [shownErrors, setShownErrors] = useState(errors);
+  if (errors !== shownErrors) {
+    setShownErrors(errors);
+    const wrong = sectionsWithErrors(errors);
+    if (wrong.length && !wrong.includes(section)) setSection(wrong[0]);
+  }
 
   useEffect(() => {
-    if (fetcher.state === "idle" && fetcher.data?.ok) {
+    if (save.state === "idle" && save.data?.ok) {
       shopify.toast.show("Settings saved");
     }
-  }, [fetcher.state, fetcher.data, shopify]);
+  }, [save.state, save.data, shopify]);
 
   const handleSubmit = (event: FormSubmitEvent) => {
     event.preventDefault();
     if (saving) return;
-    fetcher.submit(new FormData(event.currentTarget), { method: "POST" });
+    save.submit(new FormData(event.currentTarget), { method: "POST" });
   };
 
-  // Remounting the form after a save resets every field to the stored value,
-  // which also clears the "unsaved changes" bar.
-  const formKey = JSON.stringify(settings);
+  return (
+    <s-page heading="Settings" inlineSize={PAGE_WIDTH}>
+      {/* Starting again from the saved settings after each save also clears
+          the "unsaved changes" bar. */}
+      <Workspace
+        key={JSON.stringify(settings)}
+        shop={shop}
+        settings={settings}
+        facts={facts}
+        shipping={shipping}
+        errors={errors}
+        failed={failed}
+        section={section}
+        onSection={setSection}
+        llmReady={llmReady}
+        onSubmit={handleSubmit}
+      />
+    </s-page>
+  );
+}
+
+function Workspace({
+  shop,
+  settings,
+  facts,
+  shipping,
+  errors,
+  failed,
+  section,
+  onSection,
+  llmReady,
+  onSubmit,
+}: {
+  shop: string;
+  settings: AssistantSettings;
+  facts: StoreFactsView;
+  shipping: ShippingView;
+  errors: SettingsErrors;
+  failed: boolean;
+  section: SectionKey;
+  onSection: (section: SectionKey) => void;
+  llmReady: boolean;
+  onSubmit: (event: FormSubmitEvent) => void;
+}) {
+  const draft = useSettingsDraft(settings);
 
   return (
-    <s-page heading="Settings">
-      <form key={formKey} data-save-bar onSubmit={handleSubmit}>
-        <s-stack direction="block" gap="base">
-          {failed && (
-            <s-banner tone="critical" heading="Settings weren't saved">
-              Fix the highlighted fields and save again.
-            </s-banner>
-          )}
-
-          <s-section heading="What the assistant can do">
-            <s-stack direction="block" gap="base">
-              <AbilityFields settings={settings} errors={errors} />
-              <s-banner tone="info">
-                Order status and return requests read order details, including the email
-                address on the order, which Shopify classes as protected customer data. Before
-                turning them on for a live store, request protected customer data access
-                (including the email field) for this app in your Shopify Dev Dashboard.
-              </s-banner>
-            </s-stack>
-          </s-section>
-
-          <s-section heading="Your policies">
-            <QuickPolicyFields settings={settings} errors={errors} />
-          </s-section>
-
-          <s-section heading="Storefront chat">
-            <s-checkbox
-              name="enabled"
-              label="Answer shoppers in the storefront chat"
-              details="Turn this off to pause the assistant. The chat bubble is hidden from shoppers until you turn it back on."
-              {...(settings.enabled ? { defaultChecked: true } : {})}
-            />
-          </s-section>
-
-          <s-section heading="Privacy">
-            <RetentionField settings={settings} errors={errors} />
-          </s-section>
-
-          <s-section heading="Your own wording (optional)">
-            <s-stack direction="block" gap="base">
-              <s-paragraph>
-                Nothing here needs filling in. The assistant is called {settings.assistantName},
-                has a welcome message, and already knows your products, your published
-                policies and the choices above.
-              </s-paragraph>
-              {/* Closed until asked for; opened by itself when something in it needs fixing. */}
-              <details {...(typedErrors ? { open: true } : {})}>
-                <summary style={{ cursor: "pointer" }}>
-                  <s-text type="strong">
-                    Change the name or welcome message, or add notes of your own
-                  </s-text>
-                </summary>
-                <s-box paddingBlockStart="base">
-                  <s-stack direction="block" gap="base">
-                    <PersonalityFields settings={settings} errors={errors} />
-                    <PaymentWordingFields settings={settings} errors={errors} />
-                    <BusinessFields settings={settings} errors={errors} />
-                    <PolicyFields settings={settings} errors={errors} />
-                    <QuestionFields settings={settings} errors={errors} />
-                    <s-text-area
-                      name="instructions"
-                      label="Anything else the assistant should know or do"
-                      details="Treat everything on this page as public: a determined shopper can get the assistant to repeat it, so don't include anything confidential."
-                      rows={4}
-                      maxLength={2000}
-                      defaultValue={settings.instructions}
-                      {...(errors.instructions ? { error: errors.instructions } : {})}
-                    />
-                  </s-stack>
-                </s-box>
-              </details>
-            </s-stack>
-          </s-section>
-        </s-stack>
+    <PageColumns
+      aside={
+        <s-section heading="Preview">
+          <LivePreview
+            settings={draft.draft}
+            unsaved={draft.dirty}
+            ready={llmReady}
+            fetcherKey="settings-preview"
+          />
+        </s-section>
+      }
+    >
+      {failed && (
+        <s-banner tone="critical" heading="Settings weren't saved">
+          Fix the highlighted fields and save again.
+        </s-banner>
+      )}
+      {!draft.draft.enabled && (
+        <s-banner tone="warning" heading="The chat is paused">
+          Shoppers don&apos;t see the chat bubble while it is switched off under Assistant.
+          Everything else you set here is kept.
+        </s-banner>
+      )}
+      <SectionNav active={section} errors={errors} onChange={onSection} />
+      <form data-save-bar onSubmit={onSubmit} onInput={draft.handleInput} onReset={draft.reset}>
+        <SettingsFields
+          show={ALL_SECTIONS}
+          active={section}
+          settings={settings}
+          facts={facts}
+          shipping={shipping}
+          errors={errors}
+          shop={shop}
+          draft={draft}
+        />
       </form>
-    </s-page>
+    </PageColumns>
   );
 }
 

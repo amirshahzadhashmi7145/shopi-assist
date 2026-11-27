@@ -281,55 +281,55 @@ describe("system prompts", () => {
     expect(prompt.match(/r{100,}/g)![0]).toHaveLength(1500);
   });
 
-  it("explains ordering in chat only when the assistant can do it", () => {
-    const abilities = { addToCart: true, checkout: true, returns: false };
-    const noPayment = /never ask for an address, phone number or card details in chat/;
-
-    const full = buildSystemPrompt({
-      ...input,
-      audience: "shopper",
-      abilities: { ...abilities, placeOrder: true },
-    });
-    expect(full).toMatch(/start the order in that same reply, once, with every item/);
-    expect(full).toMatch(/wanting to buy it is the go-ahead/);
-    expect(full).toMatch(/do not add the same items to the cart separately/);
-    expect(full).toMatch(/Never say a product comes in sizes, colors or other options unless/);
-    expect(full).toMatch(noPayment);
-    expect(full).toMatch(/never say an order has been placed/);
-
-    // Checkout on, cart off: the assistant can only show what is in the cart.
-    const checkoutOnly = buildSystemPrompt({
-      ...input,
-      audience: "shopper",
-      abilities: { ...abilities, addToCart: false },
-    });
-    expect(checkoutOnly).not.toMatch(/start the order/);
-    expect(checkoutOnly).toMatch(/show them the checkout summary/);
-    expect(checkoutOnly).toMatch(noPayment);
-
-    const none = buildSystemPrompt({
-      ...input,
-      audience: "shopper",
-      abilities: { ...abilities, checkout: false },
-    });
-    expect(none).toMatch(/You cannot start a checkout/);
-    expect(none).not.toMatch(/start the order/);
+  it("explains the cart and ordering to every store's assistant: neither is a setting", () => {
+    // Whatever the merchant switched on or off, and when nothing is said about it at all.
+    for (const abilities of [undefined, { returns: false }, { returns: true, cancelOrder: true }]) {
+      const prompt = buildSystemPrompt({ ...input, audience: "shopper", abilities });
+      expect(prompt).toMatch(/start the order in that same reply, once, with every item/);
+      expect(prompt).toMatch(/wanting to buy it is the go-ahead/);
+      expect(prompt).toMatch(/do not add the same items to the cart separately/);
+      expect(prompt).toMatch(/Never say a product comes in sizes, colors or other options unless/);
+      expect(prompt).toMatch(/Only add to cart when the shopper clearly asks/);
+      expect(prompt).toMatch(/never ask for an address, phone number or card details in chat/);
+      expect(prompt).toMatch(/never say an order has been placed/);
+      expect(prompt).not.toMatch(/You cannot (add items to the cart|start a checkout|change the cart)/);
+    }
   });
 
-  it("points shoppers to the order form, and never collects their details itself", () => {
-    const abilities = { addToCart: true, checkout: true, returns: false, placeOrder: true };
+  it("only starts the order: the checkout page does the rest, payment included", () => {
+    const abilities = { returns: false };
+    const prompt = buildSystemPrompt({ ...input, audience: "shopper", abilities });
 
-    const withForm = buildSystemPrompt({
+    // No order form in the chat to point to, and no details taken in it.
+    expect(prompt).not.toMatch(/Order here|order form|pay on delivery' button/);
+    expect(prompt).toMatch(/never ask for an address, phone number or card details in chat/);
+    // One way on, and everything after it is the checkout page's business.
+    expect(prompt).toContain(
+      "The chat only starts the order: the way on from the summary is its Go to checkout button, and everything else happens on that page: the email, the delivery address, the delivery option and the way of paying.",
+    );
+    // It does not say the summary has no other control: lines can still be changed or removed there.
+    expect(prompt).not.toContain("has one button");
+    expect(prompt).toContain("They can change quantities or remove lines there too");
+    // The way of paying is not gone into while ordering, whichever it is.
+    expect(prompt).toContain(
+      "So when a shopper orders, never ask how they want to pay, and do not look up or discuss payment methods for it. If they name one (card, cash on delivery, anything else), do not repeat it back as the way the order will be paid: say only that they choose how to pay on the checkout page, and go on with the order.",
+    );
+    // Nothing makes the order wait on whether the store offers a way of paying.
+    expect(prompt).not.toMatch(/if the store offers it|Whether the store offers it/);
+    expect(prompt).toMatch(/never say an order has been placed/);
+    expect(prompt).toMatch(/shows an order summary with a Go to checkout button/);
+    // No payment tool here, so none is mentioned.
+    expect(prompt).not.toContain("your payment tool");
+    // With one, a shopper's question about ways of paying is still answered:
+    // which rule wins while ordering is said, not left to chance.
+    const withTool = buildSystemPrompt({
       ...input,
       audience: "shopper",
-      abilities: { ...abilities, chatOrders: true },
+      abilities: { ...abilities, payment: true },
     });
-    expect(withForm).toMatch(/'Order here, pay on delivery' button/);
-    expect(withForm).toMatch(/never ask for or accept an address, phone number or card details/);
-    expect(withForm).toMatch(/never say an order has been placed/);
-
-    const without = buildSystemPrompt({ ...input, audience: "shopper", abilities });
-    expect(without).not.toMatch(/pay on delivery/);
+    expect(withTool).toContain(
+      "This comes before the rule on payment below: your payment tool is only for a shopper who asks which ways of paying the store takes.",
+    );
   });
 
   it("shows the assistant the shopper's cart as data, and says when it cannot see it", () => {
@@ -357,17 +357,6 @@ describe("system prompts", () => {
     expect(prompt.match(/"""/g)).toHaveLength(4);
     // It comes after everything else, so it never pushes the rules down.
     expect(prompt.indexOf("Open on Sundays.")).toBeLessThan(prompt.indexOf("The shopper's cart right now"));
-
-    // An assistant that may not change the cart is not handed the ids to do it.
-    const readOnly = buildSystemPrompt({
-      ...input,
-      audience: "shopper",
-      abilities: { addToCart: false, checkout: true, returns: false },
-      cart: [{ variantId: "101", title: "Trail Mug", quantity: 2 }],
-    });
-    expect(readOnly).toContain("- 2 x Trail Mug");
-    expect(readOnly).not.toContain("variantId 101");
-    expect(readOnly).toMatch(/You cannot change the cart/);
   });
 
   it("says what a chat remembers about orders only as far as the message calls for it", () => {
@@ -458,7 +447,7 @@ describe("system prompts", () => {
   });
 
   it("explains order changes only as far as the store allows them", () => {
-    const base = { addToCart: true, checkout: true, returns: true };
+    const base = { returns: true };
 
     const none = buildSystemPrompt({ ...input, audience: "shopper", abilities: base });
     expect(none).toMatch(/you cannot cancel an order or change its address or items/);
@@ -511,7 +500,7 @@ describe("system prompts", () => {
   });
 
   it("asks a signed-in shopper only for the order and the reason when they want a return", () => {
-    const abilities = { addToCart: true, checkout: true, returns: true };
+    const abilities = { returns: true };
     const returnsRule = (prompt: string) => prompt.split("\n").find((line) => line.startsWith("- Returns:"))!;
 
     const signedIn = returnsRule(

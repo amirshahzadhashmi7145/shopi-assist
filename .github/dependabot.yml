@@ -10,6 +10,10 @@ updates:
       shopify:
         patterns:
           - "@shopify/*"
+      # A patch release of React Router (7.18.3) made every form in the admin
+      # answer "400 Bad Request" behind HTTPS, and it was merged because
+      # nothing tested that. `npm run smoke` now posts those forms the way a
+      # browser does: run it on every pull request from this group.
       react-router:
         patterns:
           - "react-router"

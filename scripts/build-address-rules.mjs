@@ -9,7 +9,7 @@
  *   node scripts/build-address-rules.mjs /some/folder [commit]
  *
  * Run it again to pick up Shopify's changes. Only English labels are taken,
- * because the order form is in English.
+ * because the address form is in English.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ if (!source || !existsSync(join(source, "data/regions"))) {
 const REGIONS = join(source, "data/regions");
 const OUTPUT = join(process.cwd(), "app/assistant/address-rules.json");
 
-/** The data's field names, as the order form calls them. */
+/** The data's field names, as the address form calls them. */
 const FIELDS = {
   first_name: "firstName",
   last_name: "lastName",

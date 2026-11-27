@@ -6,9 +6,7 @@
  *   npm run widget:preview     then open http://localhost:4010
  *
  * Query options:  ?accent=%23B4532A  ?position=left  ?demo=1 (opens the chat
- * and asks a question automatically; used for screenshots). With a demo
- * question that shows an order summary, &form=details, &form=review or
- * &form=placed also walks through the pay-on-delivery form.
+ * and asks a question automatically; used for screenshots).
  *
  * Nothing here ships to Shopify; only extensions/chat-widget is deployed.
  */
@@ -110,51 +108,29 @@ function cartJson() {
   };
 }
 
-const money = (cents) => ({ amount: (cents / 100).toFixed(2), currencyCode: "USD" });
-const PREVIEW_RATES = [
-  { handle: "standard", title: "Standard (3 to 5 days)", cents: 500 },
-  { handle: "express", title: "Express (next day)", cents: 1500 },
-];
-
-/** A stand-in for the app's order endpoint: prices the cart, then "places" it. */
-function previewOrder(body) {
-  const fields = {};
-  if (!/^\+?\d{7,15}$/.test(String(body.contact?.phone || "").replace(/[\s().-]/g, ""))) {
-    fields.phone = "Enter a phone number with 7 to 15 digits.";
-  }
-  if (!String(body.contact?.lastName || "").trim()) fields.lastName = "Enter your last name.";
-  if (String(body.address?.address1 || "").trim().length < 3) fields.address1 = "Enter your street address.";
-  if (!String(body.address?.city || "").trim()) fields.city = "Enter your city.";
-  if (Object.keys(fields).length) {
-    return [422, { error: { code: "invalid_order", message: "Please check the highlighted details.", fields } }];
-  }
-
-  const cart = cartJson();
-  const rate = PREVIEW_RATES.find((candidate) => candidate.handle === body.shippingRateHandle) ?? PREVIEW_RATES[0];
-  const tax = Math.round(cart.total_price * 0.08);
-  const quote = {
-    lines: cart.items.map((item) => ({ title: item.title, quantity: item.quantity, total: money(item.final_line_price) })),
-    subtotal: money(cart.total_price),
-    shipping: money(rate.cents),
-    tax: money(tax),
-    total: money(cart.total_price + rate.cents + tax),
-    shippingRates: PREVIEW_RATES.map((entry) => ({ handle: entry.handle, title: entry.title, price: money(entry.cents) })),
-    shippingRateHandle: rate.handle,
-  };
-  if (body.step === "quote") return [200, { ok: true, step: "quote", quote }];
-  return [200, { ok: true, step: "place", order: { name: "#1042", total: quote.total } }];
-}
-
 const productImage = (hue) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" fill="hsl(${hue} 30% 88%)"/><circle cx="64" cy="64" r="34" fill="hsl(${hue} 35% 55%)"/><rect x="40" y="72" width="48" height="26" rx="6" fill="hsl(${hue} 40% 35%)"/></svg>`;
 
+/**
+ * The colour and corner asked for in a page's address. The widget is told
+ * them the way the app tells it, with the rest of its settings, so they are
+ * read off the address of the page that asks for those.
+ */
+function look(address) {
+  let params = new URLSearchParams();
+  try {
+    params = new URL(address || "", "http://localhost").searchParams;
+  } catch {
+    // Not an address: the defaults.
+  }
+  return {
+    accent: /^#[0-9a-f]{6}$/i.test(params.get("accent") || "") ? params.get("accent") : "#1F3D2F",
+    position: params.get("position") === "left" ? "left" : "right",
+  };
+}
+
 function page(url) {
-  const accent = /^#[0-9a-f]{6}$/i.test(url.searchParams.get("accent") || "")
-    ? url.searchParams.get("accent")
-    : "#1F3D2F";
-  const position = url.searchParams.get("position") === "left" ? "left" : "right";
   const demo = url.searchParams.get("demo");
-  const form = url.searchParams.get("form");
 
   return `<!doctype html>
 <html lang="en">
@@ -194,8 +170,6 @@ function page(url) {
   id="shopi-assist-root"
   data-endpoint="/apps/shopi-assist/chat"
   data-stylesheet="/assets/shopi-assist.css"
-  data-accent="${accent}"
-  data-position="${position}"
   data-suggestion-1="What are your best sellers?"
   data-suggestion-2="What's your return policy?"
   data-suggestion-3="Help me find a gift"
@@ -223,23 +197,6 @@ ${
           : `var input = root.querySelector(".sa-input");
       input.value = ${JSON.stringify(demo === "1" ? "What are your best sellers?" : demo)};
       root.querySelector(".sa-form").dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));`
-      }
-      ${
-        form
-          ? `var submitOrder = function () {
-        root.querySelector(".sa-order-form").dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
-      };
-      setTimeout(function () { root.querySelector(".sa-order-here").click(); }, 1500);
-      setTimeout(function () {
-        var values = { firstName: "Ada", lastName: "Lovelace", phone: "+1 613 555 0111", address1: "742 Evergreen Terrace", city: "Springfield", province: "Illinois", zip: "62704" };
-        if (${JSON.stringify(form)} === "details") values.phone = "12";
-        Object.keys(values).forEach(function (name) {
-          root.querySelector('.sa-order-form [name="' + name + '"]').value = values[name];
-        });
-        submitOrder();
-      }, 2200);
-      ${form === "placed" ? "setTimeout(submitOrder, 3000);" : ""}`
-          : ""
       }
     }, 300);
   });
@@ -278,7 +235,8 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/apps/shopi-assist/chat") {
       return send(200, "application/json", JSON.stringify({
-        ok: true, enabled: true, ready: true, title: "", greeting: "", chatOrders: true, testMode: true,
+        ok: true, enabled: true, ready: true, title: "", greeting: "", testMode: true,
+        ...look(request.headers.referer),
       }));
     }
 
@@ -289,10 +247,11 @@ const server = createServer(async (request, response) => {
           countries: [{ code: "CA", name: "Canada" }, { code: "US", name: "United States" }],
         }));
       }
-      let raw = "";
-      for await (const chunk of request) raw += chunk;
-      const [status, payload] = previewOrder(JSON.parse(raw || "{}"));
-      return send(status, "application/json", JSON.stringify(payload));
+      // The preview has no checkout to open and no orders to change.
+      return send(200, "application/json", JSON.stringify({
+        ok: false,
+        error: { code: "unavailable", status: 409, message: "This is a preview: on a store, this opens the checkout." },
+      }));
     }
 
     if (request.method === "POST" && url.pathname === "/cart/change.js") {

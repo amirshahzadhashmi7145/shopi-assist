@@ -17,7 +17,19 @@ import {
   type DailyBudget,
   type RateLimiter,
 } from "./rate-limit";
-import { DEFAULT_SETTINGS, describeQuickPolicies, getSettings } from "./settings.server";
+import { describeTopics } from "./setting-options";
+import {
+  aboutBusiness,
+  DEFAULT_SETTINGS,
+  describeQuickPolicies,
+  describeShippingPicks,
+  shippingPicksText,
+  getSettings,
+} from "./settings.server";
+import type { ShippingRates } from "./shipping";
+import { loadShippingRates } from "./shipping.server";
+import { NO_FACTS } from "./store-facts";
+import { getStoredFacts, refreshStoreFactsIfStale } from "./store-facts.server";
 import { GRANT_LIFETIME_MS, grantSecret, signGrant } from "./action-grant.server";
 import { getShopName, isDevelopmentStore, ordersOfCustomer } from "./shopify-clients.server";
 import {
@@ -49,6 +61,8 @@ import type {
 } from "./types";
 
 export const MAX_MESSAGE_LENGTH = 2000;
+/** How long a turn waits for the store's facts to be read again before going ahead. */
+const FACTS_WAIT_MS = 2000;
 const HISTORY_MESSAGES = 20;
 /** A turn that has not finished by now is abandoned; the widget gives up at 60s. */
 const TURN_DEADLINE_MS = 50_000;
@@ -339,6 +353,31 @@ export async function handleChatTurn(
   }
   const secret = grantSecret();
 
+  // What Shopify says about the store itself (its description, its contact
+  // address), as stored. When that is more than a few minutes old it is read
+  // again first, briefly: if Shopify is slow the turn goes ahead with what it
+  // has and the fresh answer is there for the next one.
+  let facts = NO_FACTS;
+  if (input.audience === "shopper") {
+    facts = await getStoredFacts(input.shop, deps.db);
+    const refresh = refreshStoreFactsIfStale(
+      input.shop,
+      facts,
+      { admin: input.admin, storefront: input.storefront },
+      { db: deps.db, now },
+    );
+    if (refresh) {
+      await Promise.race([refresh, new Promise((resolve) => setTimeout(resolve, FACTS_WAIT_MS))]);
+      facts = await getStoredFacts(input.shop, deps.db);
+    }
+  }
+  // The merchant's own picks about delivery: what the shipping tool falls
+  // back on for anything Shopify does not answer.
+  const shippingPicks = describeShippingPicks(settings, facts);
+  // One read of the store's shipping settings serves the whole turn, however
+  // often the assistant asks within it. The next turn reads them again.
+  let shippingRead: Promise<ShippingRates> | undefined;
+
   // 5. Run the model with the tools this audience is allowed to use.
   const context: ToolContext = {
     shop: input.shop,
@@ -358,13 +397,18 @@ export async function handleChatTurn(
     settings: {
       orderLookupEnabled: settings.orderLookupEnabled,
       orderLookupByNumber: settings.orderLookupEnabled && settings.orderLookupByNumber,
-      allowAddToCart: settings.allowAddToCart,
-      allowCheckout: settings.allowCheckout,
       allowReturns: settings.allowReturns,
       allowOrderCancel: settings.allowOrderCancel,
       allowAddressChange: settings.allowAddressChange,
       allowOrderEdit: settings.allowOrderEdit,
     },
+    // Shipping rates are asked of Shopify in the turn the assistant needs them.
+    shippingRates:
+      input.audience === "shopper" && input.admin
+        ? () => (shippingRead ??= loadShippingRates(input.admin))
+        : undefined,
+    shippingPicks,
+    shippingNote: settings.shippingInfo.trim().slice(0, 1500) || undefined,
     isTestStore: () => isDevelopmentStore(input.shop, input.admin),
     // A grant names this shop and this chat, and stops working after a while.
     grantOrderAction:
@@ -402,6 +446,7 @@ export async function handleChatTurn(
     now: deps.now,
   };
   const tools = toolsFor(deps.tools, context);
+  const hasShippingTool = tools.some((tool) => tool.name === "get_shipping_info");
   const shopName = await getShopName(input.shop, input.admin, now.getTime());
 
   const systemPrompt = buildSystemPrompt({
@@ -409,22 +454,27 @@ export async function handleChatTurn(
     shopName,
     assistantName: settings.assistantName,
     abilities: {
-      addToCart: tools.some((tool) => tool.name === "add_to_cart"),
-      checkout: tools.some((tool) => tool.name === "start_checkout"),
-      placeOrder: tools.some((tool) => tool.name === "place_order"),
-      chatOrders:
-        settings.allowChatOrders && tools.some((tool) => tool.name === "start_checkout"),
       returns: tools.some((tool) => tool.name === "request_return"),
       cancelOrder: tools.some((tool) => tool.name === "cancel_order"),
       changeAddress: tools.some((tool) => tool.name === "change_delivery_address"),
       changeItems: tools.some((tool) => tool.name === "change_order_items"),
+      shipping: hasShippingTool,
+      payment: tools.some((tool) => tool.name === "get_payment_methods"),
     },
     signedIn,
-    quickPolicies: describeQuickPolicies(settings),
+    // With the shipping tool, everything about delivery comes from it: the
+    // owner's picks and note are its fallback and stay out of the prompt.
+    quickPolicies: [
+      describeQuickPolicies(settings),
+      hasShippingTool ? "" : shippingPicksText(shippingPicks),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    topicNotes: describeTopics(settings.topics, facts.contactEmail),
     knowledge: {
-      businessDescription: settings.businessDescription,
+      businessDescription: aboutBusiness(settings, facts),
       returnPolicy: settings.returnPolicy,
-      shippingInfo: settings.shippingInfo,
+      shippingInfo: hasShippingTool ? "" : settings.shippingInfo,
       faq: settings.faq,
     },
     merchantInstructions: settings.instructions,
@@ -549,11 +599,7 @@ export async function handleChatTurn(
   return {
     conversationId: conversation.id,
     reply: lifted ? lifted.text : turn.reply,
-    // With add to cart switched off, cards link to the product but offer
-    // nothing to add or pick.
-    cards: settings.allowAddToCart
-      ? turn.cards
-      : turn.cards.map((card) => ({ ...card, variantId: null, variants: undefined })),
+    cards: turn.cards,
     // The server's own answers win over ones read out of the reply.
     actions: quick
       ? [{ type: "choices", options: quick, other: true }]

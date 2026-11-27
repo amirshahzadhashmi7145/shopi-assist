@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { OrderActionGrant } from "../action-grant.server";
 import type { LlmToolCall, LlmToolSpec } from "../llm/provider";
 import type { RateLimiter } from "../rate-limit";
+import type { ShippingPicks, ShippingRates } from "../shipping";
 import type {
   Audience,
   CartLine,
@@ -30,14 +31,34 @@ export interface ToolContext {
     orderLookupEnabled: boolean;
     /** Basic status from the order number alone. Off unless the merchant opts in. */
     orderLookupByNumber?: boolean;
-    allowAddToCart: boolean;
-    allowCheckout: boolean;
     allowReturns: boolean;
     /** Changes to an existing order. All off unless the merchant opts in. */
     allowOrderCancel?: boolean;
     allowAddressChange?: boolean;
     allowOrderEdit?: boolean;
   };
+  /**
+   * Reads the store's shipping zones and rates from Shopify, now. The rates
+   * are public (every visitor sees them at the checkout) but live in the
+   * Admin API, so a shopper's tools are given this one question to ask
+   * instead of an Admin client. Asked more than once in a turn, it gives the
+   * same read.
+   */
+  shippingRates?: () => Promise<ShippingRates>;
+  /**
+   * The merchant's own picks about delivery, each in words. A pick is said
+   * only for what Shopify does not answer: where the store delivers and what
+   * that costs when its settings cannot be read, how soon orders leave and
+   * how long they take when Shopify holds no figure for it.
+   */
+  shippingPicks?: ShippingPicks;
+  /**
+   * What the merchant wrote about shipping in their own words. It is said
+   * only when Shopify's settings cannot be read. Given to the assistant
+   * alongside them, a note that had fallen behind (other countries, other
+   * prices) was repeated as fact next to the real ones.
+   */
+  shippingNote?: string;
   /**
    * What the page showing the chat has said it can draw, beyond text and
    * product cards. A shopper's browser can be running a widget older than
@@ -63,8 +84,8 @@ export interface ToolContext {
    */
   cart?: CartLine[];
   /**
-   * Orders already tied to this conversation by the server: placed through
-   * its order form, or proved to be the shopper's earlier in the chat.
+   * Orders already tied to this conversation by the server: proved to be
+   * the shopper's earlier in the chat, or theirs because they are signed in.
    */
   knownOrders?: KnownOrder[];
   /**

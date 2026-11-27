@@ -1,5 +1,6 @@
 /**
- * What the order form asks for in each country, and how it is checked.
+ * What the address form (for a change of delivery address on an order) asks
+ * for in each country, and how it is checked.
  *
  * Two things decide it:
  *  - the country: which address fields there are, in what order, what they
@@ -122,7 +123,7 @@ function requirement(
   }
 }
 
-/** The fields the order form shows for a delivery to this country. */
+/** The fields the address form shows for a delivery to this country. */
 export function formLayout(countryCode: string, options: FormOptions): FormLayout {
   const country = countryRules(countryCode);
   const format = DATA.formats[country.format] ?? UNKNOWN_FORMAT;

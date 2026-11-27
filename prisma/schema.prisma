@@ -60,10 +60,17 @@ model ShopSettings {
   assistantName       String  @default("")
   // First message in the widget. Empty means the app's default welcome.
   greeting            String  @default("")
+  // The widget's colour, as "#" and six hex digits. Empty means the app's
+  // default colour (see widget-look.ts).
+  accentColor         String  @default("")
+  // The corner of the page the widget sits in: "right" or "left". Empty
+  // means not picked yet: it then follows the store's language (left for a
+  // language written from right to left, see widget-look.ts).
+  widgetPosition      String  @default("")
 
-  // What the assistant is allowed to do for shoppers (ticked in setup).
-  allowAddToCart      Boolean @default(true)
-  allowCheckout       Boolean @default(true)
+  // What the assistant is allowed to do with an existing order, each one
+  // switched on by the merchant. (Adding to the cart and showing the way to
+  // the checkout are not settings: every store has them.)
   // Opt-in: lets shoppers ask for a return with order number + checkout email.
   // It creates a return REQUEST that the merchant approves or declines.
   allowReturns        Boolean @default(false)
@@ -78,19 +85,24 @@ model ShopSettings {
   recogniseCustomers  Boolean @default(false)
   // Shoppers can give the chat a thumbs-up or thumbs-down.
   chatRatings         Boolean @default(true)
-  // Opt-in: lets shoppers place a pay-on-delivery order from a form in the
-  // chat. The app creates a real, unpaid order in the store.
-  allowChatOrders     Boolean @default(false)
-  // What that order form asks for. Shopify has the same three options under
-  // Settings > Checkout but does not let apps read them, so they are set here.
+  // What the form for a change of delivery address asks for. Shopify has the
+  // same three options under Settings > Checkout but does not let apps read
+  // them, so they are set here.
   orderFirstName      String  @default("optional") // "optional" | "required"
   orderCompany        String  @default("hidden")   // "hidden" | "optional" | "required"
   orderAddress2       String  @default("optional") // "hidden" | "optional" | "required"
-  // What the store calls paying on delivery, and anything it tells the buyer
-  // about it. Shopify keeps both with its manual payment methods, which apps
-  // cannot read. Empty means Shopify's own name, "Cash on Delivery (COD)".
-  orderPaymentName    String  @default("")
-  orderPaymentNote    String  @default("")
+
+  // Where "About the business" comes from: the store's own description in
+  // Shopify ("shopify"), the merchant's words in businessDescription
+  // ("custom"), or nothing ("none").
+  aboutStore          String  @default("shopify")
+  // Answers picked for common questions, as JSON: { "sizing": "small",
+  // "hours": "custom:Weekdays 10 to 4" }. See setting-options.ts.
+  topics              String  @default("{}")
+  // What Shopify itself says about the store (where it ships, how shoppers
+  // can pay, which policies are published), as JSON. Read from Shopify, never
+  // typed by the merchant. See store-facts.ts.
+  storeFacts          String  @default("{}")
 
   // Quick policy picks from dropdowns. "" means "not set".
   returnWindow        String  @default("") // "none" | "7" | "14" | "30" | "60" | "90"
@@ -98,6 +110,13 @@ model ShopSettings {
   processingTime      String  @default("") // "same_day" | "1_2" | "3_5"
   deliveryTime        String  @default("") // "2_4" | "3_5" | "5_8" | "7_14"
   shipsTo             String  @default("") // "domestic" | "international"
+  // Comma-separated: "unused,packaging,tags,receipt,no_sale,no_custom".
+  returnConditions    String  @default("")
+  exchanges           String  @default("") // "yes" | "no"
+  refundMethod        String  @default("") // "original" | "credit" | "either"
+  shippingFee         String  @default("") // "free" | "free_over" | "flat" | "calculated"
+  // The order amount for "free_over", or the rate for "flat", in the store's currency.
+  shippingAmount      String  @default("")
 
   // Setup tour: opened automatically until it has been seen once.
   setupStartedAt      DateTime?
@@ -156,7 +175,8 @@ model ConversationOrder {
   orderId        String
   // "#1005"
   orderName      String
-  // "placed" (through the chat's order form) or "verified" (number + email).
+  // "verified" (number plus email or phone). "placed" is on rows from when
+  // the chat took pay-on-delivery orders itself; none are written any more.
   source         String
   createdAt      DateTime     @default(now())
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
