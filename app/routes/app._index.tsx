@@ -7,6 +7,7 @@ import { getSettings, getSetupState, setupProgress } from "../assistant/settings
 import { syncStoreFactsForPage } from "../assistant/store-facts.server";
 import { chatAnalytics } from "../assistant/store.server";
 import { ChatAnalyticsSection } from "../components/ChatAnalytics";
+import { PAGE_WIDTH, PageColumns } from "../components/PageColumns";
 import { activateWidgetUrl, useEmbedStatus } from "../components/useEmbedStatus";
 import db from "../db.server";
 import { factClients } from "../facts-clients.server";
@@ -72,138 +73,141 @@ export default function Home() {
   const widgetLive = embedStatus === "active";
   const allSet = widgetLive && llmReady && chatEnabled;
 
+  const aside = (
+    <s-section heading="What shoppers can ask">
+      <s-unordered-list>
+        <s-list-item>&quot;What are your best sellers?&quot;</s-list-item>
+        <s-list-item>&quot;Do you have this in blue?&quot;</s-list-item>
+        <s-list-item>&quot;What&apos;s your return policy?&quot;</s-list-item>
+        <s-list-item>&quot;Add the small one to my cart&quot;</s-list-item>
+      </s-unordered-list>
+    </s-section>
+  );
+
   return (
-    <s-page heading="Shopi Assist">
+    <s-page heading="Shopi Assist" inlineSize={PAGE_WIDTH}>
       {!widgetLive && (
         <s-button slot="primary-action" variant="primary" href={activateUrl} target="_top">
           Turn on chat widget
         </s-button>
       )}
 
-      {!setupCompleted && (
-        <s-section heading="Finish setting up your assistant">
+      <PageColumns aside={aside}>
+        {!setupCompleted && (
+          <s-section heading="Finish setting up your assistant">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                A few quick picks teach the assistant about your store. Skip any you like; it
+                already knows your products and published policies.
+              </s-paragraph>
+              <s-unordered-list>
+                {SETUP_ITEMS.map((item) => (
+                  <s-list-item key={item.key}>
+                    {item.label}{" "}
+                    {(item.key === "live" ? widgetLive : progress[item.key]) ? (
+                      <s-badge tone="success">Done</s-badge>
+                    ) : (
+                      <s-badge tone="neutral">Not yet</s-badge>
+                    )}
+                  </s-list-item>
+                ))}
+              </s-unordered-list>
+              <s-stack direction="inline" gap="small">
+                <s-button href="/app/setup" variant="primary">
+                  Continue setup
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-section>
+        )}
+
+        {allSet && (
+          <s-banner tone="success" heading="Your chat assistant is live">
+            Shoppers can open the chat bubble on your storefront and ask about products,
+            best sellers and store policies.
+          </s-banner>
+        )}
+
+        {!llmReady && (
+          <s-banner tone="warning" heading="The assistant can't answer right now">
+            This is a problem on our side, not in your store, and nothing needs changing in
+            your settings. Until it is fixed, shoppers who open the chat see a short message
+            saying it is not available.
+          </s-banner>
+        )}
+
+        <ChatAnalyticsSection analytics={analytics} retentionDays={retentionDays} />
+
+        <s-section heading="Setup">
           <s-stack direction="block" gap="base">
-            <s-paragraph>
-              A few quick picks teach the assistant about your store. Skip any you like; it
-              already knows your products and published policies.
-            </s-paragraph>
-            <s-unordered-list>
-              {SETUP_ITEMS.map((item) => (
-                <s-list-item key={item.key}>
-                  {item.label}{" "}
-                  {(item.key === "live" ? widgetLive : progress[item.key]) ? (
-                    <s-badge tone="success">Done</s-badge>
-                  ) : (
-                    <s-badge tone="neutral">Not yet</s-badge>
-                  )}
-                </s-list-item>
-              ))}
-            </s-unordered-list>
-            <s-stack direction="inline" gap="small">
-              <s-button href="/app/setup" variant="primary">
-                Continue setup
-              </s-button>
+            <s-stack direction="block" gap="small-200">
+              <s-stack direction="inline" gap="small" alignItems="center">
+                <s-heading>1. Turn on the chat widget</s-heading>
+                {embedStatus === "checking" && (
+                  <s-spinner size="base" accessibilityLabel="Checking widget status" />
+                )}
+                {embedStatus === "active" && <s-badge tone="success">On</s-badge>}
+                {embedStatus === "inactive" && <s-badge tone="warning">Off</s-badge>}
+                {embedStatus === "unknown" && <s-badge tone="neutral">Status unavailable</s-badge>}
+              </s-stack>
+              <s-paragraph>
+                The widget is installed with the app but starts switched off, because Shopify
+                requires store owners to approve changes to their storefront. The button opens
+                your theme editor with Shopi Assist already toggled on. Press{" "}
+                <s-text type="strong">Save</s-text> there and the chat bubble appears on every
+                page.
+              </s-paragraph>
+              <s-stack direction="inline" gap="small">
+                <s-button
+                  href={activateUrl}
+                  target="_top"
+                  variant={widgetLive ? "secondary" : "primary"}
+                >
+                  {widgetLive ? "Open widget settings in theme editor" : "Turn on chat widget"}
+                </s-button>
+                <s-button href={storefrontUrl} target="_blank" variant="tertiary">
+                  View storefront
+                </s-button>
+              </s-stack>
+            </s-stack>
+
+            <s-divider />
+
+            <s-stack direction="block" gap="small-200">
+              <s-stack direction="inline" gap="small" alignItems="center">
+                <s-heading>2. Tune how it answers</s-heading>
+                {chatEnabled ? (
+                  <s-badge tone="success">Chat enabled</s-badge>
+                ) : (
+                  <s-badge tone="warning">Chat paused</s-badge>
+                )}
+              </s-stack>
+              <s-paragraph>
+                Switch features on or off, and pick your policies and the answers to common
+                questions. None of it has to be typed.
+              </s-paragraph>
+              <s-stack direction="inline" gap="small">
+                <s-button href="/app/settings">Open settings</s-button>
+                <s-button href="/app/setup" variant="tertiary">
+                  Run the setup tour again
+                </s-button>
+              </s-stack>
             </s-stack>
           </s-stack>
         </s-section>
-      )}
 
-      {allSet && (
-        <s-banner tone="success" heading="Your chat assistant is live">
-          Shoppers can open the chat bubble on your storefront and ask about products,
-          best sellers and store policies.
-        </s-banner>
-      )}
-
-      {!llmReady && (
-        <s-banner tone="warning" heading="The assistant can't answer right now">
-          This is a problem on our side, not in your store, and nothing needs changing in
-          your settings. Until it is fixed, shoppers who open the chat see a short message
-          saying it is not available.
-        </s-banner>
-      )}
-
-      <ChatAnalyticsSection analytics={analytics} retentionDays={retentionDays} />
-
-      <s-section heading="Setup">
-        <s-stack direction="block" gap="base">
-          <s-stack direction="block" gap="small-200">
-            <s-stack direction="inline" gap="small" alignItems="center">
-              <s-heading>1. Turn on the chat widget</s-heading>
-              {embedStatus === "checking" && (
-                <s-spinner size="base" accessibilityLabel="Checking widget status" />
-              )}
-              {embedStatus === "active" && <s-badge tone="success">On</s-badge>}
-              {embedStatus === "inactive" && <s-badge tone="warning">Off</s-badge>}
-              {embedStatus === "unknown" && <s-badge tone="neutral">Status unavailable</s-badge>}
-            </s-stack>
+        <s-section heading="Ask about your store">
+          <s-stack direction="block" gap="base">
             <s-paragraph>
-              The widget is installed with the app but starts switched off, because Shopify
-              requires store owners to approve changes to their storefront. The button opens
-              your theme editor with Shopi Assist already toggled on. Press{" "}
-              <s-text type="strong">Save</s-text> there and the chat bubble appears on every
-              page.
+              The store assistant answers staff questions from live store data: top-selling
+              products, sales totals, recent orders and low stock.
             </s-paragraph>
             <s-stack direction="inline" gap="small">
-              <s-button
-                href={activateUrl}
-                target="_top"
-                variant={widgetLive ? "secondary" : "primary"}
-              >
-                {widgetLive ? "Open widget settings in theme editor" : "Turn on chat widget"}
-              </s-button>
-              <s-button href={storefrontUrl} target="_blank" variant="tertiary">
-                View storefront
-              </s-button>
+              <s-button href="/app/assistant">Open store assistant</s-button>
             </s-stack>
           </s-stack>
-
-          <s-divider />
-
-          <s-stack direction="block" gap="small-200">
-            <s-stack direction="inline" gap="small" alignItems="center">
-              <s-heading>2. Tune how it answers</s-heading>
-              {chatEnabled ? (
-                <s-badge tone="success">Chat enabled</s-badge>
-              ) : (
-                <s-badge tone="warning">Chat paused</s-badge>
-              )}
-            </s-stack>
-            <s-paragraph>
-              Switch features on or off, and pick your policies and the answers to common
-              questions. None of it has to be typed.
-            </s-paragraph>
-            <s-stack direction="inline" gap="small">
-              <s-button href="/app/settings">Open settings</s-button>
-              <s-button href="/app/setup" variant="tertiary">
-                Run the setup tour again
-              </s-button>
-            </s-stack>
-          </s-stack>
-        </s-stack>
-      </s-section>
-
-      <s-section heading="Ask about your store">
-        <s-stack direction="block" gap="base">
-          <s-paragraph>
-            The store assistant answers staff questions from live store data: top-selling
-            products, sales totals, recent orders and low stock.
-          </s-paragraph>
-          <s-stack direction="inline" gap="small">
-            <s-button href="/app/assistant">Open store assistant</s-button>
-          </s-stack>
-        </s-stack>
-      </s-section>
-
-
-      <s-section slot="aside" heading="What shoppers can ask">
-        <s-unordered-list>
-          <s-list-item>&quot;What are your best sellers?&quot;</s-list-item>
-          <s-list-item>&quot;Do you have this in blue?&quot;</s-list-item>
-          <s-list-item>&quot;What&apos;s your return policy?&quot;</s-list-item>
-          <s-list-item>&quot;Add the small one to my cart&quot;</s-list-item>
-        </s-unordered-list>
-      </s-section>
+        </s-section>
+      </PageColumns>
     </s-page>
   );
 }

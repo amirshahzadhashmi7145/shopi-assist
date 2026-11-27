@@ -39,6 +39,7 @@ import { loadShippingRates } from "../assistant/shipping.server";
 import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
 import { syncStoreFactsForPage } from "../assistant/store-facts.server";
+import { PAGE_WIDTH, PageColumns } from "../components/PageColumns";
 import { SettingsFields } from "../components/settings/SettingsFields";
 import { LivePreview } from "../components/settings/StorefrontPreview";
 import { useSettingsDraft } from "../components/settings/useSettingsDraft";
@@ -203,9 +204,38 @@ export default function Setup() {
   };
   const current = STEPS[step - 1];
 
+  const aside = (
+    <>
+      <s-section heading="Setup steps">
+        <s-stack direction="block" gap="small">
+          {STEPS.map((item, index) => (
+            <s-stack key={item.key} direction="inline" gap="small" alignItems="center">
+              <s-link href={`/app/setup?step=${index + 1}`}>
+                {index + 1}. {item.title}
+              </s-link>
+              {stepDone[item.key] ? (
+                <s-badge tone="success">Done</s-badge>
+              ) : index + 1 === step ? (
+                <s-badge tone="info">Current</s-badge>
+              ) : null}
+            </s-stack>
+          ))}
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Good to know">
+        <s-paragraph>
+          Nothing here is required. You can leave the tour at any time and finish from the Home
+          page. In Settings you can also rename {settings.assistantName}, change the welcome
+          message and pick answers to common questions.
+        </s-paragraph>
+      </s-section>
+    </>
+  );
+
   return (
-    <s-page heading="Set up your assistant">
-      <s-stack direction="block" gap="base">
+    <s-page heading="Set up your assistant" inlineSize={PAGE_WIDTH}>
+      <PageColumns aside={aside}>
         <s-section heading={`Step ${step} of ${LAST_STEP}: ${current.title}`}>
           {step === 1 && (
             <s-paragraph>
@@ -291,32 +321,7 @@ export default function Setup() {
             </s-stack>
           </s-section>
         )}
-      </s-stack>
-
-      <s-section slot="aside" heading="Setup steps">
-        <s-stack direction="block" gap="small">
-          {STEPS.map((item, index) => (
-            <s-stack key={item.key} direction="inline" gap="small" alignItems="center">
-              <s-link href={`/app/setup?step=${index + 1}`}>
-                {index + 1}. {item.title}
-              </s-link>
-              {stepDone[item.key] ? (
-                <s-badge tone="success">Done</s-badge>
-              ) : index + 1 === step ? (
-                <s-badge tone="info">Current</s-badge>
-              ) : null}
-            </s-stack>
-          ))}
-        </s-stack>
-      </s-section>
-
-      <s-section slot="aside" heading="Good to know">
-        <s-paragraph>
-          Nothing here is required. You can leave the tour at any time and finish from the Home
-          page. In Settings you can also rename {settings.assistantName}, change the welcome
-          message and pick answers to common questions.
-        </s-paragraph>
-      </s-section>
+      </PageColumns>
     </s-page>
   );
 }

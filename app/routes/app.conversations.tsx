@@ -8,6 +8,7 @@ import {
   listConversations,
   ratingCounts,
 } from "../assistant/store.server";
+import { PAGE_WIDTH, PageColumns } from "../components/PageColumns";
 import { RichText } from "../components/RichText";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
@@ -84,7 +85,7 @@ export default function Conversations() {
   if (data.view === "transcript") {
     const { transcript } = data;
     return (
-      <s-page heading="Conversation">
+      <s-page heading="Conversation" inlineSize={PAGE_WIDTH}>
         <s-link slot="breadcrumb-actions" href="/app/conversations">
           Conversations
         </s-link>
@@ -124,54 +125,9 @@ export default function Conversations() {
   const { conversations, retentionDays, ratings, ratingsOn } = data;
   const rated = ratings.up + ratings.down;
 
-  return (
-    <s-page heading="Conversations">
-      {conversations.length === 0 ? (
-        <s-section heading="No conversations yet">
-          <s-stack direction="block" gap="base">
-            <s-paragraph>
-              Once shoppers start chatting on your storefront, their conversations appear
-              here so you can see what they ask about.
-            </s-paragraph>
-            <s-stack direction="inline" gap="small">
-              <s-button href="/app">Check widget setup</s-button>
-            </s-stack>
-          </s-stack>
-        </s-section>
-      ) : (
-        <s-section padding="none" accessibilityLabel="Shopper conversations">
-          <s-table>
-            <s-table-header-row>
-              <s-table-header listSlot="primary">First message</s-table-header>
-              <s-table-header>Messages</s-table-header>
-              <s-table-header>Rating</s-table-header>
-              <s-table-header>Shopper</s-table-header>
-              <s-table-header listSlot="secondary">Last activity</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {conversations.map((conversation) => (
-                <s-table-row key={conversation.id}>
-                  <s-table-cell>
-                    <s-link href={`/app/conversations?id=${conversation.id}`}>
-                      {preview(conversation.firstMessage) || "(empty)"}
-                    </s-link>
-                  </s-table-cell>
-                  <s-table-cell>{conversation.messageCount}</s-table-cell>
-                  <s-table-cell>
-                    <RatingBadge rating={conversation.rating} />
-                  </s-table-cell>
-                  <s-table-cell>
-                    {conversation.loggedIn ? "Logged-in customer" : "Guest"}
-                  </s-table-cell>
-                  <s-table-cell>{formatWhen(conversation.updatedAt)}</s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
-        </s-section>
-      )}
-
-      <s-section slot="aside" heading="Chat ratings">
+  const aside = (
+    <>
+      <s-section heading="Chat ratings">
         <s-stack direction="block" gap="small-200">
           {rated === 0 ? (
             <s-paragraph>
@@ -194,7 +150,7 @@ export default function Conversations() {
         </s-stack>
       </s-section>
 
-      <s-section slot="aside" heading="Retention">
+      <s-section heading="Retention">
         <s-stack direction="block" gap="small-200">
           <s-paragraph>
             Transcripts are deleted after {retentionDays}{" "}
@@ -204,6 +160,57 @@ export default function Conversations() {
           <s-link href="/app/settings">Change retention</s-link>
         </s-stack>
       </s-section>
+    </>
+  );
+
+  return (
+    <s-page heading="Conversations" inlineSize={PAGE_WIDTH}>
+      <PageColumns aside={aside}>
+        {conversations.length === 0 ? (
+          <s-section heading="No conversations yet">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                Once shoppers start chatting on your storefront, their conversations appear
+                here so you can see what they ask about.
+              </s-paragraph>
+              <s-stack direction="inline" gap="small">
+                <s-button href="/app">Check widget setup</s-button>
+              </s-stack>
+            </s-stack>
+          </s-section>
+        ) : (
+          <s-section padding="none" accessibilityLabel="Shopper conversations">
+            <s-table>
+              <s-table-header-row>
+                <s-table-header listSlot="primary">First message</s-table-header>
+                <s-table-header>Messages</s-table-header>
+                <s-table-header>Rating</s-table-header>
+                <s-table-header>Shopper</s-table-header>
+                <s-table-header listSlot="secondary">Last activity</s-table-header>
+              </s-table-header-row>
+              <s-table-body>
+                {conversations.map((conversation) => (
+                  <s-table-row key={conversation.id}>
+                    <s-table-cell>
+                      <s-link href={`/app/conversations?id=${conversation.id}`}>
+                        {preview(conversation.firstMessage) || "(empty)"}
+                      </s-link>
+                    </s-table-cell>
+                    <s-table-cell>{conversation.messageCount}</s-table-cell>
+                    <s-table-cell>
+                      <RatingBadge rating={conversation.rating} />
+                    </s-table-cell>
+                    <s-table-cell>
+                      {conversation.loggedIn ? "Logged-in customer" : "Guest"}
+                    </s-table-cell>
+                    <s-table-cell>{formatWhen(conversation.updatedAt)}</s-table-cell>
+                  </s-table-row>
+                ))}
+              </s-table-body>
+            </s-table>
+          </s-section>
+        )}
+      </PageColumns>
     </s-page>
   );
 }

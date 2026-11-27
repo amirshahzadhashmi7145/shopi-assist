@@ -38,6 +38,7 @@ import { loadShippingRates } from "../assistant/shipping.server";
 import { toGraphqlFn } from "../assistant/shopify-clients.server";
 import { factsForPage, type StoreFactsView } from "../assistant/store-facts";
 import { syncStoreFactsForPage } from "../assistant/store-facts.server";
+import { PAGE_WIDTH, PageColumns } from "../components/PageColumns";
 import { SectionNav, SettingsFields } from "../components/settings/SettingsFields";
 import { LivePreview } from "../components/settings/StorefrontPreview";
 import { useSettingsDraft } from "../components/settings/useSettingsDraft";
@@ -138,7 +139,7 @@ export default function Settings() {
   };
 
   return (
-    <s-page heading="Settings">
+    <s-page heading="Settings" inlineSize={PAGE_WIDTH}>
       {/* Starting again from the saved settings after each save also clears
           the "unsaved changes" bar. */}
       <Workspace
@@ -184,43 +185,43 @@ function Workspace({
   const draft = useSettingsDraft(settings);
 
   return (
-    <>
-      <s-stack direction="block" gap="base">
-        {failed && (
-          <s-banner tone="critical" heading="Settings weren't saved">
-            Fix the highlighted fields and save again.
-          </s-banner>
-        )}
-        {!draft.draft.enabled && (
-          <s-banner tone="warning" heading="The chat is paused">
-            Shoppers don&apos;t see the chat bubble while it is switched off under Assistant.
-            Everything else you set here is kept.
-          </s-banner>
-        )}
-        <SectionNav active={section} errors={errors} onChange={onSection} />
-        <form data-save-bar onSubmit={onSubmit} onInput={draft.handleInput} onReset={draft.reset}>
-          <SettingsFields
-            show={ALL_SECTIONS}
-            active={section}
-            settings={settings}
-            facts={facts}
-            shipping={shipping}
-            errors={errors}
-            shop={shop}
-            draft={draft}
+    <PageColumns
+      aside={
+        <s-section heading="Preview">
+          <LivePreview
+            settings={draft.draft}
+            unsaved={draft.dirty}
+            ready={llmReady}
+            fetcherKey="settings-preview"
           />
-        </form>
-      </s-stack>
-
-      <s-section slot="aside" heading="Preview">
-        <LivePreview
-          settings={draft.draft}
-          unsaved={draft.dirty}
-          ready={llmReady}
-          fetcherKey="settings-preview"
+        </s-section>
+      }
+    >
+      {failed && (
+        <s-banner tone="critical" heading="Settings weren't saved">
+          Fix the highlighted fields and save again.
+        </s-banner>
+      )}
+      {!draft.draft.enabled && (
+        <s-banner tone="warning" heading="The chat is paused">
+          Shoppers don&apos;t see the chat bubble while it is switched off under Assistant.
+          Everything else you set here is kept.
+        </s-banner>
+      )}
+      <SectionNav active={section} errors={errors} onChange={onSection} />
+      <form data-save-bar onSubmit={onSubmit} onInput={draft.handleInput} onReset={draft.reset}>
+        <SettingsFields
+          show={ALL_SECTIONS}
+          active={section}
+          settings={settings}
+          facts={facts}
+          shipping={shipping}
+          errors={errors}
+          shop={shop}
+          draft={draft}
         />
-      </s-section>
-    </>
+      </form>
+    </PageColumns>
   );
 }
 

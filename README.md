@@ -86,7 +86,8 @@ App server  /proxy/chat
 | --- | --- |
 | `extensions/chat-widget/` | The storefront widget: Liquid embed block, JS, CSS |
 | `app/routes/proxy.chat.tsx` | Storefront chat endpoint (app proxy) |
-| `app/routes/app.*.tsx` | Admin pages: home, setup tour, store assistant, conversations, settings |
+| `app/routes/app.*.tsx` | Admin pages: home, setup tour, store assistant, conversations, settings. All full width |
+| `app/components/PageColumns.tsx` | A full-width page's two columns: its content, and a side column that goes underneath where there is no room |
 | `app/routes/app.preview.tsx` | "Try it as a shopper" chat for staff |
 | `app/components/settings/` | The four parts of Settings, shared by the Settings page and the tour; the live preview |
 | `app/assistant/setting-options.ts` | Every list a merchant picks from, with what the assistant is told for each pick |
